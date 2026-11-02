@@ -96,7 +96,7 @@ const browserBin = opt("--browser");
  * Answer whether these scenarios are sayable at all, and start no browser.
  *
  * The grammar lives here, so the check that a contract is writable has to live here too:
- * a second copy in Warden would be a second grammar, and the two would drift. Warden runs
+ * a second copy in Overseer would be a second grammar, and the two would drift. Overseer runs
  * this at preflight, before the first vendor is paid — a typo in a scenario used to be
  * discovered by the browser stage, which is after an implementer and an independent
  * reviewer have both been billed for work nobody could look at.
@@ -548,7 +548,7 @@ function isForeign(origin, text) {
 
 function findBrowser() {
   const candidates = [
-    process.env.WARDEN_BROWSER,
+    process.env.OSEER_BROWSER,
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
     "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
@@ -1350,7 +1350,7 @@ function contractProblem(list) {
     parsed = list.map(parseScenario);
   } catch (badGrammar) {
     // A scenario the grammar refuses used to throw out of main() before the report
-    // existed, and Warden then reported "adapter wrote no visual-qa.json (is node and
+    // existed, and Overseer then reported "adapter wrote no visual-qa.json (is node and
     // Edge/Chrome installed?)" — sending an operator to check their browser over a typo.
     return String(badGrammar?.message || badGrammar);
   }
@@ -1404,7 +1404,7 @@ async function main() {
   const debugPort = await freePort();
   // Outside --out on purpose: Chrome writes megabytes of its own state into a profile
   // directory, and a run's evidence folder should hold evidence, not an Edge avatar.
-  const profileDir = mkdtempSync(join(tmpdir(), "warden-visual-qa-"));
+  const profileDir = mkdtempSync(join(tmpdir(), "oseer-visual-qa-"));
 
   const child = spawn(
     browser,

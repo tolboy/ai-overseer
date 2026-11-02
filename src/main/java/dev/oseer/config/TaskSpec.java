@@ -1,0 +1,457 @@
+package dev.oseer.config;
+
+import dev.oseer.yaml.Yaml;
+
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * `.oseer/tasks/<id>.yaml` — one unit of work.
+ *
+ * A task must resolve to at least one executable acceptance command and at least one scope
+ * path. Both refusals are deliberate: every industrial deployment of coding agents that
+ * worked did so on mechanically verifiable work, and an unbounded scope means a diff nobody
+ * can review. This is the cheapest possible place to block, long before any model runs.
+ */
+public record TaskSpec(
+        String id,
+        String goal,
+        List<String> nonGoals,
+        String risk,
+        Values.Selector scope,
+        Values.Selector checks,
+        List<String> acceptance,
+        List<String> reproduce,
+        Authority authority,
+        VisualQa visualQa,
+        Budget budget,
+        Long maxFixAttempts,
+        Long timeoutMinutes,
+        String reviewAssurance,
+        RunOverride use,
+        List<String> manualVerification,
+        List<String> priorWriters) {
+
+    public TaskSpec {
+        if (use == null) use = RunOverride.NONE;
+        manualVerification = manualVerification == null ? List.of() : List.copyOf(manualVerification);
+        priorWriters = priorWriters == null ? List.of() : List.copyOf(priorWriters);
+    }
+
+    public TaskSpec(String id, String goal, List<String> nonGoals, String risk,
+                    Values.Selector scope, Values.Selector checks, List<String> acceptance,
+                    List<String> reproduce, Authority authority, VisualQa visualQa, Budget budget,
+                    Long maxFixAttempts, Long timeoutMinutes, String reviewAssurance,
+                    RunOverride use, List<String> manualVerification) {
+        this(id, goal, nonGoals, risk, scope, checks, acceptance, reproduce, authority, visualQa,
+                budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use, manualVerification,
+                List.of());
+    }
+
+    /**
+     * The weakest reading a task will accept as its review.
+     *
+     * `independent` (the default): every reader differs in vendor from every writer of the
+     * candidate. `same_vendor_peer`: a pair the policy declares — one vendor, two different
+     * models — may read instead. The task has to say so, because the policy alone cannot
+     * lower what a contract is judged by, and the label reaches the human gate either way.
+     */
+    public static final Set<String> REVIEW_ASSURANCES = Set.of("independent", "same_vendor_peer");
+
+    public record Authority(boolean workspaceWrite, boolean network, boolean land) {}
+    public record VisualQa(boolean required, List<String> scenarios, String start, String url,
+                           String evidence) {
+        public VisualQa {
+            if (evidence == null || evidence.isBlank()) evidence = "harness";
+        }
+
+        public VisualQa(boolean required, List<String> scenarios, String start, String url) {
+            this(required, scenarios, start, url, "harness");
+        }
+
+        /** The visual role takes its own screenshots; the browser harness is not consulted. */
+        public boolean agentEvidence() {
+            return "agent".equals(evidence);
+        }
+    }
+
+    /**
+     * @param maxElapsedMinutes the execution time a continued chain of runs may spend, summed
+     *                          across `--continue`; null when the task declares none. Time a
+     *                          stopped run spends waiting for a person is not counted.
+     */
+    public record Budget(long maxRoleRuns, double maxCostUsd, Long maxElapsedMinutes,
+                         Long gateTtlHours, String costCap) {
+        public Budget(long maxRoleRuns, double maxCostUsd) {
+            this(maxRoleRuns, maxCostUsd, null, null, "threshold");
+        }
+
+        public Budget(long maxRoleRuns, double maxCostUsd, Long maxElapsedMinutes) {
+            this(maxRoleRuns, maxCostUsd, maxElapsedMinutes, null, "threshold");
+        }
+
+        /** Whether `max_cost_usd` is a strict cap reserved against, or a threshold on reported spend. */
+        public boolean strictCostCap() { return "strict".equals(costCap); }
+        public double enforcedMaxCostUsd() { return "off".equals(costCap) ? 0 : maxCostUsd; }
+    }
+
+    /**
+     * How `max_cost_usd` binds. Without an explicitly supplied dollar ceiling the default
+     * is `off`: report any available usage, bound work by calls and elapsed time.
+     * An explicit ceiling keeps the legacy `threshold` default: compare reported spend, so an
+     * unpriced call spends nothing against it and the last call may exceed it. `strict`: a
+     * call is admitted only when the reported spend plus the declared upper bound of that
+     * call and of every paying stage still owed stays under the ceiling, which requires every
+     * profile on the roster to declare `limits.max_cost_usd`; a roster that cannot prove a
+     * bound stops before the first dispatch as `cost_cap_unenforceable` rather than
+     * pretending.
+     */
+    public static final Set<String> COST_CAPS = Set.of("off", "threshold", "strict");
+
+    private static final Set<String> TOP_LEVEL = Set.of(
+            "version", "id", "goal", "non_goals", "risk", "scope", "checks", "acceptance", "reproduce",
+            "authority", "visual_qa", "budgets", "max_fix_attempts", "timeout_minutes",
+            "review_assurance", "use", "manual_verification", "prior_writers");
+    private static final Set<String> AUTHORITY_KEYS = Set.of("workspace_write", "network", "land");
+    private static final Set<String> VISUAL_KEYS =
+            Set.of("required", "scenarios", "start", "url", "evidence");
+    private static final Set<String> BUDGET_KEYS =
+            Set.of("max_role_runs", "max_cost_usd", "max_elapsed_minutes", "gate_ttl_hours", "cost_cap");
+
+    public static TaskSpec parse(String yamlText, String source) {
+        Values root = Values.of(Yaml.parse(yamlText), source);
+        root.rejectUnknownKeys(TOP_LEVEL);
+        root.requireVersion(1);
+
+        String id = root.requireString("id");
+        if (id != null && !RepoPath.isSlug(id)) {
+            root.collector().add("id must be a lowercase slug of at most 80 characters, got '" + id + "'");
+        }
+        String goal = root.requireString("goal");
+        List<String> nonGoals = root.optStringList("non_goals", List.of());
+        String risk = root.requireEnum("risk", ProjectConfig.RISK_LEVELS, null);
+
+        Values.Selector scope = root.selector("scope");
+        if (scope.isEmpty()) {
+            root.collector().add("scope is required: name a scope from project.yaml, "
+                    + "or give an explicit list of paths");
+        }
+        Values.Selector checks = root.selector("checks");
+        List<String> acceptance = root.optStringList("acceptance", List.of());
+
+        List<String> reproduce = root.optStringList("reproduce", List.of());
+
+        Values authorityNode = root.optMap("authority").rejectUnknownKeys(AUTHORITY_KEYS);
+        Authority authority = new Authority(
+                authorityNode.optBool("workspace_write", true),
+                authorityNode.optBool("network", false),
+                authorityNode.optBool("land", false));
+        if (authority.land()) {
+            root.collector().add("authority.land must be false: Overseer stops before a human and never lands changes");
+        }
+
+        Values visualNode = root.optMap("visual_qa").rejectUnknownKeys(VISUAL_KEYS);
+        String visualEvidence = visualNode.requireEnum("evidence", Workflow.EVIDENCE, "harness");
+        VisualQa visualQa = new VisualQa(
+                visualNode.optBool("required", false),
+                visualNode.optStringList("scenarios", List.of()),
+                visualNode.optString("start", null),
+                visualNode.optString("url", null),
+                visualEvidence);
+        if (visualQa.required() && visualQa.scenarios().isEmpty() && !visualQa.agentEvidence()) {
+            root.collector().add("visual_qa.scenarios must not be empty when visual QA is required "
+                    + "and evidence is the browser harness; evidence: agent may name scenes in "
+                    + "prose instead");
+        }
+        // Whether a scenario names its control in a way that survives a rename is a question
+        // about the scenario grammar, and the grammar lives in the adapter: VisualQaRunner asks
+        // it with `--validate-only` at preflight, before any vendor is paid. A copy of the rule
+        // here would be a second grammar written in regexes, and this is the parser every
+        // command goes through — `oseer land` re-reads the task file, so a rule enforced here
+        // would make a run that a person already accepted unlandable until its contract was
+        // edited after the fact.
+
+        Values budgetNode = root.optMap("budgets").rejectUnknownKeys(BUDGET_KEYS);
+        Budget budget = new Budget(
+                budgetNode.optInt("max_role_runs", 6, 1, 50),
+                budgetNode.optDouble("max_cost_usd", 20.0, 0.0, 10000.0),
+                budgetNode.has("max_elapsed_minutes")
+                        ? budgetNode.optInt("max_elapsed_minutes", 60, 1, 1440) : null,
+                // How long a stopped run's question stays answerable. Waiting for a person is
+                // not execution time and is not charged to `max_elapsed_minutes`; this is the
+                // separate, bounded life of the human gate itself. Omitted, a gate never expires.
+                budgetNode.has("gate_ttl_hours")
+                        ? budgetNode.optInt("gate_ttl_hours", 72, 1, 720) : null,
+                budgetNode.requireEnum("cost_cap", COST_CAPS, budgetNode.has("max_cost_usd") ? "threshold" : "off"));
+
+        Long maxFixAttempts = root.has("max_fix_attempts")
+                ? root.optInt("max_fix_attempts", 2, 0, 10) : null;
+        Long timeoutMinutes = root.has("timeout_minutes")
+                ? root.optInt("timeout_minutes", 30, 1, 240) : null;
+        String reviewAssurance = root.requireEnum("review_assurance", REVIEW_ASSURANCES, "independent");
+        RunOverride use = RunOverride.parse(root.optMap("use"));
+        // Checks a person has already accepted by hand. A contract_gap whose text contains
+        // one of these (case-insensitive substring) is recorded as advisory rather than
+        // blocking. The list reader rejects a blank item. This loop drops one anyway,
+        // because a blank would match every finding.
+        List<String> manualVerification = new ArrayList<>();
+        for (String item : root.optStringList("manual_verification", List.of())) {
+            if (item != null && !item.isBlank()) manualVerification.add(item.trim());
+        }
+
+        // Vendors a person vouches for as the authors of whatever the tree already holds when
+        // a run starts — an existing PR branch, say. Without it that candidate has no known
+        // author and every reading over it is `unproven`, however independent the reviewer.
+        java.util.Set<String> priorWriters = new java.util.LinkedHashSet<>();
+        for (String item : root.optStringList("prior_writers", List.of())) {
+            if (item != null && !item.isBlank()) priorWriters.add(item.trim());
+        }
+
+        root.throwIfAny();
+        return new TaskSpec(id, goal, List.copyOf(nonGoals), risk, scope, checks, acceptance, reproduce,
+                authority, visualQa, budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use,
+                manualVerification, List.copyOf(priorWriters));
+    }
+
+    /**
+     * Resolve names against the project config into a concrete, self-contained task.
+     * After this there are no indirections left: explicit paths, explicit commands.
+     */
+    public ResolvedTask resolve(ProjectConfig project, String source) {
+        ConfigException.Collector collector = new ConfigException.Collector(source);
+
+        Set<String> paths = new LinkedHashSet<>();
+        for (String entry : scope.entries()) {
+            List<String> named = project.scopes().get(entry);
+            if (named != null) {
+                paths.addAll(named);
+                continue;
+            }
+            // A bare `scope: name` is only ever a scope name. Falling back to treating it as
+            // a path would turn a typo into a blast radius pointing at a directory that does
+            // not exist, which fails open: nothing is ever reported out of scope.
+            if (scope.bareName()) {
+                collector.add("scope names '" + entry + "', which is not defined under scopes in "
+                        + "project.yaml. Available: " + project.scopes().keySet()
+                        + ". To use an explicit path, write it as a list: scope: [\"" + entry + "\"]");
+                continue;
+            }
+            String normalized = RepoPath.normalize(entry);
+            if (normalized == null) {
+                collector.add("scope entry '" + entry
+                        + "' is neither a scope defined in project.yaml nor a safe repository-relative path");
+            } else {
+                paths.add(normalized);
+            }
+        }
+
+        List<String> commands = new ArrayList<>();
+        boolean bareChecks = checks.isEmpty() || checks.bareName();
+        List<String> requested = checks.isEmpty()
+                ? (project.defaultChecks() == null ? List.of() : List.of(project.defaultChecks()))
+                : checks.entries();
+        commands.addAll(resolveCommands(requested, bareChecks, project, collector));
+        commands.addAll(acceptance);
+
+        List<String> baselineCommands = project.defaultBaselineChecks() == null
+                ? List.of() : project.checks().get(project.defaultBaselineChecks());
+        if (!baselineCommands.isEmpty()) {
+            // A baseline is not merely a pre-dispatch observation. These commands become the
+            // floor of the final gate as well, or an agent could break the project tests that
+            // were green before it ran and still satisfy a narrower task check. Preserve the
+            // cheap project-health order and avoid executing an identical command twice.
+            Set<String> allCommands = new LinkedHashSet<>(baselineCommands);
+            allCommands.addAll(commands);
+            commands = new ArrayList<>(allCommands);
+        }
+
+        List<String> reproduceCommands = resolveCommands(reproduce, false, project, collector);
+        for (String command : reproduceCommands) {
+            if (!commands.contains(command)) {
+                collector.add("reproduce command must also be an acceptance command: " + command);
+            }
+            if (baselineCommands.contains(command)) {
+                collector.add("reproduce command cannot also be a baseline command: " + command);
+            }
+        }
+
+        // Browser scenarios are an executable definition of done, and a stricter one than
+        // most test commands for work a person looks at. Accepting them here is what lets a
+        // project with no build system yet — a directory that was empty this morning — be
+        // gated at all. What is still refused is a task that defines done nowhere.
+        boolean visualDefinesDone = visualQa != null && visualQa.required()
+                && !visualQa.scenarios().isEmpty();
+        if (commands.isEmpty() && !visualDefinesDone) {
+            collector.add("this task resolves to no acceptance command and no visual scenario; "
+                    + "a task with no executable definition of 'done' is not runnable. Add a "
+                    + "command under checks in project.yaml, or visual_qa scenarios here");
+        }
+        if (commands.size() > 20) {
+            collector.add("a task may declare at most 20 acceptance commands, got " + commands.size());
+        }
+        for (String command : commands) {
+            if (command.length() > 2000 || command.contains("\n") || command.contains("\r")) {
+                collector.add("acceptance command must be a single line of at most 2000 characters");
+            }
+        }
+
+        collector.throwIfAny();
+        return new ResolvedTask(
+                id,
+                goal,
+                nonGoals,
+                risk != null ? risk : project.defaultRisk(),
+                project.baseRef(),
+                List.copyOf(paths),
+                List.copyOf(baselineCommands),
+                List.copyOf(commands),
+                List.copyOf(reproduceCommands),
+                authority,
+                visualQa,
+                budget,
+                maxFixAttempts != null ? maxFixAttempts : project.defaultMaxFixAttempts(),
+                timeoutMinutes != null ? timeoutMinutes : project.defaultTimeoutMinutes(),
+                reviewAssurance == null ? "independent" : reviewAssurance,
+                manualVerification,
+                priorWriters);
+    }
+
+    private static List<String> resolveCommands(List<String> requested, boolean bareChecks,
+                                                 ProjectConfig project,
+                                                 ConfigException.Collector collector) {
+        List<String> commands = new ArrayList<>();
+        for (String entry : requested) {
+            List<String> named = project.checks().get(entry);
+            if (named != null) { commands.addAll(named); continue; }
+            if (bareChecks) {
+                collector.add("checks names '" + entry + "', which is not defined under checks in "
+                        + "project.yaml. Available: " + project.checks().keySet()
+                        + ". To run a literal command, write it as a list: checks: [\"" + entry + "\"]");
+                continue;
+            }
+            commands.add(entry);
+        }
+        return commands;
+    }
+
+    /** A task with every indirection resolved. This is what the gates and roles receive. */
+    public record ResolvedTask(
+            String id,
+            String goal,
+            List<String> nonGoals,
+            String risk,
+            String baseRef,
+            List<String> scopePaths,
+            List<String> baselineCommands,
+            List<String> acceptanceCommands,
+            List<String> reproduceCommands,
+            Authority authority,
+            VisualQa visualQa,
+            Budget budget,
+            long maxFixAttempts,
+            long timeoutMinutes,
+            String reviewAssurance,
+            List<String> manualVerification,
+            List<String> priorWriters) {
+
+        public ResolvedTask {
+            manualVerification = manualVerification == null ? List.of() : List.copyOf(manualVerification);
+            priorWriters = priorWriters == null ? List.of() : List.copyOf(priorWriters);
+        }
+
+        public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
+                            String baseRef, List<String> scopePaths, List<String> baselineCommands,
+                            List<String> acceptanceCommands, List<String> reproduceCommands,
+                            Authority authority, VisualQa visualQa, Budget budget,
+                            long maxFixAttempts, long timeoutMinutes, String reviewAssurance,
+                            List<String> manualVerification) {
+            this(id, goal, nonGoals, risk, baseRef, scopePaths, baselineCommands,
+                    acceptanceCommands, reproduceCommands, authority, visualQa, budget,
+                    maxFixAttempts, timeoutMinutes, reviewAssurance, manualVerification, List.of());
+        }
+
+        public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
+                            String baseRef, List<String> scopePaths, List<String> baselineCommands,
+                            List<String> acceptanceCommands, List<String> reproduceCommands,
+                            Authority authority, VisualQa visualQa, Budget budget,
+                            long maxFixAttempts, long timeoutMinutes) {
+            this(id, goal, nonGoals, risk, baseRef, scopePaths, baselineCommands,
+                    acceptanceCommands, reproduceCommands, authority, visualQa, budget,
+                    maxFixAttempts, timeoutMinutes, "independent", List.of());
+        }
+
+        // Existing internal callers construct planning-only tasks without reproduction.
+        public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
+                            String baseRef, List<String> scopePaths, List<String> baselineCommands,
+                            List<String> acceptanceCommands, Authority authority, VisualQa visualQa,
+                            Budget budget, long maxFixAttempts, long timeoutMinutes) {
+            this(id, goal, nonGoals, risk, baseRef, scopePaths, baselineCommands,
+                    acceptanceCommands, List.of(), authority, visualQa, budget,
+                    maxFixAttempts, timeoutMinutes, "independent", List.of());
+        }
+
+        /**
+         * A hash of what this task is judged by, with the bounds on how long it may take
+         * left out.
+         *
+         * The whole-tree contract hash answers "did anything at all move", which is the right
+         * question while a run is in flight — a vendor may not rewrite its own terms. It is
+         * the wrong question between runs. A run stopped by its call ceiling can only be
+         * continued by raising that ceiling, and raising it edits the task file, which moves
+         * the tree hash, which throws away the review verdicts the stop was supposed to
+         * preserve. The operator then pays a second reviewer to reach the same conclusion
+         * about bytes nobody touched.
+         *
+         * So the goal, the scope, the commands, the authority and the browser contract are
+         * hashed here, and `budgets`, `max_fix_attempts` and `timeout_minutes` are not. Those
+         * four say how much may be spent reaching a verdict; they say nothing about what the
+         * verdict is about. Rewriting an acceptance command to make a run go green still
+         * moves this hash, which is the case the invariant exists for.
+         */
+        public String acceptanceFingerprint() {
+            java.util.Map<String, String> fields = new java.util.TreeMap<>();
+            fields.put("id", id);
+            fields.put("goal", goal);
+            fields.put("non_goals", String.join(" ", nonGoals));
+            fields.put("risk", risk);
+            fields.put("base_ref", baseRef);
+            fields.put("scope_paths", String.join(" ", scopePaths));
+            fields.put("baseline_commands", String.join(" ", baselineCommands));
+            fields.put("acceptance_commands", String.join(" ", acceptanceCommands));
+            // Reproduction defines which acceptance must detect the defect on the base.
+            // Changing it changes the verdict contract, so earlier red proof cannot survive.
+            // Omitted when empty, so a task that declares none keeps the hash it had before the
+            // key existed and a continuation across the upgrade still reuses its verdicts.
+            if (!reproduceCommands.isEmpty()) {
+                fields.put("reproduce_commands", String.join("\u0000", reproduceCommands));
+            }
+            fields.put("authority", authority.workspaceWrite() + "/" + authority.network()
+                    + "/" + authority.land());
+            // What a reading may be. Lowering it to a same-vendor pair changes what the verdict
+            // means; a task that never spoke keeps the hash it had before the key existed.
+            if (!"independent".equals(reviewAssurance)) {
+                fields.put("review_assurance", reviewAssurance);
+            }
+            // What a person has already agreed to check by hand. Adding or removing an item
+            // changes what a contract_gap is allowed to leave open, so earlier verdicts
+            // cannot survive it. Omitted when empty, so a task that declares none keeps the
+            // hash it had before the key existed.
+            if (!manualVerification.isEmpty()) {
+                fields.put("manual_verification", String.join("\u0000", manualVerification));
+            }
+            // Who a person vouches wrote the starting tree decides whether a reading is
+            // independent, so a change to it cannot keep verdicts. Omitted when empty.
+            if (!priorWriters.isEmpty()) {
+                fields.put("prior_writers", String.join("\u0000", new java.util.TreeSet<>(priorWriters)));
+            }
+            fields.put("visual_required", String.valueOf(visualQa.required()));
+            fields.put("visual_url", String.valueOf(visualQa.url()));
+            fields.put("visual_start", String.valueOf(visualQa.start()));
+            fields.put("visual_scenarios", String.join(" ", visualQa.scenarios()));
+            if (visualQa.agentEvidence()) fields.put("visual_evidence", "agent");
+            return OverseerTree.digest(fields);
+        }
+    }
+}

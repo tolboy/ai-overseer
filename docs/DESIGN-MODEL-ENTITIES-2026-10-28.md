@@ -43,7 +43,7 @@ readiness group) now hashes service + account + command + runner + auth selector
    *suggestion* that is applied only by an explicit mapping. A developer that differs from a
    single-service client (the DeepSeek-through-Codex case) gets no suggestion at all.
 
-Warden never reads another program's configuration or tokens to decide this.
+AI Overseer never reads another program's configuration or tokens to decide this.
 
 ## Display
 
@@ -52,7 +52,7 @@ representative per account, at most one alternative model). API cards stay one p
 `cli-unmapped` is a separate card titled as needing a mapping. Its Ping/refresh are refused with
 `service_mapping_required`; launch readiness is unaffected because it uses technical groups.
 
-## Migration (`warden profiles migrate-services`)
+## Migration (`oseer profiles migrate-services`)
 
 * Default is a preview: per-profile current binding, proposed action, and stale vendor caches whose
   id no longer exists (for example `vendors/cli-provider-deepseek-*.json`). Nothing is written.
@@ -66,7 +66,7 @@ representative per account, at most one alternative model). API cards stay one p
   any later edit refuses the whole rollback rather than overwriting it.
 * Adding `service`/`account` changes no argv, model, permissions or tools, so `verification.verified_on`
   is kept. Changing a model still drops admission (unchanged `RoleRosterEditor` rule).
-* Older Warden builds reject the new keys (strict profile parser); rollback is the way back.
+* Older Overseer builds reject the new keys (strict profile parser); rollback is the way back.
 
 ## Not changed
 

@@ -6,7 +6,7 @@ not supersede the acceptance requirements in the
 
 ## What an ordinary invocation does
 
-Interactive `warden do` and `warden run` resolve observation against the actual
+Interactive `oseer do` and `oseer run` resolve observation against the actual
 execution worktree, including continuations. A ready, registered Orca workspace
 receives the existing card comment and status. An absent or failing UI does not
 change the runner, retry a vendor, settle a worker, or change the command's outcome.
@@ -32,7 +32,7 @@ and the decision page. An explicit `--watch` retains its previous opt-in behavio
 including when stdout is redirected or narration is quiet.
 
 After the run is reserved, automatic observation writes an atomic local snapshot,
-`.warden/runs/<run-id>/desktop.json`. It records the mode, fallback code, runtime
+`.oseer/runs/<run-id>/desktop.json`. It records the mode, fallback code, runtime
 and worktree identity when verified, and the last requested card state. A requested
 state is not proof of successful projection. This file is an observer diagnostic;
 the ledger, task report and decision remain authoritative after it stops updating.
@@ -88,7 +88,7 @@ does not accept an arbitrary external process or stdout path. Native
 reserves a provider conversation for a new structured chat and checks writer
 ownership. The [adopted import](https://github.com/stablyai/orca/blob/c60a9b0a2a8d1aff2da94c2185a6dba238e65755/src/main/native-chat/agent-session-wire/structured-agent-session-adopted-import.ts)
 seeds the initial journal and preserves subsequent journal writes on replay; it
-is not a live read-only subscription to Warden's external stdout. Using that
+is not a live read-only subscription to AI Overseer's external stdout. Using that
 adoption contract as a generic activity sink would misrepresent conversation
 ownership. No native create/adopt/send mutation was attempted for a direct worker.
 
@@ -144,7 +144,7 @@ accessibility state and local receipts were captured. This is a zero-call fallba
 probe, **not** the requested two successful runs with live vendor tool events.
 
 Raw local evidence is retained under `out/desktop-contract/` and the disposable
-worktree's `.warden/runs/`. These paths are not published links. A sanitized
+worktree's `.oseer/runs/`. These paths are not published links. A sanitized
 [machine summary](evidence/orca-desktop-contract-2026-10-21.json) records only the
 scope and outcomes.
 

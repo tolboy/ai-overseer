@@ -74,7 +74,7 @@ From the repository root after `cmd /c build.cmd`:
 ```powershell
 java -cp out/classes tools/agent/JevEffortEvaluation.java --synthetic tools/agent/fixtures/jev-effort-distributions.json out/stage4-calibration/synthetic.json
 java -cp out/classes tools/agent/JevEffortEvaluation.java --live tools/agent/fixtures/jev-effort-cases.json out/stage4-calibration/live.json
-java -cp out/test-classes dev.warden.testing.TestMain decision-routing
+java -cp out/test-classes dev.oseer.testing.TestMain decision-routing
 ```
 
 `--synthetic` makes no network request. `--live` explicitly uses the configured Jev

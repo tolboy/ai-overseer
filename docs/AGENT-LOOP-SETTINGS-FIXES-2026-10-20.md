@@ -16,7 +16,7 @@
 меняет активный файл и не создаёт backup. Копируются POSIX mode или Windows ACL;
 Windows read-only файл не перезаписывается.
 
-Постоянный sidecar `*.warden-write.lock` не удаляется после операции: все процессы
+Постоянный sidecar `*.oseer-write.lock` не удаляется после операции: все процессы
 должны блокировать один и тот же файл. OS освобождает lock после выхода/аварии.
 Локальный конкурент отклоняется до открытия второго дескриптора: на POSIX его
 закрытие могло бы снять блокировку первого писателя. Нельзя удалять sidecar во время
@@ -27,7 +27,7 @@ Windows read-only файл не перезаписывается.
 перед каждой попыткой заново проверяет digest. Постоянная ошибка возвращается
 вызывающему коду, активный YAML остаётся целым.
 
-`warden roster` возвращает `file_versions` для policy и всех прочитанных profiles.
+`oseer roster` возвращает `file_versions` для policy и всех прочитанных profiles.
 Digest вычисляется из тех же байтов, что использованы для построения отчёта.
 `roster set` и `roster model` принимают `--expected-sha256 HASH`; устаревший preview
 получает `config_conflict`. Без флага CLI всё равно контролирует snapshot собственной
@@ -81,7 +81,7 @@ manifest SHA-256 (`out/settings-tested-source-sha256.json`); после сбор
 протокол. Внешний редактор, игнорирующий sidecar, может попасть между последней
 проверкой digest и rename. Общая транзакция policy + profiles, Power-loss durability
 directory metadata и полная миграция путей создания project/task artifacts сюда
-не входят. После kill до rename может остаться `.warden-config-*.tmp`; активный
+не входят. После kill до rename может остаться `.oseer-config-*.tmp`; активный
 YAML остаётся целым, следующая операция не требует удаления lock вручную.
 
 Платные vendor probes, live Orca/Conductor и Windows CI не запускались. Для этого

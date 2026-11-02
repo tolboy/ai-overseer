@@ -1,15 +1,15 @@
 # Pilot observation sheet
 
 One copy per trial, filled in while the trial runs rather than reconstructed afterwards.
-Arm A is the operator's ordinary agent workflow; arm B is Warden. Both start from the same
+Arm A is the operator's ordinary agent workflow; arm B is Overseer. Both start from the same
 base commit, and neither sees the other's solution. Write `unknown` where a value was not
 measured: unknown is not zero.
 
-| Field | A: ordinary workflow | B: Warden |
+| Field | A: ordinary workflow | B: Overseer |
 |---|---|---|
 | trial id and date | | |
 | target repository and base commit | | |
-| Warden commit | — | |
+| Overseer commit | — | |
 | task sentence and independent acceptance command | | |
 | model, effort and limits per role | | |
 | order (which arm ran first) | | |
@@ -30,4 +30,4 @@ Three rules from [the protocol](README.md#measure-the-process) that keep the com
 
 - Waiting at the human gate is not active time, and summed call durations are not elapsed time.
 - A stopped or failed trial stays in the sample.
-- A Warden patch needed in the middle of a trial ends that trial as a failure of that version.
+- A Overseer patch needed in the middle of a trial ends that trial as a failure of that version.

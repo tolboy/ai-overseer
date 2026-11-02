@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to Warden. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+Notable changes to AI Overseer. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the
 pre-1.0 caveat that the configuration format may still change between minor versions.
 
@@ -8,6 +8,14 @@ Entries state what a release **can be run against**, not only what was written. 
 that exists in code but has never been run live says so.
 
 ## [Unreleased]
+
+### Changed
+
+- Renamed the project to AI Overseer, the CLI to `oseer`, Java packages to
+  `dev.oseer`, configuration directories to `.oseer`, and application environment
+  variables to `OSEER_*`. Existing installations require an explicit
+  [configuration migration](docs/RENAME.md); historical evidence retains its original
+  identities and imported Windows vault references remain supported.
 
 ### Fixed
 
@@ -50,7 +58,7 @@ that exists in code but has never been run live says so.
   restriction and spent switch count. Live provider fallback remains unverified.
 - Checkout-wide execution leases cover workflows, preparation, standalone roles and machine
   gates. Linked worktrees remain independent; projects beneath one checkout share admission.
-  Vendor PID/start-time receipts and launch intent survive crashes. `warden recover` releases
+  Vendor PID/start-time receipts and launch intent survive crashes. `oseer recover` releases
   a proven stopped owner; `--confirm-stopped` acknowledges an incomplete receipt after
   inspection and never bypasses a known live process. Gate/build daemons are excluded.
   Verified offline with real local JVMs on Windows; live vendors and live Orca remain untested.
@@ -62,10 +70,10 @@ that exists in code but has never been run live says so.
   completed attempt and its billed cost when a retry cannot fit. Gate/baseline timeouts
   keep their existing independent contract.
 
-- A run keeps a byte-exact copy of every pinned `.warden` file, plus a SHA-256 manifest, under
-  `.warden/runs/<run-id>/contract/`. A writer's `git checkout` / `stash` / `reset` that reverts
+- A run keeps a byte-exact copy of every pinned `.oseer` file, plus a SHA-256 manifest, under
+  `.oseer/runs/<run-id>/contract/`. A writer's `git checkout` / `stash` / `reset` that reverts
   the uncommitted compiled contract no longer loses those bytes. New
-  `warden restore-contract <run-id>` verifies every copy, restores it, re-checks the hash, and
+  `oseer restore-contract <run-id>` verifies every copy, restores it, re-checks the hash, and
   lists files added since the pin without deleting them. The `contract_mutated` next step names
   this command (#26). Not yet run live. Suites `restore contract`, `task loop`, `next step`.
 - Task `prior_writers: [vendor, ...]` vouches for who wrote a starting tree that already
@@ -127,7 +135,7 @@ that exists in code but has never been run live says so.
   owner's P1 product defect is still open, and the decision stays pending. A
   later report of the same category and severity is still the same finding.
   Suite `findings`, `decision-page`.
-- `warden approve --decision waive` requires the current stop to be
+- `oseer approve --decision waive` requires the current stop to be
   `blocking_findings_remain` or `quality_exhausted`, and the report to say the
   same. A continuation that restores an earlier contract gap and then stops on
   `gates_not_satisfied` is refused; the decision stays pending. The same gap is
@@ -139,7 +147,7 @@ that exists in code but has never been run live says so.
   `press=toString` are unknown keys, not inherited object properties. Suite
   `visual qa`.
 
-- `warden approve --decision waive` reads the run-wide finding registry. A repair
+- `oseer approve --decision waive` reads the run-wide finding registry. A repair
   rechecks earlier reviewers first; that recheck can report only a `contract_gap`
   while another reviewer's P1 `product_defect` is still open or reopened. Waive is
   refused and the decision stays pending. A defect that reviewer has closed does
@@ -162,19 +170,19 @@ that exists in code but has never been run live says so.
   scenario or suggestion contains one of those items (case-insensitive) is recorded as P2
   (`severity_as_filed`, `advisory`) and does not block. A product defect is never lowered.
   The vendor artifact is left as filed. The first recorded round is already P2, so a later
-  reading of the same words is not severity laundering. `warden approve <run> --decision
+  reading of the same words is not severity laundering. `oseer approve <run> --decision
   waive --finding <ID>` closes a stop whose open blockers are only contract gaps, records
   `contract_gap_waived` on the ledger and `contract_gap_waiver` on the report, and lands
   nothing. It does not start another run. Waive is refused when any open P1 is not a
   contract gap, and when `--finding` is omitted; the decision stays pending. An amending
-  planner is told the same grammar and not to invent a scenario it cannot run. `warden
+  planner is told the same grammar and not to invent a scenario it cannot run. `oseer
   setup` does not overwrite an existing reviewer prompt; copy the new paragraphs into
   `prompts/reviewer.md`. Not yet run live. Suites `findings`, `decision-page`, `task loop`.
 
 - The visual harness accepts `press=KEY` and `focused`. `press=Escape` (also Enter, Tab,
   Space, the arrows, and one character) sends a CDP keyDown then keyUp; a matcher before
   it (`testid=dialog press=Escape`) focuses that element first. `testid=field focused`
-  asserts `document.activeElement`. A press does not need the DOM to change. `warden
+  asserts `document.activeElement`. A press does not need the DOM to change. `oseer
   validate` and `run --dry-run` reject an unknown step (`blur=true`, `press=Esacpe`) with
   the adapter's message, the same check the browser stage already used, so a typo is
   `visual_qa_contract_invalid` before a vendor is paid. Not yet run live against a browser.
@@ -204,23 +212,23 @@ that exists in code but has never been run live says so.
   an instruction to finish rather than restart. Measured 2026-10-01 on Living-Horizon:
   a 40-turn ceiling, then a 120-turn continuation spent the same way. Suite `task loop`.
 - `advance` waits for the contract edit a contract gap asks for. A stop whose remaining
-  blockers were only `contract_gap` findings, answered `advance` with `.warden` untouched,
+  blockers were only `contract_gap` findings, answered `advance` with `.oseer` untouched,
   re-ran the implementer from the top of the plan and was certain to stop on the same
   gap. It is now refused as `advance_would_repeat`, naming the task file to edit; a
   product defect is still the writers' and is not refused, nor is an inconclusive
   reproduction or a tree that moved since the stop. Measured 2026-10-01 on
   Living-Horizon. Suite `decision-page`.
 - A `contract_mutated` stop names the files. The summary records `contract_changes`, and
-  the next step lists one edit per file instead of "a file under .warden changed". The
+  the next step lists one edit per file instead of "a file under .oseer changed". The
   implementer prompt forbids `git checkout`, `git restore`, `git stash`, `git reset` and
   `git clean` over the worktree: a planner-compiled contract is uncommitted, and a writer's
   checkout put it back to the committed version. A gate that finds the contract moved now
   stops as `contract_mutated` too, not `gates_not_satisfied`. Measured 2026-10-01 on Living-Horizon.
   Suites `task loop` and `next-step`.
 
-- A preparation that stops is a stop. `warden do --prepare always` ending on
+- A preparation that stops is a stop. `oseer do --prepare always` ending on
   `plan_review_findings_remain` used to return one JSON object and nothing else: no
-  `decision.json`, no Orca gate, no decision page, no card update, and `warden report`
+  `decision.json`, no Orca gate, no decision page, no card update, and `oseer report`
   failed with "never reached a summary", so the planner's spend appeared nowhere.
   Measured 2026-09-26 on Berloga-AI (Orca 1.4.212), run plan-1. The stop now writes
   `task-run.json` and a pending failure decision, publishes the gate when Orca is on,
@@ -241,12 +249,12 @@ that exists in code but has never been run live says so.
   direct profile, and the cast did not say so. The fix-round dispatch now inherits the
   writer stage's pin, effort and host, and the cast names `fix_profile`. The alias is
   not an overlay stage, so preflight does not refuse it as unknown. `advance` keeps
-  that overlay even though it does not reuse verdicts: a later `warden run --continue`,
+  that overlay even though it does not reuse verdicts: a later `oseer run --continue`,
   and the decision page's own continuation, no longer drop `--use`/`--host`. An advance
   note is narrated as an advance, not as a rejection. Measured 2026-09-26, Berloga-AI.
   Suite `task loop`.
-- `warden approve --decision advance --no-start` no longer prints a command while a
-  waiter holds the run. The waiting `warden run --wait-for-gate` starts the next run
+- `oseer approve --decision advance --no-start` no longer prints a command while a
+  waiter holds the run. The waiting `oseer run --wait-for-gate` starts the next run
   itself; the printed command was a second start. The answer now says a waiter will
   start it and includes no command. Measured 2026-09-26, plan-2. Suite `decision-page`.
 - A process that waited through a chain prints the chain's final run. After plan-5 was
@@ -268,22 +276,22 @@ that exists in code but has never been run live says so.
 - A continuation can start under Orca again. Once a chain was given one Orca Run, the loop
   wrote `orca.json` into a new run's directory — the inherited Run, and the `--watch` tab's
   handle — before it reserved that directory, and the reservation refused the file as
-  evidence. In an Orca worktree every `warden run --continue`, every fresh
-  `warden run --watch` and every `warden do --watch --prepare off` stopped at once with
+  evidence. In an Orca worktree every `oseer run --continue`, every fresh
+  `oseer run --watch` and every `oseer do --watch --prepare off` stopped at once with
   `run_id_exists`, and Retry on the decision page with `advance_start_failed`. Nothing was
   dispatched, so nothing was spent, but no continuation could start. Measured live on
   2026-09-24 (Orca 1.4.209). The Run is now inherited, and the tab opened, after the
   reservation (`TaskLoop.withWatch` replaces each caller's own `watch`), so a duplicate that
   is refused also opens no tab and leaves the recorded handle of the run it duplicated
   alone. Directories the failed attempts left behind still hold that `orca.json` and are
-  still refused: pass `warden run` a fresh `--run-id`; the decision page already picks an
+  still refused: pass `oseer run` a fresh `--run-id`; the decision page already picks an
   unused one. Suite `run-start-under-orca`, new. It starts the runs through `Main`, which
   neither `orca-run-identity` nor `decision-page` did.
 - An Orca worker whose first turn Orca could not see is waited on, not fenced. Orca 1.4.209
   answers `worker-start` with exit 1, `state: outcome_unknown` and a `turn_unobserved` effect
   when it typed the task but did not see the agent's turn begin within 30 s, and says that is
   "unverifiable, not proof the worker is dead"; a worker that reports later settles
-  normally. Warden fenced on it at once: on 2026-09-24 a Codex reviewer once and a Claude look
+  normally. Overseer fenced on it at once: on 2026-09-24 a Codex reviewer once and a Claude look
   twice were stopped 47-57 s in, on screens with nothing to answer. The dispatch is now kept
   and the settlement wait continues within the role's wall clock. Until a turn is seen (the
   worker leaves `start_unknown`, the agent sends a heartbeat, Orca shows it `working`, or its
@@ -294,10 +302,10 @@ that exists in code but has never been run live says so.
   `uncharged_role_runs`). A start that failed for any other reason stays charged. A wall
   clock that runs out with no turn ever seen stops as `orca_worker_not_started`, not
   `role_timed_out`, whose advice is to raise the wall clock; one the chain deadline cut is
-  still `budget_exhausted`. `warden probe orca` no longer reads the same receipt as "no
+  still `budget_exhausted`. `oseer probe orca` no longer reads the same receipt as "no
   dispatch". The Orca calls are exercised against a fake Orca; this has not been run live.
   Suites `orca-start` (new), `orca-settlement`, `profile verifier`, `workflow`.
-- One Warden run is one Orca Run. The `--watch` board made a Run of its own and kept its id
+- One Overseer run is one Orca Run. The `--watch` board made a Run of its own and kept its id
   in a field, while the executor and the decision gate found or made one through
   `orca.json`, so a watched run put its stage rows in one Run and its workers and gate in
   another. All three now get or create the Run through `OrcaLifecycle.orcaRun`, under the
@@ -307,16 +315,16 @@ that exists in code but has never been run live says so.
   when the stage failed or the run stopped mid-stage. They used to stay open forever. Found
   by the 2026-09-22 review (UI-06). Suite `orca-run-identity`, new.
 - The watch tab stops saying NEEDS YOU once the question is answered. Its handle lived only
-  in the object that opened it, and `warden approve`, the decision page and the supervisor
+  in the object that opened it, and `oseer approve`, the decision page and the supervisor
   each build their own board, so the answer never reached the tab. The handle is now kept
   in `orca.json`; the answering process adopts it, renames the tab to the decision, and
   appends the decision to the run's narration. An answer that expects another run no longer
   moves the card to running: the continuation does that when it actually starts, and a
   continuation that is refused leaves the card where a person will look. Found by the
   review (UI-05). Suites `orca-run-identity`, `decision-page`, `heartbeat`.
-- A decision outlives its page. The page lived exactly as long as the `warden do` that asked
-  the question, and once that stopped waiting the only way back was `warden decide` typed in
-  the worktree. `warden dashboard` now lists pending decisions, and its button opens the
+- A decision outlives its page. The page lived exactly as long as the `oseer do` that asked
+  the question, and once that stopped waiting the only way back was `oseer decide` typed in
+  the worktree. `oseer dashboard` now lists pending decisions, and its button opens the
   page for one: the page some process already serves (each page is leased in
   `decision-page.json` with its pid), or a new one that this Dashboard keeps up until the
   question is answered, independent of the gate TTL. The page is the same supervisor
@@ -326,13 +334,13 @@ that exists in code but has never been run live says so.
   the Host and Origin checks unchanged. One process supervises a run: it holds an
   operating-system lock on `supervisor.lock` beside the run from before a contract
   amendment is paid until its continuation has started, and every other supervisor —
-  `warden decide`, the Dashboard, a `do` that lost the race — steps aside as
+  `oseer decide`, the Dashboard, a `do` that lost the race — steps aside as
   `supervised_elsewhere` and goes to that process's page. The lease says where the page is;
   it was read and then written, two steps, and the only lock around them was a monitor
   inside one JVM, so two processes could both supervise, both pay an amendment and both
   start a continuation. An answer is also consumed once: the first start of a continuation
   creates `continuation.json` beside the answered run with `CREATE_NEW`, and any other —
-  a supervisor and `warden approve` acting on the same `apply` — is refused as
+  a supervisor and `oseer approve` acting on the same `apply` — is refused as
   `continuation_already_started` instead of taking the next unused run id. The claim is a
   reservation, not a run: the contract, the user config and the carried verdicts are loaded
   before it is taken, so a contract that does not load no longer uses up the answer; a start
@@ -342,18 +350,18 @@ that exists in code but has never been run live says so.
   reservation is created the same way, so a run pays for one amendment. The decision page now waits for an answer's
   response before it closes; with no grace, the tab showed a broken connection instead of
   "recorded". Found by the review (UI-08). Suites `decision-page`, `dashboard`.
-- The shipped Orca profiles can be verified with the command Warden advises for them.
+- The shipped Orca profiles can be verified with the command Overseer advises for them.
   `examples/orca/*.yaml` had `what_to_check` and no `verification.probe`, and `--host
-  <stage>=orca` told the operator to run `warden profiles --verify <twin> --confirm`,
-  which refuses a profile with nothing to run. New `warden probe orca --agent A [--model M]
+  <stage>=orca` told the operator to run `oseer profiles --verify <twin> --confirm`,
+  which refuses a profile with nothing to run. New `oseer probe orca --agent A [--model M]
   [--effort E] [--image] [--worktree DIR]` goes through the Orca channel itself: a
   coordinator terminal, a Run and a Task, `worker-start` with the profile's agent, model and
-  effort, and a typed `worker_done` whose answer must be a word Warden has just written into
+  effort, and a typed `worker_done` whose answer must be a word Overseer has just written into
   the worktree (as text, or drawn in a picture with `--image`). It prints
   `probe-answer: matched` only for that word, then releases the worker, closes the
   coordinator and removes the file. The examples now name it, with `expect: "probe-answer:
-  matched"`. `profiles --verify` runs a `warden probe` itself rather than through a shell,
-  so it needs no `warden` on PATH, and fills `{{worktree}}` with the directory it was asked
+  matched"`. `profiles --verify` runs a `oseer probe` itself rather than through a shell,
+  so it needs no `oseer` on PATH, and fills `{{worktree}}` with the directory it was asked
   from. An Orca twin with no probe is told which probe line to add before it is told to
   verify. The Orca calls are exercised against a fake Orca in the tests; no vendor was paid
   for a live probe in this change. Found by the review (CFG-02). Suites `profile verifier`,
@@ -363,7 +371,7 @@ that exists in code but has never been run live says so.
   naming the stage. Every preflight loop skipped non-role stages, so `--host browser=orca`
   was accepted and ignored and the run went ahead as if it had not been typed. Found by the
   review (CFG-03). Suite `task loop`.
-- `warden land --push` after `warden land --commit` lands a candidate that adds or moves
+- `oseer land --push` after `oseer land --commit` lands a candidate that adds or moves
   files. A file the candidate adds is untracked while the run is judged and accepted, so
   `git diff --raw` had no record for it then and `:000000 100644 … A` once `--commit` had
   added it; a file moved on disk was `D old` plus an untracked file, then `R100 old new`, and
@@ -390,12 +398,12 @@ that exists in code but has never been run live says so.
   already committed by `land --commit`: `land --push` now takes it. A candidate that had an
   addition staged or committed, a rename git had paired, or an untracked executable addition
   on a file system with the bit, reads `candidate_changed` once —
-  at `warden approve --decision accept` (run the gates again) and at `warden land` (run the
+  at `oseer approve --decision accept` (run the gates again) and at `oseer land` (run the
   task again and accept the result) — and a carried judgement for it is re-judged rather
   than reused. Suites `runtime`, `task loop`.
-- `warden land --commit` commits the accepted paths and nothing else in the index. It ran
+- `oseer land --commit` commits the accepted paths and nothing else in the index. It ran
   `git add -- <paths>` and then a plain `git commit`, which takes the whole index: a file the
-  operator had staged under `.warden/`, or a staged edit whose working copy was put back to
+  operator had staged under `.oseer/`, or a staged edit whose working copy was put back to
   HEAD's, rode into the accepted commit, and the source fingerprint could see neither. The
   commit is now `git commit --only -- <paths>` with literal pathspecs; whatever else was
   staged stays staged and out of it, and the report lists it as `left_staged`. The plan
@@ -425,7 +433,7 @@ that exists in code but has never been run live says so.
   under that name, naming the profile; preparation stops before the planner is paid. Found
   by the 2026-09-22 review (CFG-04). Suites `role-resolver`, `role runner`, `task loop`,
   `planner`.
-- `warden roster model` clears a stamp written as a flow mapping. It removed whole lines
+- `oseer roster model` clears a stamp written as a flow mapping. It removed whole lines
   holding `verified_on`, so `verification: { verified_on: 2026-08-27 }` — the spelling
   `ConfigTest` itself uses — survived the switch and the new model read as verified. The
   key is now removed from the `verification` mapping in its block or its flow form, keeping
@@ -433,7 +441,7 @@ that exists in code but has never been run live says so.
   one that would still read as verified without `--keep-verified` is refused as
   `verification_not_cleared` and left untouched. Found by the 2026-09-22 review (CFG-01).
   Suite `roster`.
-- `warden pilot prepare` no longer fails one run in three to ten on Windows. The bundle is
+- `oseer pilot prepare` no longer fails one run in three to ten on Windows. The bundle is
   published with one directory rename, which Windows refuses with `AccessDeniedException`
   while a scanner still holds a file in the tree written a moment before; the fallback moved
   again with `COPY_ATTRIBUTES`, which `Files.move` never supports, so the refusal was final.
@@ -455,26 +463,26 @@ that exists in code but has never been run live says so.
   that ignored SIGTERM kept the stop inside `destroy` until it exited by itself. Measured in a
   Linux container with a child that ignores SIGTERM and sleeps 40 s: 40.1 s before, 3.1 s
   after (killed after the 2 s grace). Suite `runtime`.
-- `warden roster model` switches the model the vendor is asked for, not only the label.
+- `oseer roster model` switches the model the vendor is asked for, not only the label.
   A direct profile that spells the old model in `args` (every hand-written profile on the
   maintainer's machine passed `--model opus` literally) now has that item rewritten to
   `{{model}}`, and so does the model after a model flag in its `verification.probe`. A
   profile whose args pass no model at all is refused as `model_not_forwarded`, as effort
-  already was. `warden profiles --verify` fills `{{model}}` and `{{effort}}` in the probe, so
+  already was. `oseer profiles --verify` fills `{{model}}` and `{{effort}}` in the probe, so
   the stamp is earned by the model the profile declares. Found moving the roster from Opus 5
   to Opus 5.5 on 2026-09-22. Suites `roster`, `profile verifier`.
 - An Orca worker that never took its first turn is not a verdict on the work. On a live run
-  in a fresh worktree, Claude Code sat on its once-per-repository trust question, Warden
+  in a fresh worktree, Claude Code sat on its once-per-repository trust question, Overseer
   fenced the worker after 45 s as `role_orca_start_failed`, the stop was `reviewer_failed`,
   and the `--continue` that followed paid the implementer and the first reader again for a
   tree they had passed. `role_orca_start_failed`, `_no_coordinator`, `_unavailable`,
   `_no_worktree` and `_worker_active` now stop as `orca_worker_not_started` (and
   `role_orca_timeout` as `role_timed_out`), which a continuation carries verdicts past; a
   summary written before this is re-read from its failed step's code. Before fencing,
-  Warden keeps the agent tab's last screen as `agent_screen_tail` and names a trust question
+  Overseer keeps the agent tab's last screen as `agent_screen_tail` and names a trust question
   or a CLI update prompt as `agent_blocked_on` with the one action that clears it. Suites
   `workflow`, `next-step`, `orca-settlement`.
-- `warden do "…" --watch --use implement=…` no longer corrupts the goal. The positional parser
+- `oseer do "…" --watch --use implement=…` no longer corrupts the goal. The positional parser
   read every flag it did not list as taking a value, so `--watch` swallowed the `--use` after
   it, `implement=…` joined the goal, and a contract whose goal was on disk word for word was
   refused as `task_conflict`. `do` now knows which of its flags take a value and refuses an
@@ -507,13 +515,13 @@ that exists in code but has never been run live says so.
 
 ### Added
 
-- `warden dashboard` shows the settings the next run would start with (phase 3a of the
+- `oseer dashboard` shows the settings the next run would start with (phase 3a of the
   2026-09-23 control plan, read-only):
   - **every stage with its candidate profiles** in policy order, the profile the run would
     dispatch, and for every other candidate the resolver's own reason it is out. A reader is
     judged against the writer the chain would dispatch, as the preflight judges it. The
     reasons come from the new `RoleResolver.candidates`, which `resolve` is now built on, so
-    the panel cannot disagree with `warden roster` or a dry run; the `config-view` suite
+    the panel cannot disagree with `oseer roster` or a dry run; the `config-view` suite
     checks it against both, and against the preflight's `explainFill` for a stage nobody can
     fill. That table is the policy's answer before any task, and says so (`stages_basis:
     policy`);
@@ -528,7 +536,7 @@ that exists in code but has never been run live says so.
     is not shown as `peer_not_allowed_by_task`, and an overlay the chosen profile cannot
     deliver (an effort its args cannot carry, `host: orca` with no verified twin) or a pin
     nobody can fill is shown as refused rather than as fine. Every value names its source:
-    personal (`~/.warden`), project, task, or Warden's default;
+    personal (`~/.oseer`), project, task, or Overseer's default;
   - **failovers on each run**: who was spent, who took over, and a switch waiting for
     confirmation, from the summary's own step rows;
   - **what an Orca role does not report**: its cost is unknown rather than blank, a model it
@@ -542,22 +550,22 @@ that exists in code but has never been run live says so.
   timeline now stays open across the two-second refresh. Suites `config-view` (new),
   `dashboard`, `role-resolver`.
 - The human decision is answered with a button in Orca. When a run stops for a person inside
-  an Orca worktree, `warden do` (and `warden run`, which already waited on failure gates)
-  opens a "Warden · решение" tab in that worktree's Orca browser: the goal, what each stage
+  an Orca worktree, `oseer do` (and `oseer run`, which already waited on failure gates)
+  opens a "Overseer · решение" tab in that worktree's Orca browser: the goal, what each stage
   concluded and who read it, the changed files, the screenshots, and a button per option
-  with a note field. A button goes through the same path as `warden approve` (version token,
+  with a note field. A button goes through the same path as `oseer approve` (version token,
   candidate fingerprint for an acceptance, gate expiry, duplicate refusal), and a refusal is
-  shown on the page. `warden approve` and the Orca gate still count; whichever answers first
+  shown on the page. `oseer approve` and the Orca gate still count; whichever answers first
   wins, and the Orca gate is read at once and then every ten seconds while the page is
   open. `retry`, like `advance`, `switch` and `apply`, now continues the loop instead of
   printing a command, and so does "Отклонить" with a note: the note is handed to the next
   implementer, as `--continue` does, now together with the readers' open findings from the
   rejected run — the list the person decided on; without a note the rejection closes the work. An
   `advance` that would stop on the same unchanged blocker is refused before the decision is
-  recorded, so the gate stays open to another answer. `warden decide <run-id>` opens the
+  recorded, so the gate stays open to another answer. `oseer decide <run-id>` opens the
   same page for a run already waiting. The page listens on 127.0.0.1 under a random path token and serves only this
   run's screenshots. `--no-decision-page` keeps the old wait. Measured need: on 2026-09-22
-  the only ways to answer were `warden approve` or `run-use` then `gate-resolve --from` in an
+  the only ways to answer were `oseer approve` or `run-use` then `gate-resolve --from` in an
   Orca terminal. Suite `decision-page`.
 - The gate says what the readers said. Only P1 stops the loop, so a P2 or P3 used to reach
   the person as a clean pass: on the first all-Orca run the visual reader filed that hiding
@@ -581,13 +589,13 @@ that exists in code but has never been run live says so.
   severity the policy repairs, with its severity named. Suite `task loop`.
 - `review.contract_gaps: plan` in policy: a passing run whose readers filed `contract_gap`
   findings goes to the planner before the gate. The run stops as
-  `contract_amendment_requested` (not a verdict on the work); the supervisor of `warden do` /
-  `warden run` hands the planner the contract and the gaps, keeps only what the draft adds —
+  `contract_amendment_requested` (not a verdict on the work); the supervisor of `oseer do` /
+  `oseer run` hands the planner the contract and the gaps, keeps only what the draft adds —
   named checks from `project.yaml` and browser scenarios appended to the operator's own
   `visual_qa` list, with the goal, scope, risk, start, url and comments untouched
   (`PlannerDraft.amend`) — lets the plan reviewer read the amendment (one redraft, and the
   old text is restored if it objects twice), then answers the pending decision `retry` as
-  `warden:contract-amendment`. The continuation keeps the writer's product and takes every
+  `oseer:contract-amendment`. The continuation keeps the writer's product and takes every
   reading again under the amended terms. The amendment is paid by the chain: the loop routes
   there only when the budget covers the most calls an amendment can make plus the readings
   taken again (`contract_amendment_calls`; otherwise `contract_amendment_skipped` and the gaps
@@ -608,15 +616,15 @@ that exists in code but has never been run live says so.
   offered once per chain, and a retry of the amended run after, say, a quota stop keeps
   `contract_amended_from`. Default `gate`: the gaps are listed on the decision page. Suites
   `planner`, `task loop`.
-- `warden do` plans by default: `--prepare auto`. A task with no contract yet gets the
+- `oseer do` plans by default: `--prepare auto`. A task with no contract yet gets the
   planner (and the plan reviewer, when the policy names one); a task that already has a
   contract is not replanned, and a policy with no planner role drafts as before. On
   2026-09-22 a greenfield page drafted without a planner got two generic scenarios and its
   acceptance was written by hand. Suite `planner`.
-- Per-run roster overlays so a Unity loop does not rewrite `~/.warden`. `warden run` and
-  `warden do` take `--use <stage>=<profile>`, `--effort <stage>=<level>` and
+- Per-run roster overlays so a Unity loop does not rewrite `~/.oseer`. `oseer run` and
+  `oseer do` take `--use <stage>=<profile>`, `--effort <stage>=<level>` and
   `--host <stage>=orca`; a task may declare the same under `use:`, and flags win. Overlays
-  carry into `warden do --conductor` through the run's own `run-override.json`, and survive
+  carry into `oseer do --conductor` through the run's own `run-override.json`, and survive
   a replan: `use:` is an operator block like `visual_qa`. `verified_on` is never touched.
   Every overlay is checked against the roster before the first paid stage, and refused there
   rather than honoured in name: a stage nobody in the workflow answers to, an effort the
@@ -641,11 +649,11 @@ that exists in code but has never been run live says so.
   prints the command. The Orca gate question names the next step and that advance starts
   the following run. Older `retry`/`abort` files still parse. Conductor's own human gate
   still offers only abort and retry: a decision node that started a nested run would put a
-  second retry controller inside the one Warden already is.
+  second retry controller inside the one Overseer already is.
 - A task may require visual QA with `evidence: agent` and no browser viewport grammar. The
   loop then drops the CDP harness for that run and the visual role takes its own pictures.
-  Copy `examples/mcp/unity.json` to `~/.warden/mcp/visual.json` (default
-  `http://127.0.0.1:8081/mcp`), and `warden profiles --verify claude-visual-qa-mcp --confirm`
+  Copy `examples/mcp/unity.json` to `~/.oseer/mcp/visual.json` (default
+  `http://127.0.0.1:8081/mcp`), and `oseer profiles --verify claude-visual-qa-mcp --confirm`
   before a paid look. An unverified camera now stops the run *before* the writer is paid.
   The Bakery task opts in.
 
@@ -679,7 +687,7 @@ that exists in code but has never been run live says so.
   are caused outside the loop — a scope that excludes the file, a contract that forbids the
   change, a failing baseline — and a second pass over an unchanged contract and an unchanged
   tree reaches the same line. When neither has moved, `advance` says so and prints the
-  `warden run` command for starting one anyway.
+  `oseer run` command for starting one anyway.
 - A task's limits bound the chain of runs `--continue` links, not each run. A `retry` or
   `switch` continuation inherits the calls, reported cost, unpriced calls and fix rounds the
   earlier runs spent, read from the new `chain` block of their summary; before, every
@@ -716,13 +724,13 @@ that exists in code but has never been run live says so.
   acceptance edit only for a `contract_gap` finding (other non-product blockers are
   `resolve_blockers`), and `pilot prepare` no longer reads a JSON Schema `$ref` fragment such
   as `#/$defs/text` as a file path.
-- `warden pilot prepare` no longer interpolates a profile command into `sh -c` on POSIX.
+- `oseer pilot prepare` no longer interpolates a profile command into `sh -c` on POSIX.
   Presence is a filesystem PATH walk (Windows still uses `where.exe` as argv), so a value
   such as `git; touch marker` cannot run during offline preparation. Live `run`/`role`
   lookup is unchanged.
-- `bin/warden` exports `WARDEN_HOME`. The POSIX launcher computed the home and never exported
+- `bin/oseer` exports `OSEER_HOME`. The POSIX launcher computed the home and never exported
   it, so a run started from a target repository could not find `scripts/visual-qa.mjs` and
-  stopped `visual_qa_unavailable` after its reviews had already been paid for. `warden.cmd`
+  stopped `visual_qa_unavailable` after its reviews had already been paid for. `oseer.cmd`
   always set it. Found on the first external trial, 2026-09-15.
 - A Claude session limit is recognised as an exhausted subscription. The Claude CLI reports it
   as a `result` envelope with `is_error: true` and HTTP 429, which the matcher did not read,
@@ -745,8 +753,8 @@ that exists in code but has never been run live says so.
   to the refused profiles and why each was refused.
 - `Workspace.guarded` forwards `show`. The wrapper inherited the interface's empty default,
   so a caller holding a guarded board would have lost the contract window without an error;
-  `warden do` happened to hold the unguarded one.
-- `warden do` resolves the Orca board only when it has something to write to it. A preview,
+  `oseer do` happened to hold the unguarded one.
+- `oseer do` resolves the Orca board only when it has something to write to it. A preview,
   a hand-drafted contract or a Conductor launch no longer asks Orca twice for nothing.
 - The pilot template's `timeout_minutes` was 2. It is shared by every command of one gate
   run, so a real baseline would have stopped the trial before its first call; it is 30, and
@@ -779,7 +787,7 @@ that exists in code but has never been run live says so.
   the draft. Blocking findings send the first planner back once with a `prepare-redraft.md`
   context; a second refusal stops as `plan_review_findings_remain`; a reviewer that moved the
   tree is `plan_reviewer_protocol_violation`. The summary carries `plan_review`, both calls
-  count in the preparation budget, and `warden setup` ships `prompts/plan-reviewer.md`,
+  count in the preparation budget, and `oseer setup` ships `prompts/plan-reviewer.md`,
   `schemas/plan-reviewer.json` and an unverified `agy-plan-review` profile (Gemini 3.8 Flash
   through the `agy` CLI, whose calls report no price). Suite-covered; the profile's probe has
   not been run.
@@ -792,7 +800,7 @@ that exists in code but has never been run live says so.
 - **`retry` on a failover decision.** After the cause is removed, the same profile runs again
   and earlier verdicts are carried, alongside `abort` and `switch`.
 - **A human gate that expires.** `budgets.gate_ttl_hours` writes `expires_at` on the decision;
-  `warden status` shows `expired`; accepting after expiry is refused as `gate_expired` unless
+  `oseer status` shows `expired`; accepting after expiry is refused as `gate_expired` unless
   `--acknowledge-expired` is passed; waiting on a gate ends at its expiry.
 - **A money cap that is a cap.** `budgets.cost_cap: strict` reserves a proven upper bound per
   call from each profile's `limits.max_cost_usd`; a roster without one stops as
@@ -803,11 +811,11 @@ that exists in code but has never been run live says so.
   retry-after when the evidence carries one, otherwise exponential backoff; every pause is on
   the role report as `rate_limit_retry`. No failover, no dropped profile. Suite-covered with a
   test sleeper; no live rate limit was retried.
-- **`warden ledger --compare [--baseline-file PATH] [--text]`** (P6b, the small form): two
+- **`oseer ledger --compare [--baseline-file PATH] [--text]`** (P6b, the small form): two
   slices of the corpus side by side — calls, reported cost and unpriced calls, duration, fix
   rounds, stops by class, roster — with no new dashboard. The protocol for using it is in
   [`docs/HYPOTHESIS.md`](docs/HYPOTHESIS.md).
-- **`warden roster`**: which profile fills which role and in which workflow, `roster set` to
+- **`oseer roster`**: which profile fills which role and in which workflow, `roster set` to
   change a role's profiles and strategy, `roster model` to change a profile's model and effort,
   each with a timestamped backup of the file it rewrote; changing a model drops
   `verification.verified_on` unless `--keep-verified`.
@@ -819,25 +827,25 @@ that exists in code but has never been run live says so.
   vendor's own flag through `{{mcp_config}}`) and declares `capabilities.vision.acquires:
   true`. The role saves what it judged under the run's `screenshots/` directory (the prompt
   is told where, and `{{evidence_dir}}` is available in args) and lists the files in
-  `screenshots_taken`; Warden verifies each one exists inside the run's evidence and is not
+  `screenshots_taken`; Overseer verifies each one exists inside the run's evidence and is not
   empty, hashes it onto the step row as `image_evidence`, and refuses a verdict that lists
   none as `visual_qa_no_evidence` — a stop that is not about the work, with no fix round.
   The configuration file's digest is a term of the role contract (`mcp_config_sha256`).
   Before the first call, a stage with `evidence: agent` filled by a profile that does not
   acquire stops as `visual_qa_unavailable`, and a profile whose `mcp.config` file is missing
-  stops as `mcp_config_missing`; the dry run names both. `warden setup` ships an unverified
+  stops as `mcp_config_missing`; the dry run names both. `oseer setup` ships an unverified
   `claude-visual-qa-mcp` template whose probe must be run against a server of yours. Suite-
   covered with a stand-in vendor; no real MCP server has been tried, and what a screenshot is
-  a picture of is not verified by Warden.
+  a picture of is not verified by Overseer.
 - **`verification.expect`**: a substring the probe's stdout has to contain before
-  `warden profiles --verify` stamps `verified_on`. Without it the stamp was exit code alone,
+  `oseer profiles --verify` stamps `verified_on`. Without it the stamp was exit code alone,
   and a headless CLI whose tool call was auto-denied exited 0 with an empty response and was
   stamped verified (measured with `agy` on 2026-09-18). The report carries `expected` and
   `answer_found`; the next step names the refusal. The shipped `agy-plan-review` profile now
   expects the schema title it is asked to read, adds `--add-dir .` to its probe and
   `--dangerously-skip-permissions` to its args, with the measured consequence spelled out in
   the file: `--mode plan --sandbox` do not stop that CLI from writing inside `--add-dir`, so
-  the read-only guarantee for the role is Warden's fingerprint check, not the CLI.
+  the read-only guarantee for the role is Overseer's fingerprint check, not the CLI.
 - **A policy file that does not parse stops the run** as `policy_invalid`, with the parser's
   complaint in `policy_problem`, before anything is dispatched — dry run included. It used to
   be treated as no policy: the built-in chain ran, every role stage was skipped as
@@ -855,8 +863,8 @@ that exists in code but has never been run live says so.
   `reproduction_inconclusive`. Continuations over candidates carry only verified evidence for
   the same acceptance and diff base; missing proof is recorded without stopping. Dry-run
   previews the checks. A task without `reproduce` keeps its acceptance hash.
-- `warden pilot prepare` validates reproduction membership in acceptance, writes `reproduce`
-  into the task, and reports `enforced_by_warden_run`; omission explicitly leaves acceptance
+- `oseer pilot prepare` validates reproduction membership in acceptance, writes `reproduce`
+  into the task, and reports `enforced_by_oseer_run`; omission explicitly leaves acceptance
   strength unchecked. This is fixture-tested and makes no live-pilot claim. An optional
   `budgets.max_elapsed_minutes` in the spec is written into the task.
 - Reviewer findings carry a vendor `suggestion` when one was supplied, omitted otherwise.
@@ -866,15 +874,15 @@ that exists in code but has never been run live says so.
   (for `fix_contract` / `repair_or_retry`) the open blocking findings with suggestions. A
   `contract_gap` names the task file, the acceptance currently in force, the reviewer's
   suggestion and that editing it moves `acceptance_sha256`, so no verdict of this run can be
-  reused. `warden report --text` prints the block when the field exists and keeps the
-  one-line sentence for older summaries; `warden status <run-id>` includes it when present.
-- `warden approve <run-id> --from-orca --wait-minutes N` (1..1440): bounded poll, 5 s then
+  reused. `oseer report --text` prints the block when the field exists and keeps the
+  one-line sentence for older summaries; `oseer status <run-id>` includes it when present.
+- `oseer approve <run-id> --from-orca --wait-minutes N` (1..1440): bounded poll, 5 s then
   ×1.5 capped at 10 s, while the Orca gate is pending or unreadable. The answer that is
   finally imported still goes through the existing validations. A deadline is `gate_pending`
   with the decision file unchanged; no answer is never accept or reject. The wait never
-  starts, retries or continues a run. `warden run --wait-for-gate N` is the same waiter after
+  starts, retries or continues a run. `oseer run --wait-for-gate N` is the same waiter after
   the loop, skipped (with the reason) when no gate was published.
-- `warden pilot prepare --spec FILE --output DIR`: deterministic offline preparation of an
+- `oseer pilot prepare --spec FILE --output DIR`: deterministic offline preparation of an
   external-pilot bundle from an explicit JSON spec (task, target, separate baseline and
   acceptance commands, two existing profiles). Writes a new reviewable directory with target
   YAML, isolated config home, observation sheet and runbook. Validates with existing parsers
@@ -895,7 +903,7 @@ that exists in code but has never been run live says so.
   worker and a human decision are never blocked for analytics; the CLI reports
   `corpus_status` and whether the tree is safe to delete. The projection is an
   allowlist and carries no goal, prompt, vendor reply, finding text, argv or credentials.
-  Project identity is not the path. `warden ledger` stays local by default, with the
+  Project identity is not the path. `oseer ledger` stays local by default, with the
   same fields and numbers for a well-formed tree. `--global` reads the home corpus from
   outside a repository, filtered by recorded project identity; omitting that filter
   from outside a project reports imported measurements whose identity is unknown.
@@ -907,9 +915,9 @@ that exists in code but has never been run live says so.
   measurable without double-counting a modern journal. The corpus is not safe to
   publish merely because it holds no text.
 
-- A `planner` role. `warden do --prepare off|auto|always` (default `off`) can dispatch a
-  read-only planner to turn an operator's goal into a contract Warden itself has validated,
-  before the first paying implementer call. The planner drafts; Warden validates: acceptance
+- A `planner` role. `oseer do --prepare off|auto|always` (default `off`) can dispatch a
+  read-only planner to turn an operator's goal into a contract Overseer itself has validated,
+  before the first paying implementer call. The planner drafts; Overseer validates: acceptance
   must name a check already in `project.yaml`, scope must be a named scope, the operator's
   goal is carried verbatim, and `required_access` may not exceed the invocation. A planner
   that writes to the worktree is `planner_protocol_violation` and its draft is discarded.
@@ -925,7 +933,7 @@ that exists in code but has never been run live says so.
   rewrite it, and refuses `task_conflict` when that file does not preserve the supplied
   operator goal, scope or risk. Several compiled named checks are written as names that
   must keep existing in `project.yaml`, not as a list that would run a removed name as a
-  command. A later `warden run` (and Conductor's inner process) joins the prepared
+  command. A later `oseer run` (and Conductor's inner process) joins the prepared
   reservation instead of refusing `run_id_exists`, including when auto skipped the planner,
   so the inner run still records `prepare=auto`. A draft that fails the shipped schema is
   `role_artifact_schema_violation` even when the profile skipped enforcement. The planner
@@ -935,7 +943,7 @@ that exists in code but has never been run live says so.
 
 ### Changed
 
-- `land.note` in `.warden/project.yaml` is refused as an unknown key. It used to
+- `land.note` in `.oseer/project.yaml` is refused as an unknown key. It used to
   validate and be dropped: `ProjectConfig.LAND_KEYS` listed `note`, but the `Land`
   record never carried it.
 - The hygiene job now reads every commit a push or a pull request introduces, not only the
@@ -987,9 +995,9 @@ under **Fixed**.
 
 ### Added
 
-- A Warden process killed while an Orca worker is running can be started again. The Run, task,
+- A Overseer process killed while an Orca worker is running can be started again. The Run, task,
   dispatch and coordinator identities, and the read-only fingerprint taken at start, are written
-  to `.warden/runs/<run-id>/orca.json` before the worker is launched, so the next invocation
+  to `.oseer/runs/<run-id>/orca.json` before the worker is launched, so the next invocation
   attaches to the same dispatch instead of opening a second agent in the same checkout. A
   worktree already held by anybody's supervised worker is `role_orca_worker_active` and costs
   nothing. An unreadable record, an unreachable `worker-list`, or a dispatch Orca will not
@@ -997,14 +1005,14 @@ under **Fixed**.
   running". Proven live by killing a run mid-flight and collecting its worker afterwards
   (`docs/SMOKE.md`).
 - A pending human decision is mirrored into Orca as a decision gate, so it can be answered from
-  another machine. `warden approve <run-id> --from-orca` imports the answer, and admits it only
-  if it maps exactly onto one of Warden's own options, only while the pending decision has not
+  another machine. `oseer approve <run-id> --from-orca` imports the answer, and admits it only
+  if it maps exactly onto one of Overseer's own options, only while the pending decision has not
   moved, and — for an acceptance — only while the candidate fingerprint still matches.
   `decision.json` stays the only decision: measured on Orca 1.4.196, `gate-resolve` accepts free
   text and re-resolving a settled gate replaces the answer, and a gate edited from `retry` to
   `abort` after the fact left the recorded decision untouched. `--no-orca-gate` turns the mirror
   off; publishing never fails a finished run, and records the reason it did not publish.
-- A question from an Orca-hosted agent is now a wait, not an ending. Warden acknowledges the
+- A question from an Orca-hosted agent is now a wait, not an ending. Overseer acknowledges the
   question delivery, keeps watching for the role's whole budget, and reports
   `role_human_input_required` only if nobody answered in time — retaining the worker and
   recording the message id, so answering it and running the role again finishes on the same
@@ -1016,7 +1024,7 @@ under **Fixed**.
   contract is not reported as `visual_qa_unavailable`.
 - Every scenario now writes a compact accessibility snapshot (role, name, bounding box,
   focused, ignored) next to its screenshots, ranked so the control the scenario named is
-  first rather than lost under the page chrome, and `warden report` shows the frame taken
+  first rather than lost under the page chrome, and `oseer report` shows the frame taken
   after each step together with those names. A human at the gate sees click then result,
   not only the last PNG. An interactive node with no accessible name is kept and labelled;
   an ignored node is marked unreachable instead of looking like an ordinary control; a
@@ -1040,13 +1048,13 @@ of them is a thing the tool said that was not true.
   `<run-id>--reviewer-<attempt>/` and the reviewer that finished second replaced the first's
   prompt, raw output and artifact. The ledger kept both entries — it is append-only — and the
   surviving entry for the first reviewer then pointed at the second's files, so following it
-  read as if it were that vendor's work. `warden report` printed the consequence: one row
+  read as if it were that vendor's work. `oseer report` printed the consequence: one row
   carrying another vendor's model, duration and token counts. A role dispatched by more than
   one stage now writes under the stage name, and the report joins each row to the evidence its
   own stage wrote.
 - **A `rotate` role paired across two stages is no longer reordered by a failure.** The profile
   came from a counter shared by every run in the project and advanced once per dispatch, so a
-  run that died before its reviewer, a fix round, or a bare `warden role` all shifted it:
+  run that died before its reviewer, a fix round, or a bare `oseer role` all shifted it:
   measured live, two failed runs left the third run's first review with the profile the
   operator had put second. A role with several stages now takes its position from the workflow,
   so the first review stage always gets the first profile. A role with one stage still rotates
@@ -1054,7 +1062,7 @@ of them is a thing the tool said that was not true.
 - **A vendor call that failed is costed.** Telemetry was read from the envelope only after a
   valid artifact, so a grok implementer killed by its own turn ceiling reported
   `total_cost_usd: 1.33` and was recorded as free, and an Opus review that did the same hid
-  $4.88. Warden told the operator "$0.2804 charged" for a run that spent $5.16. Cost, turns and
+  $4.88. Overseer told the operator "$0.2804 charged" for a run that spent $5.16. Cost, turns and
   tokens are now read before the outcome is judged.
 - **A spent turn ceiling is named as one on every failure path.** The classifier existed but
   sat only on the exit-0 branch, and both measured vendors exit non-zero — grok prints
@@ -1069,10 +1077,10 @@ of them is a thing the tool said that was not true.
   template named `git diff` and `git ls-files` as the way to see the diff; a read-only profile
   granted Read/Grep/Glob can run neither, and one measured review spent 16 of its 74 tool calls
   being refused for doing as it was told, then hit its ceiling. The changed paths are now
-  resolved by Warden and rendered into the prompt as `{{changed_files}}`, the git commands are
+  resolved by Overseer and rendered into the prompt as `{{changed_files}}`, the git commands are
   offered only to a profile that has a shell, and the read-only rule says outright that having
   no shell is normal for this role.
-- **A project that serves nothing gets no browser contract.** `warden do --draft-only` on a
+- **A project that serves nothing gets no browser contract.** `oseer do --draft-only` on a
   repository with no HTML, no server and a Python checker wrote `visual_qa: required: true`
   with two scenarios, because the UI markers match substrings and a Russian goal containing
   «формулировку» and «экрана» reads as a screen. The operator had to delete the block by hand
@@ -1082,14 +1090,14 @@ of them is a thing the tool said that was not true.
   during a preview, so a chain with two review stages showed the same profile on both — the one
   arrangement that cannot happen. The preview exists to show who will be dispatched before
   anyone is paid, and the pair of independent readers is the part most worth seeing.
-- **A `.warden` edit no longer invalidates an accepted candidate.** The fingerprint split
-  that answers "is this what the human said yes to" filtered Warden's own tree out of the
+- **A `.oseer` edit no longer invalidates an accepted candidate.** The fingerprint split
+  that answers "is this what the human said yes to" filtered Overseer's own tree out of the
   path list and not out of the raw-diff shape it hashes first, so a *tracked* file under
-  `.warden` still moved it. The case that broke: `warden land` refuses to open a request
+  `.oseer` still moved it. The case that broke: `oseer land` refuses to open a request
   until `project.yaml` declares a `land:` block, and adding that block made the same command
   refuse the run as `candidate_changed`. Untracked files never reach `git diff --raw`, which
   is why the existing test passed and the bug survived.
-- **The commented `land:` example parses.** It shipped wrapped across two lines, and Warden's
+- **The commented `land:` example parses.** It shipped wrapped across two lines, and Overseer's
   YAML is a strict subset in which a flow sequence does not continue over a newline —
   uncommenting it exactly as offered answered `unexpected end of flow collection`, from the
   parser that wrote it. The only instruction an operator has for the one step that reaches
@@ -1103,7 +1111,7 @@ of them is a thing the tool said that was not true.
 - The accessibility snapshot no longer stops at the first 60 nodes in document order, which
   on a real page is the skip link and the banner and never the control the scenario named.
   Ranking puts that control first, keeps unnamed interactive nodes, marks ignored nodes as
-  unreachable, and `warden report` prints a shared a11y line once instead of under every
+  unreachable, and `oseer report` prints a shared a11y line once instead of under every
   scenario.
 
 - `wait-for=css=.hearth visible` read the trailing assertion as part of the selector, looked
@@ -1128,7 +1136,7 @@ of them is a thing the tool said that was not true.
   containing whitespace, and a compact JSON array has none, so `["accept","reject"]` arrived as
   `[accept,reject]` and the first gate publish was refused `invalid_argument`.
   `OrcaClient.jsonArgument` escapes them, checked against the live CLI.
-- Warden names the Orca worker terminal at start, which is what the Agent Dashboard shows for
+- Overseer names the Orca worker terminal at start, which is what the Agent Dashboard shows for
   an agent that does not title itself. An agent CLI that sets its own title still wins, and the
   task's `display_name` is stored by Orca but not rendered in the row.
 
@@ -1138,7 +1146,7 @@ of them is a thing the tool said that was not true.
   acceptance gate (deduplicated, baseline first), so a narrower task check cannot hide a
   regression of project health. A baseline command that mutates project source is
   `baseline_mutated_source`. Existing contracts that omit the key keep their previous
-  behaviour; `warden init` writes it only when it detected a real build. Covered by the
+  behaviour; `oseer init` writes it only when it detected a real build. Covered by the
   suite. The layer cut this belongs to is [`docs/adr/0001-layer-split.md`](docs/adr/0001-layer-split.md).
 - Orca worker fencing on the role runner: an unready `worker-start` is `worker-stop`'d or
   fails `role_orca_lifecycle_unaccounted`; an unacknowledged FIFO delivery is the same code;
@@ -1148,7 +1156,7 @@ of them is a thing the tool said that was not true.
   activity, a real project gate, typed `worker_done`, FIFO acknowledgement, and worker release.
 - Orca 1.4 serializes a message's `--payload` as a JSON string in inbox/check receipts. The
   settlement parser now normalizes that wire shape before checking task/dispatch provenance,
-  outcome, and `warden_artifact`; malformed payloads and payloads for another dispatch still
+  outcome, and `oseer_artifact`; malformed payloads and payloads for another dispatch still
   fail closed.
 - `runner: local` — the third runner, named in the spec since the beginning and until now
   answering `role_runner_unimplemented`. It POSTs an OpenAI-compatible chat completion to the
@@ -1166,17 +1174,17 @@ of them is a thing the tool said that was not true.
   round, because none of them is about the work. Implemented and covered by tests against a
   JDK `HttpServer`; no dated live smoke row yet.
 - `Workspace`: a run writes its stage, cost and pending decision onto the Orca worktree card it
-  is running on, and `warden approve` closes it. Three columns, not one per stage.
-- The narration is also written to `.warden/runs/<id>/narration.log`, so a run started from a
+  is running on, and `oseer approve` closes it. Three columns, not one per stage.
+- The narration is also written to `.oseer/runs/<id>/narration.log`, so a run started from a
   script, a scheduler or a terminal since closed still has an account of itself.
-- `--watch`: Warden asks the board to open a terminal following that log, titled `warden
-  <run-id>` and renamed `- NEEDS YOU` when the loop stops for a person. Warden calls Orca, not
+- `--watch`: Overseer asks the board to open a terminal following that log, titled `oseer
+  <run-id>` and renamed `- NEEDS YOU` when the loop stops for a person. Overseer calls Orca, not
   the other way round: the run is not hosted by the board and survives closing the window.
 - A heartbeat while a stage runs. A role is one subprocess that prints nothing until it is
   finished, and the longest measured stage said nothing for twenty-two minutes — during which
   a hung vendor, a dead loop and a finished run look identical from outside. Once a minute the
   loop now says which role is holding it and for how long: a line in the narration, the same
-  sentence on the workspace card, and `warden <run-id> · implementer 12m00s` on the tab. The
+  sentence on the workspace card, and `oseer <run-id> · implementer 12m00s` on the tab. The
   card note at the start of a stage names the role too, not only the stage. Nothing here is
   evidence — every beat restates a fact the ledger will hold anyway — so a beat that cannot be
   written is dropped, a beat that throws cannot fail the run, a dry run has none, and a beat
@@ -1194,20 +1202,20 @@ of them is a thing the tool said that was not true.
   went silent. It now runs under its own beat naming the role that took the work, and its card
   line gains the same bracketed pair: `fix 1/2 · review sent the work back to implementer
   (grok-implement / grok)`.
-- `GitWorktreeIsolation`: `warden do` no longer needs Orca. Without `--isolation`, Orca is used
+- `GitWorktreeIsolation`: `oseer do` no longer needs Orca. Without `--isolation`, Orca is used
   when it is running and `git worktree` otherwise; `--isolation git|orca` settles it.
-- `setup:` in `project.yaml` — what to run in a worktree Warden made, before any check can pass.
+- `setup:` in `project.yaml` — what to run in a worktree Overseer made, before any check can pass.
 - Preflight validation of browser scenarios, via the adapter's own `--validate-only`, so a
   contract that states no assertion costs no vendor call. New code
   `visual_qa_contract_invalid`.
-- `warden status --worktrees` lists every pending human decision across the worktrees of the
-  current repository — worktree path, run id, task, kind, options, and the `warden approve`
-  command including the directory to run it from. A checkout with no `.warden` is skipped;
+- `oseer status --worktrees` lists every pending human decision across the worktrees of the
+  current repository — worktree path, run id, task, kind, options, and the `oseer approve`
+  command including the directory to run it from. A checkout with no `.oseer` is skipped;
   a `decision.json` that cannot be parsed is reported rather than dropped. Reads only.
 
 ### Changed
 
-- `warden ledger` counts each actual vendor dispatch. A `role_run` that failed over is two
+- `oseer ledger` counts each actual vendor dispatch. A `role_run` that failed over is two
   attempts in `by_profile` / `by_vendor` / `by_model` / `by_outcome` and in cost/token/duration
   totals, not one nested footnote on the survivor. Historical ledgers without `vendor_attempts`
   stay one attempt per `role_run`. Failures gain a `baseline` bucket, separate from
@@ -1218,7 +1226,7 @@ of them is a thing the tool said that was not true.
 
 ### Fixed
 
-- `warden land` no longer repeats the subject in the commit message it drafts, and no
+- `oseer land` no longer repeats the subject in the commit message it drafts, and no
   longer claims machine gates, an independent review and the browser harness all passed
   when they did not run. The sentence is built from the run's own `stages` and
   `skipped_stages`; a run that skipped nothing grows no empty skip clause. A stage that ran
@@ -1228,26 +1236,26 @@ of them is a thing the tool said that was not true.
   rule and the first path to `land` that skipped it would have inherited it.
 - The candidate fingerprint no longer changes when the accepted work is committed.
   `git diff --raw` reports a zeroed destination blob while a change sits in the working tree
-  and a real one once it does not, so `warden land --commit` invalidated the acceptance it had
-  just acted on and `warden land --push` refused it as `candidate_changed`. Deletions, renames
+  and a real one once it does not, so `oseer land --commit` invalidated the acceptance it had
+  just acted on and `oseer land --push` refused it as `candidate_changed`. Deletions, renames
   and mode changes are still caught; the blob ids were never what carried them.
   **A run accepted before this release cannot be landed after it:** its stored fingerprint was
   computed by the old definition, and failing closed on a value that cannot be compared is the
   correct answer. Commit and push such a run by hand.
 - `--goal-file`: a goal with paragraphs was written into the drafted contract with raw
-  newlines, and Warden then refused to parse its own file.
+  newlines, and Overseer then refused to parse its own file.
 - The browser harness rejected `wait N -> no-console-errors` as "only waits" while accepting
   the bare console check, so adding a pause made a valid scenario invalid.
-- `warden status` and `warden approve` from a directory that is not a Warden project now
-  answer `not_a_warden_project`, naming that directory and saying the run may exist
+- `oseer status` and `oseer approve` from a directory that is not an Overseer project now
+  answer `not_a_oseer_project`, naming that directory and saying the run may exist
   elsewhere. When the directory is a project that simply has no such run, `unknown_run`
   names the project that was consulted. The previous answer was `unknown_run` either way,
   which is how an acceptance typed from the wrong checkout looked recorded when it was not.
-- `warden status --worktrees` now emits an `approve` instruction that can be pasted into
+- `oseer status --worktrees` now emits an `approve` instruction that can be pasted into
   PowerShell or cmd.exe: a concrete listed choice rather than `<retry|abort>`, and a
   directory change that switches drive (`pushd` on Windows, because `cd /d` is not a
   PowerShell command). A malformed `decision.json` in the current checkout is reported in
-  `worktrees` instead of aborting the command as `warden_error`.
+  `worktrees` instead of aborting the command as `oseer_error`.
 
 ### Known gaps
 
@@ -1269,17 +1277,17 @@ stranger can use.
 
 ### Added — the loop
 
-- `warden do` — the one operator command. Isolates the work in an Orca worktree cut from the
+- `oseer do` — the one operator command. Isolates the work in an Orca worktree cut from the
   branch the operator is actually on, drafts a task contract, and drives the bounded loop:
   implement → machine gates → fix ≤ N → independent review → fix ≤ N → browser harness →
   fix ≤ N → `visual_qa` role → fix ≤ N → human gate. It never merges.
-- `warden run` — the inner loop, for a contract that already exists.
+- `oseer run` — the inner loop, for a contract that already exists.
 - `--draft-only`, which stops after the worktree and the draft contract exist, so browser
   scenarios can be written before any vendor is paid to satisfy them.
 - `--init-repo` and `--in-place` for a directory that is not a repository yet. An empty
   directory gets a contract with no invented check command and a `<repository>` scope; a
   directory with files but an unrecognised build system is still refused.
-- Declarative `workflow.stages` in `~/.warden/policy.yaml`: the order of stages, what each one
+- Declarative `workflow.stages` in `~/.oseer/policy.yaml`: the order of stages, what each one
   runs, the closed set of conditions gating it, and where a failure or a finding routes.
 
 ### Added — roles and vendors
@@ -1295,19 +1303,19 @@ stranger can use.
 - Orca adapter (`runner: orca`) that attaches to the current worktree and completes only on
   `worker_done` or dispatch settlement. Written and tested; the full live lifecycle is not
   claimed as proven.
-- `warden profiles --verify <name>` runs a profile's own probe and keeps the transcript;
+- `oseer profiles --verify <name>` runs a profile's own probe and keeps the transcript;
   `--confirm` stamps the date, and only if the probe passed in the same invocation.
 
 ### Added — verification and evidence
 
 - Machine gates over a pinned merge base, with blast-radius enforcement before and after every
   command.
-- Contract integrity: the whole `.warden` tree except `runs/` is snapshotted before the first
+- Contract integrity: the whole `.oseer` tree except `runs/` is snapshotted before the first
   dispatch and compared after every role and around every gate command. Any change is
   `contract_mutated`, naming the path.
 - Content fingerprint that survives renames and untracked files, used to discard the artifact
   of a `read_only` role that wrote.
-- Append-only evidence ledger, `warden ledger` aggregation, and `warden report <run-id>`
+- Append-only evidence ledger, `oseer ledger` aggregation, and `oseer report <run-id>`
   joining one run into a single view. A value the vendor never reported renders as `?` rather
   than becoming a zero.
 - Cost honesty: `unpriced_calls` and `cost_ceiling_binding` state how much of a run the
@@ -1329,15 +1337,15 @@ stranger can use.
 ### Added — the human gate
 
 - Durable per-run `decision.json`: atomic, cross-process locked, with an optimistic-lock
-  token. `warden status` and `warden approve` are the only ways in.
+  token. `oseer status` and `oseer approve` are the only ways in.
 - `accept` is refused when the worktree fingerprint moved after the decision was shown.
-- A rejection is an input rather than a full stop: `warden run --continue <rejected-run>` hands
+- A rejection is an input rather than a full stop: `oseer run --continue <rejected-run>` hands
   the reason a person gave to the next implementer verbatim, marked as a person's objection
   rather than a failed check, and authorises nothing.
 - `retry` on a failure that was never about the work carries verdicts already reached, but only
   when both the source fingerprint and the entire contract are byte-for-byte unchanged;
   otherwise the reason is recorded in `reuse_declined`.
-- `warden land <run-id>` plans and, with explicit `--commit` / `--push` / `--pull-request`,
+- `oseer land <run-id>` plans and, with explicit `--commit` / `--push` / `--pull-request`,
   carries out the commit and request for an accepted run. The forge is never guessed. Merges
   nothing.
 
@@ -1345,7 +1353,7 @@ stranger can use.
 
 - Stage-by-stage narration on stderr from `do` and `run`, while stdout stays a single JSON
   object. `--quiet` turns it off; nothing printed is evidence.
-- `warden doctor`, including `argument_encoding`, which reports the Windows console encoding
+- `oseer doctor`, including `argument_encoding`, which reports the Windows console encoding
   that silently turns a Cyrillic goal into question marks before `main` runs. Such a goal is
   refused rather than written into a contract; `--goal-file` is the channel that works.
 
@@ -1371,6 +1379,6 @@ These are named rather than hidden, and the code refuses rather than pretending:
   images.
 - The Orca adapter's full live lifecycle as a role runner has not been proven end to end.
 
-[Unreleased]: https://github.com/tolboy/warden-agentic-sdlc/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/tolboy/warden-agentic-sdlc/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/tolboy/warden-agentic-sdlc/releases/tag/v0.1.0
+[Unreleased]: https://github.com/tolboy/ai-overseer/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tolboy/ai-overseer/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/tolboy/ai-overseer/releases/tag/v0.1.0

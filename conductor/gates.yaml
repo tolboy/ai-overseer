@@ -1,5 +1,5 @@
 workflow:
-  name: warden-machine-gates
+  name: oseer-machine-gates
   description: Validate a project task and run deterministic machine gates; stop before a human.
   version: 0.1.0
   entry_point: validate_task
@@ -24,7 +24,7 @@ agents:
   - name: validate_task
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "validate", "{{ workflow.input.task }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "validate", "{{ workflow.input.task }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -35,7 +35,7 @@ agents:
   - name: machine_gates
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "gates", "{{ workflow.input.task }}", "--run-id", "{{ workflow.input.run_id }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "gates", "{{ workflow.input.task }}", "--run-id", "{{ workflow.input.run_id }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 720
     routes:
@@ -45,7 +45,7 @@ agents:
 
   - name: human_approval
     type: human_gate
-    prompt: "Machine gates passed. Inspect the diff and {{ workflow.input.project_dir }}/.warden/runs/{{ workflow.input.run_id }}/machine-gate.json."
+    prompt: "Machine gates passed. Inspect the diff and {{ workflow.input.project_dir }}/.oseer/runs/{{ workflow.input.run_id }}/machine-gate.json."
     options:
       - label: Reject
         value: reject
@@ -57,7 +57,7 @@ agents:
   - name: approved
     type: terminate
     status: success
-    reason: Human approval recorded. Warden still performs no merge or push.
+    reason: Human approval recorded. Overseer still performs no merge or push.
 
   - name: invalid_task
     type: terminate

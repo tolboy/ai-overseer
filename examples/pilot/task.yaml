@@ -4,7 +4,7 @@ version: 1
 id: pilot-task
 goal: Replace with the real task and its observable acceptance criteria before execution
 non_goals:
-  - Do not modify Warden, the frozen task contract, or the acceptance checker
+  - Do not modify Overseer, the frozen task contract, or the acceptance checker
 risk: medium
 scope: pilot-scope
 checks: pilot-acceptance

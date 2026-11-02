@@ -1,11 +1,11 @@
-# Contributing to Warden
+# Contributing to AI Overseer
 
 Thanks for looking. This file says what the project will and will not accept, so you can
 find out before you write the patch rather than after.
 
 ## The one rule that shapes everything else
 
-**Warden has zero runtime and build dependencies, and it stays that way.**
+**Overseer has zero runtime and build dependencies, and it stays that way.**
 
 A tool that hands a language model write access to someone's repository should not drag a
 hundred-artifact supply chain in behind it, and it should build with no network. That is why
@@ -27,12 +27,12 @@ a library is not.
 build.cmd && test.cmd
 ```
 
-Both produce `out/classes` and `out/test-classes` and run `dev.warden.testing.TestMain`.
+Both produce `out/classes` and `out/test-classes` and run `dev.oseer.testing.TestMain`.
 There is no watch mode and no incremental build; a full compile takes a couple of seconds.
 
 Compilation targets `--release 21` — a floor, not a ceiling. The bytecode runs on any newer
 JVM, and CI builds it on JDK 21 and 25 across Linux and Windows. Override the floor with
-`WARDEN_JAVA_RELEASE` if you are testing something specific, but do not raise it in a PR
+`OSEER_JAVA_RELEASE` if you are testing something specific, but do not raise it in a PR
 without a reason in the description.
 
 The hygiene gate is a script rather than a block of CI, so you can run it before you push:
@@ -53,7 +53,7 @@ assembled from fragments; a new one has to keep doing that.
 
 ## Tests
 
-The suite is hand-rolled: `src/test/java/dev/warden/testing/` gives you `Suite` and `Check`,
+The suite is hand-rolled: `src/test/java/dev/oseer/testing/` gives you `Suite` and `Check`,
 and `TestMain` runs everything. To add tests, add a class next to the existing ones and
 register it in `TestMain`.
 
@@ -67,7 +67,7 @@ Two conventions matter more than coverage numbers:
 
 ## What a good change looks like
 
-Warden's failure modes are its interface. Every failure resolves to exactly one named
+Overseer's failure modes are its interface. Every failure resolves to exactly one named
 outcome, and which one it resolves to is a decision made in code — see *What a failure is
 allowed to do* in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). If your change introduces a
 new way for something to go wrong:
@@ -89,7 +89,7 @@ The history here is meant to be readable as a record of what was learned. The fo
 ```text
 fix(visual-qa): a liveness probe that leaks a connection pool can lie about the port
 feat(execution): a turn ceiling is not a failure at the work
-fix(gate): a human accepts a source change, not Warden's own evidence
+fix(gate): a human accepts a source change, not Overseer's own evidence
 ```
 
 `chore: update deps` conveys nothing and there are no deps. Write the sentence you would say
@@ -122,9 +122,9 @@ that separation.
 
 ## Reporting bugs
 
-Include the command you ran, the `.warden/runs/<run-id>/` outcome (`run.json` and
+Include the command you ran, the `.oseer/runs/<run-id>/` outcome (`run.json` and
 `evidence.jsonl` are safe to paste; raw vendor transcripts often are not), your OS, and
-`java -version`. `warden doctor` prints most of the environment in one go.
+`java -version`. `oseer doctor` prints most of the environment in one go.
 
 **Redact before pasting.** Run directories can contain your source, your prompts and your
 vendor's replies.

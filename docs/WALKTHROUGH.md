@@ -13,9 +13,9 @@ For a version you can run yourself in seconds with no vendor at all, see
 ## Step 0. Three places you have to keep apart
 
 ```
-~/.warden/               WHO runs             — vendor profiles and role policy
-<any project>/.warden/   WHAT "done" means    — check commands and tasks
-warden                   HOW                  — gates, roles, the loop, evidence
+~/.oseer/               WHO runs             — vendor profiles and role policy
+<any project>/.oseer/   WHAT "done" means    — check commands and tasks
+oseer                   HOW                  — gates, roles, the loop, evidence
 ```
 
 A vendor is a property of whoever runs, not of the project. That is why no model name is
@@ -27,11 +27,11 @@ different subscriptions.
 ## Step 1. Configure yourself (once)
 
 ```
-warden setup
+oseer setup
 ```
 
 ```json
-{"ok":true,"home":"~/.warden",
+{"ok":true,"home":"~/.oseer",
  "created":["policy.yaml","profiles/grok-review.yaml","profiles/claude-review.yaml",
             "profiles/codex-implement.yaml","prompts/reviewer.md","prompts/implementer.md",
             "schemas/reviewer.json","schemas/implementer.json"]}
@@ -39,14 +39,14 @@ warden setup
 
 Existing files are **not overwritten** — a second `setup` only reports what it left alone.
 
-> The configuration directory is overridden by `WARDEN_CONFIG_HOME`. Specifically
-> `WARDEN_CONFIG_HOME`, not `WARDEN_HOME`: the launcher `bin\warden.cmd` uses the latter for
+> The configuration directory is overridden by `OSEER_CONFIG_HOME`. Specifically
+> `OSEER_CONFIG_HOME`, not `OSEER_HOME`: the launcher `bin\oseer.cmd` uses the latter for
 > the installation directory, and on the very first live Windows run that name collision moved
 > the starter configuration inside the repository instead of the home directory. What caught
 > it was not a test but the fact that `setup` prints `home` — which is why it prints it.
 
 ```
-warden profiles
+oseer profiles
 ```
 
 ```
@@ -64,12 +64,12 @@ instead of being discovered halfway through a loop.
 You do not rewrite the probe by hand — it runs by its own command:
 
 ```
-warden profiles --verify claude-review
+oseer profiles --verify claude-review
 ```
 
 ```json
 {"ok":true,"code":"probe_passed","exit_code":0,"stamped":false,
- "transcript":"~/.warden/verification/claude-review.txt",
+ "transcript":"~/.oseer/verification/claude-review.txt",
  "what_to_check":["exits 0 without opening an interactive session",
                   "stdout is a JSON envelope; note which key carries the answer",
                   "--allowedTools is accepted and the run still completes",
@@ -101,7 +101,7 @@ are flags established by running.
 One file. For SvelteKit:
 
 ```yaml
-# .warden/project.yaml
+# .oseer/project.yaml
 version: 1
 project: demo
 base_ref: HEAD
@@ -123,7 +123,7 @@ For a JVM project only the contents of `checks` change — `./gradlew build`. No
 A task is four lines at minimum:
 
 ```yaml
-# .warden/tasks/hello.yaml
+# .oseer/tasks/hello.yaml
 version: 1
 id: hello
 goal: Create src/result.txt containing the word ok
@@ -138,7 +138,7 @@ authority:
 ## Step 3. Check the setup without spending anything
 
 ```
-warden role reviewer hello --dry-run
+oseer role reviewer hello --dry-run
 ```
 
 On a machine with no Grok installed, this answers:
@@ -161,8 +161,8 @@ When a profile is eligible, `--dry-run` resolves the vendor and **writes the exa
 disk** that would have been sent, without calling the vendor:
 
 ```
-.warden/runs/dry/prompts/reviewer.md      ← exists
-.warden/runs/dry/raw/                     ← does not, the vendor never ran
+.oseer/runs/dry/prompts/reviewer.md      ← exists
+.oseer/runs/dry/raw/                     ← does not, the vendor never ran
 ```
 
 ---
@@ -170,7 +170,7 @@ disk** that would have been sent, without calling the vendor:
 ## Step 4. The red half: gates fail before the work
 
 ```
-warden gates hello --run-id red
+oseer gates hello --run-id red
 → {"ok":false,"code":"command_failed"}
 ```
 
@@ -180,21 +180,21 @@ along.
 ## Step 5. The implementer does the work
 
 ```
-warden role implementer hello --run-id live
+oseer role implementer hello --run-id live
 → {"ok":true,"profile":"stub-impl","vendor":"stubvendor"}
 ```
 
 ## Step 6. The green half
 
 ```
-warden gates hello --run-id green
+oseer gates hello --run-id green
 → {"ok":true,"code":"passed"}
 ```
 
 ## Step 7. Independent review
 
 ```
-warden role reviewer hello --run-id live --implementer-vendor stubvendor
+oseer role reviewer hello --run-id live --implementer-vendor stubvendor
 → {"ok":true,"profile":"stub-review","vendor":"othervendor",
    "rejected_profiles":{"stub-sneaky":"same_vendor_as_implementer"}}
 ```
@@ -211,7 +211,7 @@ resolver fails rather than quietly handing the code to its own author for review
 A stub reviewer that appends a line to a file while returning `verdict: pass`:
 
 ```
-warden role reviewer hello --run-id trap
+oseer role reviewer hello --run-id trap
 → {"ok":false,"code":"role_violated_read_only"}
 ```
 
@@ -237,7 +237,7 @@ documentation: Git does not see paths in `.gitignore`, so neither does the check
 ## Step 9. What is left as evidence
 
 ```
-.warden/runs/live/
+.oseer/runs/live/
   prompts/implementer.md            the exact prompt sent
   raw/implementer.stdout.txt        raw vendor output, always
   artifacts/implementer.json        the parsed artifact
@@ -273,7 +273,7 @@ roles:
 ```
 
 ```
-warden role reviewer create-result --run-id live-stdin
+oseer role reviewer create-result --run-id live-stdin
 → {"ok":true,"profile":"grok-review","vendor":"grok",
    "rejected_profiles":{"codex-review":"quota_exhausted_this_run"}}
 ```
@@ -301,7 +301,7 @@ the rest of the budget finding that out. Quota is the one failure whose correct 
 Three decisions are visible in that output:
 
 - **The retry time is recorded verbatim and not parsed.** The vendor said "try again at
-  9:21 PM": no date, no time zone. Any timestamp Warden derived from that would be a guess in
+  9:21 PM": no date, no time zone. Any timestamp AI Overseer derived from that would be a guess in
   the shape of a fact.
 - **The exclusion lives in process memory, not in a file.** Within one loop, a vendor that ran
   out during implementation will not be called for review. A new invocation starts clean: a
@@ -326,7 +326,7 @@ When there is nobody left to fail over to:
                  add a profile from another vendor, or wait for the quota window …"}
 ```
 
-`warden run` stops with `reason: quota_exhausted`, not `implementer_failed`. These are
+`oseer run` stops with `reason: quota_exhausted`, not `implementer_failed`. These are
 different events: one sends you to read a transcript in which nothing is broken, the other
 sends you to wait for a window.
 
@@ -350,7 +350,7 @@ The same argv reaches an `.exe` intact — which is why Grok, a single `grok.exe
 wrong, while Codex received a one-line prompt with `--json` torn off and looked like it was
 working. Paying for such an answer and then judging it is worse than not starting.
 
-At first Warden did not reach the vendor at all: `where.exe codex` returns the extensionless
+At first Overseer did not reach the vendor at all: `where.exe codex` returns the extensionless
 npm shim on its first line, which Java cannot start (`CreateProcess error=193`). The executable
 is now chosen by extension rather than by the order of `where.exe` output.
 
@@ -405,7 +405,7 @@ Matchers: `text=` (by visible text), `css=`, `testid=`, `role=`. Assertions: `vi
 sends Escape, Enter, Tab, Space, an arrow or one character; `testid=dialog press=Escape`
 focuses that element first and does not require the DOM to change. A bare `click` checks
 that pressing changes anything in the DOM at all; anything more specific is written after
-`->` rather than guessed. `warden validate` and `run --dry-run` reject a step the grammar
+`->` rather than guessed. `oseer validate` and `run --dry-run` reject a step the grammar
 does not have, before a vendor is paid.
 
 Every scenario that looks at an element has to name one with `testid=`, `role=` or `css=`;
@@ -436,10 +436,10 @@ is red and the implementer gets the failing step and the screenshot.
 A live run against the fixture:
 
 ```
-warden visual-qa looks-right --run-id green
+oseer visual-qa looks-right --run-id green
 → {"ok":true,"code":"passed"}
 
-.warden/runs/green/screenshots/
+.oseer/runs/green/screenshots/
   1280x720.png
   1280x720-after-click.png
   700x400.png
@@ -455,7 +455,7 @@ attachments:
 ```
 
 That is the whole difference between "the model was sent some filenames" and "the model
-looked". Warden records which of the two happened: a profile with no `attachments.flag` is
+looked". Overseer records which of the two happened: a profile with no `attachments.flag` is
 marked `attachments_not_passed_to_vendor` rather than being silently promoted to "looked".
 
 The role runs only after the harness has already agreed, and it answers only what a machine
@@ -479,7 +479,7 @@ have passed.
 ```
 → {"ok":false,"code":"visual_qa_port_occupied"}
    "something is already answering at http://127.0.0.1:4173/, and this task declares its own
-    start command. Warden will not guess whether that server is this project or a stale one
+    start command. Overseer will not guess whether that server is this project or a stale one
     from another: stop it, change visual_qa.url to a free port, or drop visual_qa.start."
 ```
 
@@ -497,14 +497,14 @@ substitution.
 
 **It knew the name of somebody else's button.** The harness code contained `.mode-switch`,
 `.mobile-view-note` and `/growing/i` — one application's private DOM inside a tool that calls
-itself general. And for any UI goal without an explicit control name, `warden do` filled in a
+itself general. And for any UI goal without an explicit control name, `oseer do` filled in a
 scenario with a `Create` button — the same one, from the same application. A guessed acceptance
 criterion is the same mistake as a guessed blast radius, one field to the right. Now, if the
 goal names no control, what gets written is what is true of any page:
 
 ```yaml
   scenarios:
-    # Warden does not invent visual assertions. These two hold for any page:
+    # Overseer does not invent visual assertions. These two hold for any page:
     #   - "1280x720: testid=settings visible"
     - "1280x720: no-console-errors"
     - "700x400: no-console-errors"
@@ -518,7 +518,7 @@ wrong one.
 ## Step 14. A goal in Russian
 
 ```
-warden do "почини вёрстку экрана настроек" --scope ui
+oseer do "почини вёрстку экрана настроек" --scope ui
 → {"ok":false,"code":"goal_mangled_by_console_encoding",
    "message":"the goal arrived as \"?????? ??????? ?????? ????????\" …"}
 ```
@@ -529,12 +529,12 @@ The JVM decodes command-line arguments through `sun.jnu.encoding`; on that machi
 goal is rejected rather than written into a contract, and there is a channel that works:
 
 ```
-warden do --goal-file goal.txt --scope ui
+oseer do --goal-file goal.txt --scope ui
 → goal: "почини вёрстку экрана настроек"
    visual_qa: required: true
 ```
 
-`warden doctor` prints this state under `argument_encoding`, so you learn about it before the
+`oseer doctor` prints this state under `argument_encoding`, so you learn about it before the
 contract is full of question marks rather than after.
 
 ---

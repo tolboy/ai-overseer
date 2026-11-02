@@ -1,8 +1,8 @@
 # Live API pings, 2026-10-28 (Stage 2)
 
-One `warden check --profile NAME` per API model used by the box profiles, run through the box
+One `oseer check --profile NAME` per API model used by the box profiles, run through the box
 launcher (keys loaded from the box secret store, never printed) with a temporary
-`WARDEN_CONFIG_HOME` holding copies of the connections and the example reviewer profiles.
+`OSEER_CONFIG_HOME` holding copies of the connections and the example reviewer profiles.
 Pings only; no coding run was made. OpenRouter was not pinged: no box profile uses it.
 
 Times are America/Chicago (CDT). Branch `grok/api-resilience-stage2`.

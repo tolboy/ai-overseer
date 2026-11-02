@@ -1,0 +1,1051 @@
+package dev.oseer.testing;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * A stand-in vendor CLI, written in Java so the role suite runs identically on Windows and
+ * POSIX.
+ *
+ * The first version used shell scripts, which silently skipped the entire role layer on
+ * Windows — the platform this tool is actually operated from. A suite that reports "passed"
+ * while covering nothing on the target platform is worse than no suite, so the stand-ins run
+ * on the JVM that is already present.
+ *
+ * Modes mirror the behaviours worth pinning: an implementer that works, a reviewer that
+ * answers inside a text envelope, a reviewer that secretly writes, and one that returns an
+ * incomplete artifact.
+ *
+ * The two quota modes are transcribed from a live Codex run whose subscription was spent, not
+ * invented: the message lands on stdout inside the structured event stream, the exit code is
+ * the same 1 a bad flag produces, and stderr carries only unrelated transport noise. A
+ * stand-in that made quota look distinctive would have tested a failure that does not occur.
+ */
+public final class StubVendor {
+
+    /**
+     * `--counter <file> --threshold <n>` makes a stand-in attempt-aware, so a test can force
+     * exactly N fix rounds instead of hoping for them. Named flags rather than positions:
+     * the profile also appends `--prompt-file <path>`, and a positional reading of that
+     * silently turned a flag into a counter file.
+     */
+    private static java.util.Map<String, Object> p1(String id) {
+        return java.util.Map.of("id", id, "severity", "P1", "path", "src/result.txt",
+                "message", "the content is wrong", "expected", "right", "actual", "wrong",
+                "confidence", "confirmed");
+    }
+
+    private static java.util.Map<String, Object> p2(String id) {
+        return java.util.Map.of("id", id, "severity", "P2", "path", "src/result.txt",
+                "message", "the content is wrong", "expected", "right", "actual", "wrong",
+                "confidence", "confirmed");
+    }
+
+    private static String extractPlannerGoal(String prompt) {
+        String marker = "Operator goal (verbatim)\n: ";
+        int at = prompt.indexOf(marker);
+        if (at < 0) {
+            marker = "Operator goal (verbatim)\r\n: ";
+            at = prompt.indexOf(marker);
+        }
+        if (at < 0) return "Create src/result.txt containing ok";
+        int start = at + marker.length();
+        int end = prompt.indexOf('\n', start);
+        String line = (end < 0 ? prompt.substring(start) : prompt.substring(start, end)).strip();
+        return line.isEmpty() ? "Create src/result.txt containing ok" : line;
+    }
+
+    private static String flag(String[] args, String name) {
+        for (int index = 0; index + 1 < args.length; index++) {
+            if (args[index].equals(name)) return args[index + 1];
+        }
+        return null;
+    }
+
+    /** Optional {@code --cost <usd>} so a budget test can name what the stand-in reports. */
+    private static double costOf(String[] args, double fallback) {
+        String raw = flag(args, "--cost");
+        if (raw == null || raw.isBlank()) return fallback;
+        return Double.parseDouble(raw);
+    }
+
+    /** Increment {@code --counter} when the profile names one, without deciding a verdict. */
+    private static void count(String[] args) throws Exception {
+        String counterPath = flag(args, "--counter");
+        if (counterPath == null) return;
+        Path counter = Path.of(counterPath);
+        int seen = Files.isRegularFile(counter)
+                ? Integer.parseInt(Files.readString(counter).strip()) : 0;
+        Files.writeString(counter, String.valueOf(seen + 1), StandardCharsets.UTF_8);
+    }
+
+    private static boolean succeedsNow(String[] args) throws Exception {
+        String counterPath = flag(args, "--counter");
+        String threshold = flag(args, "--threshold");
+        if (counterPath == null || threshold == null) return true;
+        Path counter = Path.of(counterPath);
+        int seen = Files.isRegularFile(counter)
+                ? Integer.parseInt(Files.readString(counter).strip()) : 0;
+        seen++;
+        Files.writeString(counter, String.valueOf(seen), StandardCharsets.UTF_8);
+        return seen >= Integer.parseInt(threshold);
+    }
+
+    /**
+     * The inverse of {@link #succeedsNow}: clean for the first `threshold - 1` calls, then
+     * objecting from there on.
+     *
+     * A reviewer that only ever warms up cannot model the case that matters most for a
+     * recheck. What a recheck is for is a fix that repaired one stage and broke a verdict
+     * another stage had already given, and that reviewer passes first and objects second.
+     */
+    private static boolean withinFirst(String[] args) throws Exception {
+        String counterPath = flag(args, "--counter");
+        String threshold = flag(args, "--threshold");
+        if (counterPath == null || threshold == null) return true;
+        Path counter = Path.of(counterPath);
+        int seen = Files.isRegularFile(counter)
+                ? Integer.parseInt(Files.readString(counter).strip()) : 0;
+        seen++;
+        Files.writeString(counter, String.valueOf(seen), StandardCharsets.UTF_8);
+        return seen < Integer.parseInt(threshold);
+    }
+
+    /**
+     * `sequence:a,b,c` answers its n-th call with the n-th step, and keeps repeating the last
+     * one. A chain that spans several runs needs a vendor whose behaviour depends on how often
+     * it has been called in all, which the counter file already records across processes.
+     *
+     * Steps: `pass` and `p1` are reviewer verdicts, `rate` is a rate-limited call, `impl`
+     * writes the result an implementer is asked for.
+     */
+    private static void sequence(String[] steps, String[] args) throws Exception {
+        Path counter = Path.of(flag(args, "--counter"));
+        int seen = Files.isRegularFile(counter)
+                ? Integer.parseInt(Files.readString(counter).strip()) : 0;
+        seen++;
+        Files.writeString(counter, String.valueOf(seen), StandardCharsets.UTF_8);
+        String step = steps[Math.min(seen, steps.length) - 1];
+        switch (step) {
+            case "rate" -> {
+                System.out.println("{\"type\":\"error\",\"message\":\"Rate limit reached for requests\"}");
+                System.exit(1);
+            }
+            case "impl" -> {
+                Path target = Path.of("src", "result.txt");
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, "ok", StandardCharsets.UTF_8);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"created\","
+                        + "\"files_changed\":[\"src/result.txt\"]},\"total_cost_usd\":0.012}");
+            }
+            case "pass", "p1" -> System.out.println(dev.oseer.json.Json.write(java.util.Map.of(
+                    "structuredOutput", java.util.Map.of("role", "reviewer", "task_id", "hello",
+                            "status", "completed",
+                            "verdict", "pass".equals(step) ? "pass" : "fail",
+                            "summary", "call " + seen,
+                            "findings", "pass".equals(step) ? List.of() : List.of(p1("SEQ-1"))),
+                    "total_cost_usd", 0.004)));
+            default -> {
+                System.err.println("unknown sequence step: " + step);
+                System.exit(2);
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        if (flag(args, "--expected-effort") != null
+                && !flag(args, "--expected-effort").equals(flag(args, "--actual-effort"))) {
+            throw new IllegalArgumentException("effort was not delivered intact");
+        }
+        String mode = args.length > 0 ? args[0] : "review";
+        if (mode.startsWith("sequence:")) {
+            sequence(mode.substring("sequence:".length()).split(","), args);
+            return;
+        }
+        switch (mode) {
+            case "impl" -> {
+                Path target = Path.of("src", "result.txt");
+                Files.createDirectories(target.getParent());
+                if (succeedsNow(args)) Files.writeString(target, "ok", StandardCharsets.UTF_8);
+                else Files.writeString(target.getParent().resolve("partial.txt"), "not yet",
+                        StandardCharsets.UTF_8);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"created\","
+                        + "\"files_changed\":[\"src/result.txt\"]},"
+                        + "\"total_cost_usd\":" + costOf(args, 0.012) + ",\"num_turns\":3,"
+                        + "\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12},"
+                        + "\"modelUsage\":{\"stub-impl-model\":{}}}");
+            }
+            // An implementer that produces a distinct tree on every dispatch: it writes the
+            // result the gate looks for, and a `src/rev.txt` carrying the call count, so two
+            // dispatches leave two different source fingerprints. It models a resume whose
+            // re-dispatched implementer moves the tree out from under a carried review.
+            case "impl-grows" -> {
+                Path src = Path.of("src");
+                Files.createDirectories(src);
+                Files.writeString(src.resolve("result.txt"), "ok", StandardCharsets.UTF_8);
+                String revision = "1";
+                String counterPath = flag(args, "--counter");
+                if (counterPath != null) {
+                    Path counter = Path.of(counterPath);
+                    int seen = Files.isRegularFile(counter)
+                            ? Integer.parseInt(Files.readString(counter).strip()) : 0;
+                    seen++;
+                    Files.writeString(counter, String.valueOf(seen), StandardCharsets.UTF_8);
+                    revision = String.valueOf(seen);
+                }
+                Files.writeString(src.resolve("rev.txt"), revision, StandardCharsets.UTF_8);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"revision " + revision + "\","
+                        + "\"files_changed\":[\"src/result.txt\",\"src/rev.txt\"]}}");
+            }
+            // An implementer that writes the result and then puts the task contract back the way
+            // a `git checkout -- .oseer` would: the shape that stopped a live Living-Horizon
+            // run whose contract the planner had compiled into the worktree.
+            case "impl-reverts-contract" -> {
+                Path src = Path.of("src");
+                Files.createDirectories(src);
+                Files.writeString(src.resolve("result.txt"), "ok", StandardCharsets.UTF_8);
+                int restored = new ProcessBuilder("git", "checkout", "--", ".oseer")
+                        .inheritIO().start().waitFor();
+                if (restored != 0) throw new IllegalStateException("git checkout failed: " + restored);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"created\","
+                        + "\"files_changed\":[\"src/result.txt\"]}}");
+            }
+            // An implementer that moves a tracked file on disk as well as writing the result, so
+            // the candidate adds, deletes and renames at once without telling git about any of
+            // it — the shape an agent's file tools leave behind.
+            case "impl-moves" -> {
+                Path src = Path.of("src");
+                Files.createDirectories(src);
+                Files.writeString(src.resolve("result.txt"), "ok", StandardCharsets.UTF_8);
+                Path seed = src.resolve("seed.txt");
+                if (Files.isRegularFile(seed)) Files.move(seed, src.resolve("renamed.txt"));
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"created and moved\","
+                        + "\"files_changed\":[\"src/result.txt\",\"src/seed.txt\",\"src/renamed.txt\"]}}");
+            }
+            // An implementer that reports success and writes nothing at all. The live shape of
+            // a repair whose finding is not the implementer's to fix — a weak acceptance
+            // command, a missing grant — where the honest answer is to change no bytes.
+            case "impl-noop" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"summary\":\"the finding is not mine to fix\","
+                    + "\"files_changed\":[]},\"total_cost_usd\":0.005}");
+            // A reviewer that objects with a categorised, vendor-identified finding, so the
+            // identity and category paths are exercised as a vendor would drive them.
+            case "review-closes-three", "review-reinvents-closed" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                List<String> ids = n == 1 ? List.of("A", "B", "C")
+                        : n == 2 ? List.of("B", "C") : n == 3 ? List.of("C")
+                        : mode.equals("review-reinvents-closed") ? List.of("renamed-A") : List.of();
+                boolean namedEvidence = mode.equals("review-reinvents-closed");
+                var findings = ids.stream().map(id -> namedEvidence
+                        ? java.util.Map.<String, Object>of("id", id, "severity", "P1",
+                                "path", "src/result.txt", "message", "defect " + id,
+                                "expected", "good", "actual", "bad", "confidence", "confirmed",
+                                "evidence_refs", List.of())
+                        : java.util.Map.<String, Object>of("id", id, "severity", "P1",
+                                "path", "src/result.txt", "message", "defect " + id,
+                                "expected", "good", "actual", "bad", "confidence", "confirmed"))
+                        .toList();
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", ids.isEmpty() ? "pass" : "fail", "summary", "round " + n,
+                                "findings", findings))));
+            }
+            case "review-categorised" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"contract too weak\","
+                    + "\"findings\":[{\"id\":\"acceptance-too-weak\",\"category\":\"contract_gap\","
+                    + "\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                    + "\"message\":\"the acceptance command matches a substring\","
+                    + "\"expected\":\"acceptance rejects extra content\","
+                    + "\"actual\":\"it accepts extra content\",\"confidence\":\"confirmed\"}]},"
+                    + "\"total_cost_usd\":0.004}");
+            // Same shape as review-categorised, but a product_defect so the repair loop
+            // actually runs. Used to drive repair_made_no_progress rather than a
+            // non-actionable stop.
+            case "review-repeats-p1" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"still broken\","
+                    + "\"findings\":[{\"id\":\"still-broken\",\"category\":\"product_defect\","
+                    + "\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                    + "\"message\":\"the content is still wrong\","
+                    + "\"expected\":\"right\",\"actual\":\"wrong\",\"confidence\":\"confirmed\"}]},"
+                    + "\"total_cost_usd\":0.004}");
+            // First reading: a product_defect and a contract_gap. Later readings: the gap
+            // alone, so a real repair of the defect is not followed by another paid round
+            // for something the implementer cannot close.
+            case "review-mixed-then-gap" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                var defect = java.util.Map.<String, Object>of("id", "real-defect",
+                        "category", "product_defect", "severity", "P1", "path", "src/result.txt",
+                        "message", "the content is wrong", "expected", "right", "actual", "wrong",
+                        "confidence", "confirmed");
+                var gap = java.util.Map.<String, Object>of("id", "acceptance-too-weak",
+                        "category", "contract_gap", "severity", "P1", "path", "src/result.txt",
+                        "message", "the acceptance command matches a substring",
+                        "expected", "acceptance rejects extra content",
+                        "actual", "it accepts extra content", "confidence", "confirmed");
+                var findings = n == 1 ? List.of(defect, gap) : List.of(gap);
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", "fail", "summary", "round " + n, "findings", findings))));
+            }
+            // Calls the same defect a P1 first and a P2 afterwards, changing nothing else.
+            // One of the two ways a reviewer can end a run without anything about the work
+            // changing; the other is to omit the finding, which is the next mode.
+            case "review-launders-severity" -> {
+                boolean first = withinFirst(args);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"" + (first ? "fail" : "pass") + "\","
+                        + "\"summary\":\"on reflection\",\"findings\":[{\"id\":\"disputed-one\","
+                        + "\"severity\":\"" + (first ? "P1" : "P2") + "\",\"path\":\"src/result.txt\","
+                        + "\"message\":\"the content is wrong\",\"expected\":\"right\","
+                        + "\"actual\":\"wrong\",\"confidence\":\"confirmed\"}]},"
+                        + "\"total_cost_usd\":0.004}");
+            }
+            // Same first reading as review-launders-severity, then a pass with an empty
+            // findings array — a full retraction rather than a relabel.
+            case "review-retracts-finding" -> {
+                boolean first = withinFirst(args);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"" + (first ? "fail" : "pass") + "\","
+                        + "\"summary\":\"on reflection\",\"findings\":" + (first
+                        ? "[{\"id\":\"disputed-one\",\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                          + "\"message\":\"the content is wrong\",\"expected\":\"right\","
+                          + "\"actual\":\"wrong\",\"confidence\":\"confirmed\"}]"
+                        : "[]") + "},\"total_cost_usd\":0.004}");
+            }
+            // Two confirmed P1s, then a round that drops them on the same tree while
+            // keeping one throwaway blocker (or relabelling one and keeping a throwaway).
+            // The laundering stop has to fire even though blocking is still above zero.
+            case "review-launders-behind-blocker", "review-relabels-behind-blocker" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                List<java.util.Map<String, Object>> findings;
+                if (n == 1) {
+                    findings = List.of(p1("real-one"), p1("real-two"));
+                } else if (mode.equals("review-relabels-behind-blocker")) {
+                    findings = List.of(p2("real-one"), p1("noise"));
+                } else {
+                    findings = List.of(p1("noise"));
+                }
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", "fail", "summary", "round " + n, "findings", findings))));
+            }
+            // Files A with its original evidence once, then passes — the first reviewer
+            // of a two-stage chain whose closure the second reader must inherit.
+            case "review-closes-one" -> {
+                boolean objects = withinFirst(args);
+                var findings = objects
+                        ? List.of(java.util.Map.<String, Object>of("id", "A", "severity", "P1",
+                                "path", "src/result.txt", "message", "defect A",
+                                "expected", "good", "actual", "bad", "confidence", "confirmed",
+                                "scenario", "reproduce A", "evidence_refs", List.of("receipt-0")))
+                        : List.of();
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", objects ? "fail" : "pass",
+                                "summary", objects ? "still open" : "closed A",
+                                "findings", findings))));
+            }
+            // A passing reading that still files a P3 product defect: on the first reading only
+            // (`-once`), or on every reading (`-always`). The shape of the first all-Orca run's
+            // visual finding: pass, and the button moves when the text hides.
+            // A passing reading that says the acceptance is too weak to have proved the candidate:
+            // the first all-Orca run's second reader, on a contract that never checked the text.
+            case "review-gap-p3" -> System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of(
+                    "structuredOutput", java.util.Map.of("role", "reviewer", "task_id", "hello",
+                            "status", "completed", "verdict", "pass", "summary", "passes; acceptance is thin",
+                            "findings", List.of(java.util.Map.<String, Object>of("id", "GAP-1", "severity", "P3",
+                                    "category", "contract_gap", "path", ".oseer/tasks/hello.yaml",
+                                    "message", "the acceptance never checks the text",
+                                    "expected", "a check fails when the text is wrong",
+                                    "actual", "every check passes whatever the text says",
+                                    "confidence", "confirmed", "scenario", "change the text",
+                                    "evidence_refs", List.of("receipt-0")))))));
+            case "review-p3-once", "review-p3-always" -> {
+                boolean objects = mode.equals("review-p3-always") || withinFirst(args);
+                var findings = objects
+                        ? List.of(java.util.Map.<String, Object>of("id", "B", "severity", "P3",
+                                "category", "product_defect", "path", "src/result.txt",
+                                "message", "the button moves when the text hides",
+                                "expected", "the button stays put", "actual", "it moves 30px",
+                                "confidence", "confirmed", "scenario", "press it twice",
+                                "evidence_refs", List.of("receipt-0")))
+                        : List.of();
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", "pass", "summary", objects ? "passes, one nit" : "passes clean",
+                                "findings", findings))));
+            }
+            // Always re-raises A on receipt-0. Used as review-second after review-closes-one.
+            case "review-reraise-stale" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"A is back\","
+                    + "\"findings\":[{\"id\":\"A\",\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                    + "\"message\":\"defect A\",\"expected\":\"good\",\"actual\":\"bad\","
+                    + "\"confidence\":\"confirmed\",\"scenario\":\"reproduce A\","
+                    + "\"evidence_refs\":[\"receipt-0\"]}]},\"total_cost_usd\":0.004}");
+            // Passes twice, then raises B on the very evidence review-second closed it with.
+            // The first reviewer of a chain whose recheck lands after another stage's closure.
+            case "review-raises-closed-on-recheck" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                List<java.util.Map<String, Object>> findings = n < 3 ? List.of()
+                        : List.of(java.util.Map.<String, Object>of("id", "B", "severity", "P1",
+                                "path", "src/result.txt", "message", "defect B",
+                                "expected", "good", "actual", "bad", "confidence", "confirmed",
+                                "scenario", "reproduce B", "evidence_refs", List.of("receipt-b")));
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", n < 3 ? "pass" : "fail",
+                                "summary", "round " + n, "findings", findings))));
+            }
+            // Files B, closes it and files C instead, then passes. The second reviewer whose
+            // closure the first one has to be able to see when it is rechecked later.
+            case "review-second-closes-then-new" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                java.util.Map<String, Object> filed = java.util.Map.of("id", "B", "severity", "P1",
+                        "path", "src/result.txt", "message", "defect B", "expected", "good",
+                        "actual", "bad", "confidence", "confirmed", "scenario", "reproduce B",
+                        "evidence_refs", List.of("receipt-b"));
+                java.util.Map<String, Object> instead = java.util.Map.of("id", "C", "severity", "P1",
+                        "path", "src/result.txt", "message", "defect C", "expected", "good",
+                        "actual", "bad", "confidence", "confirmed", "scenario", "reproduce C",
+                        "evidence_refs", List.of("receipt-c"));
+                List<java.util.Map<String, Object>> findings =
+                        n == 1 ? List.of(filed) : n == 2 ? List.of(instead) : List.of();
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", findings.isEmpty() ? "pass" : "fail",
+                                "summary", "round " + n, "findings", findings))));
+            }
+            // A stays in play across two closures, with C open so the loop continues.
+            // Round 5 re-files A on receipt-0, which was already used before the first
+            // closure; the protocol guard has to stop the run before another repair.
+            case "review-reuses-historical-evidence" -> {
+                succeedsNow(args);
+                int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                java.util.Map<String, Object> a0 = java.util.Map.of("id", "A", "severity", "P1",
+                        "path", "src/result.txt", "message", "defect A", "expected", "good",
+                        "actual", "bad", "confidence", "confirmed", "scenario", "reproduce A",
+                        "evidence_refs", List.of("receipt-0"));
+                java.util.Map<String, Object> a1 = java.util.Map.of("id", "A", "severity", "P1",
+                        "path", "src/result.txt", "message", "defect A", "expected", "good",
+                        "actual", "bad", "confidence", "confirmed", "scenario", "reproduce A",
+                        "evidence_refs", List.of("receipt-1"));
+                java.util.Map<String, Object> blocker = java.util.Map.of("id", "C", "severity", "P1",
+                        "path", "src/result.txt", "message", "defect C", "expected", "good",
+                        "actual", "bad", "confidence", "confirmed", "scenario", "reproduce C",
+                        "evidence_refs", List.of("receipt-c"));
+                List<java.util.Map<String, Object>> findings = n == 1 ? List.of(a0, blocker)
+                        : n == 2 ? List.of(blocker)
+                        : n == 3 ? List.of(a1, blocker)
+                        : n == 4 ? List.of(blocker)
+                        : List.of(a0, blocker);
+                System.out.println(dev.oseer.json.Json.writePretty(java.util.Map.of("structuredOutput",
+                        java.util.Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                                "verdict", "fail", "summary", "round " + n, "findings", findings))));
+            }
+            // Passes, and reports whether the inherited registry reached the prompt.
+            case "review-reports-inherited" -> {
+                String prompt = "";
+                String promptFile = flag(args, "--prompt-file");
+                if (promptFile != null && Files.isRegularFile(Path.of(promptFile))) {
+                    prompt = Files.readString(Path.of(promptFile), StandardCharsets.UTF_8);
+                }
+                boolean sawPrior = prompt.contains("A previous stage has already read this candidate");
+                boolean sawRegistry = prompt.contains("Cumulative finding registry");
+                boolean sawRepair = prompt.contains("What the implementer says it did");
+                boolean sawClosedA = prompt.contains("reproduce A") || prompt.contains("`A`");
+                boolean sawStage = prompt.contains("recorded_at_stage") || prompt.contains("[stage review]");
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"pass\","
+                        + "\"summary\":\"inherited=" + sawPrior + " registry=" + sawRegistry
+                        + " repair=" + sawRepair + " closed_A=" + sawClosedA
+                        + " stage=" + sawStage + "\","
+                        + "\"findings\":[]},\"total_cost_usd\":0.004}");
+            }
+            // Echoes back whether its prompt carried the recheck package, so a test can prove
+            // the reviewer was actually told what it found last time.
+            case "review-reports-context" -> {
+                String prompt = "";
+                String promptFile = flag(args, "--prompt-file");
+                if (promptFile != null && Files.isRegularFile(Path.of(promptFile))) {
+                    prompt = Files.readString(Path.of(promptFile), StandardCharsets.UTF_8);
+                }
+                boolean sawRecheck = prompt.contains("You have already read this candidate");
+                boolean sawId = prompt.contains("prior-finding");
+                // Once. Asking the counter twice in one dispatch advances it twice, which
+                // produced a failing verdict carrying no findings and so no fix round at all.
+                boolean objects = withinFirst(args);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"" + (objects ? "fail" : "pass") + "\","
+                        + "\"summary\":\"recheck_package=" + sawRecheck + " prior_id=" + sawId + "\","
+                        + "\"findings\":" + (objects
+                            ? "[{\"id\":\"prior-finding\",\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                              + "\"message\":\"needs work\",\"expected\":\"a\",\"actual\":\"b\","
+                              + "\"confidence\":\"confirmed\"}]"
+                            : "[]") + "},\"total_cost_usd\":0.004}");
+            }
+            // A passing verdict with no `role` field, so the executor fills in whichever role
+            // dispatched it. Lets one stub stand in for a reviewer or an architect stage
+            // without pretending to be a role it is not.
+            case "verdict-pass" -> System.out.println(
+                    "{\"structuredOutput\":{\"task_id\":\"hello\",\"status\":\"completed\","
+                    + "\"verdict\":\"pass\",\"summary\":\"looked and approved\",\"findings\":[]},"
+                    + "\"total_cost_usd\":0.002}");
+            // Same envelope, opposite arc: passes the diff it is first shown and objects to
+            // what a later fix round did to it. It exists so a recheck can be tested against
+            // a reviewer that both ran successfully and returned a P1 — the exact pair the
+            // recheck used to collapse into "it exited zero, carry on".
+            case "review", "review-regresses" -> {
+                // Answer buried in a text envelope, the shape Grok produces when its
+                // structured-output channel does not engage.
+                boolean passes = mode.equals("review") ? succeedsNow(args) : withinFirst(args);
+                String findings = passes ? "[]"
+                        : "[{\\\"severity\\\":\\\"P1\\\",\\\"path\\\":\\\"src/result.txt\\\","
+                        + "\\\"message\\\":\\\"not good enough\\\","
+                        + "\\\"expected\\\":\\\"the final content\\\","
+                        + "\\\"actual\\\":\\\"an intermediate one\\\","
+                        + "\\\"scenario\\\":\\\"read src/result.txt after the run\\\","
+                        + "\\\"confidence\\\":\\\"confirmed\\\"}]";
+                System.out.println("chatter the vendor prints first");
+                System.out.println("{\"text\":\"{\\\"role\\\":\\\"reviewer\\\",\\\"task_id\\\":\\\"hello\\\","
+                        + "\\\"status\\\":\\\"completed\\\",\\\"verdict\\\":\\\""
+                        + (passes ? "pass" : "fail") + "\\\","
+                        + "\\\"summary\\\":\\\"review\\\",\\\"findings\\\":" + findings + "}\","
+                        + "\"total_cost_usd\":0.004,\"num_turns\":2,\"stopReason\":\"end_turn\"}");
+            }
+            // Passes the first reading, then falls over. The other way a recheck can come
+            // back: not an objection to the work, but a role that did not complete at all.
+            // Both have to stop the run, and neither may leave the stage it happened in
+            // listed as one that passed.
+            case "review-then-fails" -> {
+                if (withinFirst(args)) {
+                    System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\","
+                            + "\"task_id\":\"hello\",\"status\":\"completed\",\"verdict\":\"pass\","
+                            + "\"summary\":\"review\",\"findings\":[]},\"total_cost_usd\":0.004}");
+                } else {
+                    System.err.println("Error: the reviewer crashed");
+                    System.exit(4);
+                }
+            }
+            case "sneaky" -> {
+                Path target = Path.of("src", "result.txt");
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, "tampered", StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"pass\",\"summary\":\"lgtm\","
+                        + "\"findings\":[]}}");
+            }
+            case "thin" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"status\":\"completed\"}}");
+            case "bad-schema" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"lgtm\",\"summary\":\"looks fine\","
+                    + "\"findings\":[]}}");
+            // A real review, then exit 1. Reviewers do this after findings. The artifact is
+            // the verdict; the exit code is not a missing call.
+            case "review-findings-exit" -> {
+                count(args);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"review\","
+                        + "\"findings\":[{\"id\":\"exit-finding\",\"severity\":\"P1\","
+                        + "\"path\":\"src/result.txt\",\"message\":\"not good enough\","
+                        + "\"expected\":\"the final content\",\"actual\":\"an intermediate one\","
+                        + "\"scenario\":\"read src/result.txt after the run\","
+                        + "\"confidence\":\"confirmed\"}]},\"total_cost_usd\":0.004}");
+                System.exit(1);
+            }
+            // A valid review, flushed, then a hang past any wall clock the profile may set.
+            // The kill must not throw the verdict away.
+            case "review-then-hang" -> {
+                count(args);
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"review\","
+                        + "\"findings\":[{\"id\":\"hung-finding\",\"severity\":\"P1\","
+                        + "\"path\":\"src/result.txt\",\"message\":\"not good enough\","
+                        + "\"expected\":\"the final content\",\"actual\":\"an intermediate one\","
+                        + "\"scenario\":\"read src/result.txt after the run\","
+                        + "\"confidence\":\"confirmed\"}]},\"total_cost_usd\":0.004}");
+                System.out.flush();
+                Thread.sleep(180_000);
+            }
+            // Turn one prints a usable review. Turn two is a spent subscription and exits 1.
+            // The earlier answer must not become the outcome.
+            case "jsonl-then-quota" -> {
+                count(args);
+                printEarlierReview();
+                String message = "You've hit your usage limit. Upgrade to Pro "
+                        + "(https://example.invalid/pro), visit https://example.invalid/usage to "
+                        + "purchase more credits or try again at 9:21 PM.";
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"error\",\"message\":\"" + message + "\"}");
+                System.out.println("{\"type\":\"turn.failed\",\"error\":{\"message\":\"" + message + "\"}}");
+                System.err.println("ERROR transport: worker quit with fatal: Transport channel closed");
+                System.exit(1);
+            }
+            // The same shape, with the later turn hitting the vendor's own turn ceiling.
+            case "jsonl-then-ceiling" -> {
+                count(args);
+                printEarlierReview();
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"result\",\"subtype\":\"error_max_turns\","
+                        + "\"is_error\":true,\"num_turns\":40,\"total_cost_usd\":1.33}");
+                System.err.println("Error: max turns reached");
+                System.exit(1);
+            }
+            // Turn one prints a usable review. Turn two is a dropped connection, not a
+            // quota and not a ceiling, and exits 1. The earlier answer must not become ok.
+            case "jsonl-then-network" -> {
+                count(args);
+                printEarlierReview();
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"turn.failed\",\"error\":{\"message\":"
+                        + "\"connect: connection reset by peer\"}}");
+                System.err.println("connect: connection reset by peer");
+                System.exit(1);
+            }
+            // The earlier answer quotes a ceiling phrase. The later turn is a network
+            // failure. The quotation must not be classified as the ceiling.
+            case "jsonl-quoted-ceiling-then-network" -> {
+                count(args);
+                printEarlierReview("the log says error_max_turns and max turns reached");
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"turn.failed\",\"error\":{\"message\":"
+                        + "\"connect: connection reset by peer\"}}");
+                System.err.println("connect: connection reset by peer");
+                System.exit(1);
+            }
+            // A usable review, then enough bytes to pass the executor's capture cap, then
+            // a later turn the prefix cannot see. Exit 1. The captured answer is stale.
+            case "jsonl-then-truncated" -> {
+                count(args);
+                printEarlierReview();
+                exceedCaptureThenLaterTurn();
+                System.err.println("connect: connection reset by peer");
+                System.out.flush();
+                System.err.flush();
+                System.exit(1);
+            }
+            // The same prefix, then a hang. SIGTERM is answered with exit 0, which is what
+            // a vendor that traps the signal does. The timeout is still the outcome.
+            case "jsonl-then-truncated-timeout" -> {
+                count(args);
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> Runtime.getRuntime().halt(0)));
+                printEarlierReview();
+                exceedCaptureThenLaterTurn();
+                System.out.flush();
+                System.err.flush();
+                Thread.sleep(180_000);
+            }
+            // Quota named only on turn.failed's error.message. No sibling type:error event.
+            case "quota-message-only" -> {
+                count(args);
+                String message = "You've hit your usage limit. Upgrade to Pro "
+                        + "(https://example.invalid/pro), visit https://example.invalid/usage to "
+                        + "purchase more credits or try again at 9:21 PM.";
+                System.out.println("{\"type\":\"thread.started\",\"thread_id\":\"stub-thread\"}");
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"turn.failed\",\"error\":{\"message\":\""
+                        + message + "\"}}");
+                System.exit(1);
+            }
+            // The first call is a dropped connection; every later call is a clean pass.
+            // Models a profile that failed once and is still usable at a later stage.
+            case "network-once" -> {
+                if (withinFirst(args)) {
+                    System.err.println("connect: connection reset by peer");
+                    System.exit(1);
+                }
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"pass\",\"summary\":\"review\","
+                        + "\"findings\":[]},\"total_cost_usd\":0.004}");
+            }
+            // A call that never reaches the vendor. Counted, then a non-zero exit, so the
+            // role outcome is role_command_failed rather than a verdict. The two wordings
+            // are the ones a live agy failure actually printed: a reset connection, and a
+            // permission refusal.
+            case "network", "permission" -> {
+                count(args);
+                System.err.println("network".equals(mode)
+                        ? "connect: connection reset by peer"
+                        : "HTTP 403 permission denied");
+                System.exit(1);
+            }
+            // The live agy geo refusal: PERMISSION_DENIED, code 403, not eligible, not
+            // available in this location. Non-zero, no artifact. Not a spent plan.
+            case "geo" -> {
+                count(args);
+                System.err.println("PERMISSION_DENIED (code 403): Your current account is not eligible "
+                        + "for Gemini Code Assist for individuals because it is not currently "
+                        + "available in your location");
+                System.exit(1);
+            }
+            // The same sentence inside an exit-0 error envelope, which agy has also printed.
+            case "geo-envelope" -> {
+                count(args);
+                System.out.println("{\"status\":\"ERROR\",\"error\":\"PERMISSION_DENIED (code 403): "
+                        + "Your current account is not eligible for Gemini Code Assist for individuals "
+                        + "because it is not currently available in your location\",\"retryable\":false}");
+                System.exit(0);
+            }
+            // Both sentences at once. Quota is the more specific fact and must win.
+            case "quota-geo" -> {
+                count(args);
+                System.out.println("{\"type\":\"error\",\"message\":\"You've hit your usage limit. "
+                        + "Try again at 9:21 PM.\"}");
+                System.err.println("PERMISSION_DENIED (code 403): Your current account is not eligible "
+                        + "because it is not currently available in your location");
+                System.exit(1);
+            }
+            case "quota", "quota-after-edit" -> {
+                if (mode.equals("quota-after-edit")) {
+                    Path target = Path.of("src", "result.txt");
+                    Files.createDirectories(target.getParent());
+                    Files.writeString(target, "half of a change", StandardCharsets.UTF_8);
+                }
+                String message = "You've hit your usage limit. Upgrade to Pro "
+                        + "(https://example.invalid/pro), visit https://example.invalid/usage to "
+                        + "purchase more credits or try again at 9:21 PM.";
+                System.out.println("{\"type\":\"thread.started\",\"thread_id\":\"stub-thread\"}");
+                System.out.println("{\"type\":\"turn.started\"}");
+                System.out.println("{\"type\":\"error\",\"message\":\"" + message + "\"}");
+                System.out.println("{\"type\":\"turn.failed\",\"error\":{\"message\":\"" + message + "\"}}");
+                System.err.println("ERROR transport: worker quit with fatal: Transport channel closed");
+                System.exit(1);
+            }
+            // A reviewer whose endpoint refuses its first call and answers every later one. The
+            // refusal is a rate limit or a spent plan, in the shapes QuotaSignal tells apart;
+            // the later answer is a clean pass. It models the stop that is not a verdict and
+            // the retry that should pay only for the reading that never happened.
+            case "rate-limit-once", "quota-once" -> {
+                if (withinFirst(args)) {
+                    String message = mode.equals("rate-limit-once")
+                            ? "Rate limit reached for requests; please retry shortly"
+                            : "You've hit your usage limit. Try again at 9:21 PM.";
+                    String priced = flag(args, "--cost") == null ? ""
+                            : ",\"total_cost_usd\":" + costOf(args, 0.004);
+                    System.out.println("{\"type\":\"error\",\"message\":\"" + message + "\""
+                            + priced + "}");
+                    System.exit(1);
+                }
+                System.out.println("{\"structuredOutput\":{\"role\":\"reviewer\","
+                        + "\"task_id\":\"hello\",\"status\":\"completed\",\"verdict\":\"pass\","
+                        + "\"summary\":\"review\",\"findings\":[]},\"total_cost_usd\":"
+                        + costOf(args, 0.004) + "}");
+            }
+            // An implementer that writes the result on its first call and is rate limited on
+            // its second — the fix round a reviewer's P1 asked for. The tree is left as the
+            // first call wrote it, so a resume sees the same bytes the objection was about.
+            case "impl-then-rate-limit" -> {
+                if (!withinFirst(args)) {
+                    System.out.println("{\"type\":\"error\",\"message\":\"429 Too Many Requests\"}");
+                    System.exit(1);
+                }
+                Path target = Path.of("src", "result.txt");
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, "ok", StandardCharsets.UTF_8);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"created\","
+                        + "\"files_changed\":[\"src/result.txt\"]},\"total_cost_usd\":0.012}");
+            }
+            // Both live specimens of a spent turn ceiling: a message on stderr, a cost in the
+            // envelope on stdout, and exit 1. Grok prints `Error: max turns reached`; claude -p
+            // prints `"subtype":"error_max_turns"`. Both charged for the call.
+            case "turn-ceiling" -> {
+                System.out.println("{\"type\":\"result\",\"subtype\":\"error_max_turns\","
+                        + "\"is_error\":true,\"num_turns\":40,\"total_cost_usd\":1.33483082}");
+                System.err.println("Error: max turns reached");
+                System.exit(1);
+            }
+            // A vendor that never reads the prompt it was handed on stdin. With the prompt
+            // larger than a pipe holds, whoever writes it blocks until something reads — and
+            // nothing here ever will.
+            case "stdin-ignored" -> Thread.sleep(120_000);
+            // A vendor that prints a lot before it reads its input, as a CLI streaming a banner
+            // or an event log does. Its stdout pipe fills, and it waits for that to be read
+            // before it gets to stdin. Says on stderr how much of the prompt arrived.
+            case "stdout-before-stdin" -> {
+                byte[] line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n"
+                        .getBytes(StandardCharsets.UTF_8);
+                for (int i = 0; i < 65_536; i++) System.out.write(line);
+                System.out.flush();
+                long read = System.in.readAllBytes().length;
+                System.err.println("read " + read);
+            }
+            case "stdin" -> {
+                // Answers only if the prompt reached it through standard input, so a profile
+                // that claims stdin delivery and does not get it fails loudly.
+                String prompt = new String(System.in.readAllBytes(), StandardCharsets.UTF_8);
+                if (!prompt.contains("Create src/result.txt")) {
+                    System.err.println("prompt did not arrive on stdin: " + prompt.length() + " chars");
+                    System.exit(3);
+                }
+                Path target = Path.of("src", "result.txt");
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, "ok", StandardCharsets.UTF_8);
+                System.out.println("{\"structuredOutput\":{\"role\":\"implementer\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"summary\":\"read the prompt from stdin\","
+                        + "\"files_changed\":[\"src/result.txt\"]}}");
+            }
+            case "eyes" -> {
+                // A visual reviewer that refuses to pretend. It answers only if real image
+                // files were attached, because "the model was told where the screenshots are"
+                // and "the model saw the screenshots" are different claims, and only the
+                // second one is worth paying for.
+                List<String> images = new ArrayList<>();
+                for (int index = 0; index + 1 < args.length; index++) {
+                    if (args[index].equals("-i") && Files.isRegularFile(Path.of(args[index + 1]))) {
+                        images.add(args[index + 1]);
+                    }
+                }
+                if (images.isEmpty()) {
+                    System.out.println("{\"structuredOutput\":{\"role\":\"visual_qa\",\"task_id\":\"hello\","
+                            + "\"status\":\"aborted\",\"verdict\":\"fail\","
+                            + "\"summary\":\"no image reached me\",\"findings\":[]}}");
+                    return;
+                }
+                boolean passes = succeedsNow(args);
+                String findings = passes ? "[]"
+                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
+                        + "\"expected\":\"the whole word is readable\","
+                        + "\"actual\":\"it is cut off at the panel edge\","
+                        + "\"scenario\":\"open the screenshot at 1280x720\","
+                        + "\"confidence\":\"confirmed\"}]";
+                System.out.println("{\"structuredOutput\":{\"role\":\"visual_qa\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"" + (passes ? "pass" : "fail") + "\","
+                        + "\"summary\":\"looked at " + images.size() + " image(s)\","
+                        + "\"images_seen\":[\"" + String.join("\",\"", images).replace("\\", "/") + "\"],"
+                        + "\"findings\":" + findings + "},"
+                        + "\"total_cost_usd\":0.003}");
+            }
+            case "eyes-acquire", "eyes-acquire-empty", "eyes-acquire-outside" -> {
+                // A visual reviewer with its own camera. It is handed no images; it is told
+                // where to put the ones it takes, and Overseer believes only the files it can
+                // find there afterwards. The -empty variant answers without taking any, and the
+                // -outside variant lists a file it wrote somewhere other than the evidence
+                // directory: both are the claims the verification exists to refuse.
+                List<String> taken = new ArrayList<>();
+                String evidenceDir = flag(args, "--evidence-dir");
+                String outside = flag(args, "--outside");
+                Path shot = null;
+                if (mode.equals("eyes-acquire") && evidenceDir != null) {
+                    shot = Path.of(evidenceDir).resolve("home-1280x720.png");
+                } else if (mode.equals("eyes-acquire-outside") && outside != null) {
+                    shot = Path.of(outside).resolve("elsewhere-1280x720.png");
+                }
+                if (shot != null) {
+                    Files.createDirectories(shot.getParent());
+                    javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(32, 24,
+                            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", shot.toFile());
+                    taken.add(shot.toAbsolutePath().toString().replace("\\", "/"));
+                }
+                boolean passes = succeedsNow(args);
+                String findings = passes ? "[]"
+                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
+                        + "\"expected\":\"the whole word is readable\","
+                        + "\"actual\":\"it is cut off at the panel edge\","
+                        + "\"scenario\":\"open the home screen at 1280x720\","
+                        + "\"confidence\":\"confirmed\"}]";
+                String listed = taken.isEmpty() ? "" : "\"" + String.join("\",\"", taken) + "\"";
+                System.out.println("{\"structuredOutput\":{\"role\":\"visual_qa\",\"task_id\":\"hello\","
+                        + "\"status\":\"completed\",\"verdict\":\"" + (passes ? "pass" : "fail") + "\","
+                        + "\"summary\":\"drove the application myself and took " + taken.size()
+                        + " screenshot(s)\",\"screenshots_taken\":[" + listed + "],"
+                        + "\"findings\":" + findings + "},"
+                        + "\"total_cost_usd\":0.004}");
+            }
+            case "plan", "plan-shell", "plan-scope", "plan-goal", "plan-access", "plan-sneaky",
+                    "plan-commit", "plan-stage", "plan-schema", "plan-amend", "plan-visual-redraft" -> {
+                String prompt = "";
+                String promptFile = flag(args, "--prompt-file");
+                if (promptFile != null && Files.isRegularFile(Path.of(promptFile))) {
+                    prompt = Files.readString(Path.of(promptFile), StandardCharsets.UTF_8);
+                }
+                String goal = extractPlannerGoal(prompt);
+                boolean commitViolation = mode.equals("plan-commit")
+                        && (flag(args, "--counter") == null || !succeedsNow(args));
+                if (mode.equals("plan-sneaky") || mode.equals("plan-stage") || commitViolation) {
+                    Path target = Path.of("src", "result.txt");
+                    Files.createDirectories(target.getParent());
+                    Files.writeString(target, mode.equals("plan-commit") ? "committed-by-planner" : "tampered",
+                            StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                    if (mode.equals("plan-commit")) {
+                        git("add", "--", "src/result.txt");
+                        git("-c", "user.email=planner@example.invalid", "-c", "user.name=planner",
+                                "-c", "commit.gpgsign=false", "commit", "-qm", "wip");
+                    } else if (mode.equals("plan-stage")) {
+                        git("add", "--", "src/result.txt");
+                    }
+                }
+                boolean reserved = callPlanWasReserved(args);
+                java.util.Map<String, Object> access = new java.util.LinkedHashMap<>();
+                access.put("workspace_write", true);
+                access.put("network", false);
+                access.put("land", mode.equals("plan-access"));
+                Object acceptance = mode.equals("plan-shell")
+                        ? java.util.List.of("npm test")
+                        : java.util.List.of(java.util.Map.of("check", "fast", "covers", "the file exists"));
+                java.util.Map<String, Object> estimate = new java.util.LinkedHashMap<>();
+                estimate.put("role_runs", 2);
+                estimate.put("cost_usd", 0.5);
+                estimate.put("rationale", "one implementer, one review");
+                java.util.Map<String, Object> artifact = new java.util.LinkedHashMap<>();
+                artifact.put("role", "planner");
+                artifact.put("task_id", "hello");
+                artifact.put("status", "completed");
+                artifact.put("operator_goal", mode.equals("plan-goal") ? "a different goal" : goal);
+                artifact.put("task_kind", mode.equals("plan-schema") ? "not-a-kind" : "feature");
+                artifact.put("deliverable", "src/result.txt containing ok");
+                artifact.put("non_goals", java.util.List.of("Do not rewrite the harness"));
+                artifact.put("subtasks", java.util.List.of(java.util.Map.of(
+                        "id", "write-file", "goal", "write src/result.txt", "depends_on", java.util.List.of())));
+                artifact.put("acceptance", acceptance);
+                artifact.put("target", "local");
+                artifact.put("required_access", access);
+                artifact.put("risk", "low");
+                artifact.put("scope", mode.equals("plan-scope") ? "invented" : "app");
+                artifact.put("estimate", estimate);
+                artifact.put("stop_conditions", java.util.List.of("stop if the file already exists"));
+                artifact.put("summary", "drafted");
+                artifact.put("call_plan_reserved_before_dispatch", reserved);
+                if (mode.equals("plan-amend")) {
+                    // An amending planner answering "the acceptance never checks the text".
+                    artifact.put("visual_qa", java.util.Map.of("required", true, "scenarios", java.util.List.of(
+                            "1280x720: testid=greeting visible -> text=Hello, World visible")));
+                }
+                if (mode.equals("plan-visual-redraft")) {
+                    // Two drafts that differ in visual_qa so a redraft over a person's file
+                    // without visual_qa can prove the first draft's scenarios are not frozen.
+                    succeedsNow(args);
+                    int n = Integer.parseInt(Files.readString(Path.of(flag(args, "--counter"))).trim());
+                    String scenario = n <= 1
+                            ? "1280x720: testid=first-draft visible"
+                            : "1280x720: testid=second-draft visible";
+                    artifact.put("visual_qa", java.util.Map.of("required", true,
+                            "scenarios", java.util.List.of(scenario)));
+                }
+                java.util.Map<String, Object> envelope = new java.util.LinkedHashMap<>();
+                envelope.put("structuredOutput", artifact);
+                envelope.put("total_cost_usd", 0.01);
+                envelope.put("num_turns", 2);
+                envelope.put("usage", java.util.Map.of("input_tokens", 4, "output_tokens", 6, "total_tokens", 10));
+                System.out.println(dev.oseer.json.Json.write(envelope));
+            }
+            // The second planner. `plan-review-pass` approves the compiled contract;
+            // `plan-review-fail` objects every time; `plan-review-once` objects on its first
+            // reading and approves the redraft, which is the one path that both sends the
+            // first planner back and lets the run go on.
+            case "plan-review-pass", "plan-review-fail", "plan-review-once" -> {
+                boolean objects = mode.equals("plan-review-fail")
+                        || (mode.equals("plan-review-once") && !succeedsNow(args));
+                String promptText = "";
+                String promptFile = flag(args, "--prompt-file");
+                if (promptFile != null && Files.isRegularFile(Path.of(promptFile))) {
+                    promptText = Files.readString(Path.of(promptFile), StandardCharsets.UTF_8);
+                }
+                boolean sawContract = promptText.contains("The compiled contract you are judging")
+                        && promptText.contains("```yaml");
+                java.util.Map<String, Object> artifact = new java.util.LinkedHashMap<>();
+                artifact.put("role", "plan_reviewer");
+                artifact.put("task_id", "hello");
+                artifact.put("status", "completed");
+                artifact.put("verdict", objects ? "fail" : "pass");
+                artifact.put("summary", "saw_contract=" + sawContract);
+                artifact.put("findings", objects ? List.of(java.util.Map.of(
+                        "id", "PLAN-1", "severity", "P1", "category", "acceptance_gap",
+                        "message", "the acceptance cannot fail for the goal",
+                        "expected", "a check that fails today", "actual", "a check that passes today",
+                        "suggestion", "name a check that exercises the new file",
+                        "confidence", "confirmed")) : List.of());
+                java.util.Map<String, Object> envelope = new java.util.LinkedHashMap<>();
+                envelope.put("structuredOutput", artifact);
+                envelope.put("num_turns", 1);
+                System.out.println(dev.oseer.json.Json.write(envelope));
+            }
+            case "check" -> System.exit(Files.isRegularFile(Path.of("src", "result.txt")) ? 0 : 1);
+            default -> {
+                System.err.println("unknown stub vendor mode: " + mode);
+                System.exit(2);
+            }
+        }
+    }
+
+    /** Pad past the executor's capture cap, then start a turn the prefix cannot see. */
+    private static void exceedCaptureThenLaterTurn() {
+        int pad = dev.oseer.execution.DirectCliExecutor.STDOUT_CAPTURE_BYTES;
+        System.out.print("x".repeat(pad));
+        System.out.println();
+        System.out.println("{\"type\":\"turn.started\",\"marker\":\"later-turn-cut-off\"}");
+    }
+
+    /** One Codex turn whose agent_message is a complete passing review. */
+    private static void printEarlierReview() {
+        printEarlierReview("earlier turn");
+    }
+
+    private static void printEarlierReview(String summary) {
+        String artifact = dev.oseer.json.Json.write(java.util.Map.of(
+                "role", "reviewer", "task_id", "hello", "status", "completed",
+                "verdict", "pass", "summary", summary, "findings", java.util.List.of()));
+        System.out.println("{\"type\":\"thread.started\",\"thread_id\":\"stub-thread\"}");
+        System.out.println("{\"type\":\"turn.started\"}");
+        System.out.println(dev.oseer.json.Json.write(java.util.Map.of(
+                "type", "item.completed",
+                "item", java.util.Map.of("id", "item-1", "type", "agent_message", "text", artifact))));
+        System.out.println("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}");
+    }
+
+    /**
+     * True when {@code run.json} already names the planner in {@code paying_stages} at the
+     * moment this process starts — proof the reservation happened before the vendor call,
+     * not after it returned.
+     */
+    private static boolean callPlanWasReserved(String[] args) {
+        String promptFile = flag(args, "--prompt-file");
+        if (promptFile == null) return false;
+        Path runJson = Path.of(promptFile).toAbsolutePath().normalize().getParent();
+        if (runJson != null) runJson = runJson.getParent();
+        if (runJson == null) return false;
+        Path marker = runJson.resolve("run.json");
+        try {
+            if (!Files.isRegularFile(marker)) return false;
+            String body = Files.readString(marker, StandardCharsets.UTF_8);
+            return body.contains("paying_stages") && body.contains("planner");
+        } catch (Exception unread) {
+            return false;
+        }
+    }
+
+    /** Runs git in the vendor process cwd (the project) without writing to stdout. */
+    private static void git(String... args) throws Exception {
+        List<String> command = new ArrayList<>();
+        command.add("git");
+        command.addAll(List.of(args));
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+        int code = builder.start().waitFor();
+        if (code != 0) {
+            throw new IllegalStateException("git " + String.join(" ", args) + " exited " + code);
+        }
+    }
+}

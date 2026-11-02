@@ -1,9 +1,9 @@
 # Проверка четырёх вендоров и Orca на Windows
 
 Дата: 2026-10-21. Продолжение [настроек и аналитики](AGENT-LOOP-UI-SETTINGS-ANALYTICS-2026-10-20.md).
-Исправления probe: `94f0c34`. Публичная проверка ветки: [PR #54](https://github.com/tolboy/warden-agentic-sdlc/pull/54).
+Исправления probe: `94f0c34`. Публичная проверка ветки: [PR #54](https://github.com/tolboy/ai-overseer/pull/54).
 Машиночитаемый результат: [sanitized evidence](evidence/agent-loop-live-2026-10-21.json).
-Полные локальные журналы находятся в gitignored `out/` и `.warden/runs/` тестовых деревьев;
+Полные локальные журналы находятся в gitignored `out/` и `.oseer/runs/` тестовых деревьев;
 они не входят в клон. Ключи, личные настройки, account balance и сырые vendor prompts не публикуются.
 
 Оставшиеся этапы практических evals и интеграционной проверки выполнены на двух
@@ -51,7 +51,7 @@ ID [deepseek/deepseek-v4.1-flash-1017](https://openrouter.ai/deepseek/deepseek-v
 Воспроизводимый [fixture и driver](../examples/evals/four-vendor/README.md) сравнивают
 второго reader: AGY против DeepSeek после одинаковых Grok writer и Codex reader.
 Фиксированы base commit `191a06780e62caad0d69b90ddf1933cae6c86d5c`, task, policy,
-budgets, profile contents и сборка Warden. Порядок: A/B, B/A, A/B.
+budgets, profile contents и сборка AI Overseer. Порядок: A/B, B/A, A/B.
 
 | Повтор | AGY: секунд / вызовов / outcome | DeepSeek: секунд / вызовов / outcome |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ DeepSeek составил план небольшой функции retry delay
 error → Grok writer → Node gates → Codex reader через Orca → DeepSeek reader → AGY
 reader. Все стадии прошли, три review verdict — pass. Дополнительно выполнены
 **92 независимые Node assertions**. Orca gate разрешён как `accept`, затем
-`warden approve --from-orca` сохранил решение с actor тестового оператора;
+`oseer approve --from-orca` сохранил решение с actor тестового оператора;
 `lands: false`. Этот конкретный запуск Orca не потребовал ручного Enter.
 
 Всего учтено 5 attempt calls: 4 настоящих vendor calls и 1 явно синтетический
@@ -136,7 +136,7 @@ Native Windows full registry: **4928 passed, 0 failed** на заморожен�
 profile verifier и recovery checks: **247 passed, 0 failed**. Это отдельные прогоны,
 их counts не складываются. Linux CI для `94f0c34`: **4930 passed, 0 failed**.
 Актуальная Linux/Windows JDK 21/25 matrix, demo и hygiene доступны в
-[проверках PR](https://github.com/tolboy/warden-agentic-sdlc/pull/54/checks).
+[проверках PR](https://github.com/tolboy/ai-overseer/pull/54/checks).
 
 Первый hygiene job выявил ссылки из прошлых отчётов на gitignored `out/`. Они
 заменены явными локальными путями: ссылки в чистом клоне больше не обещают
@@ -147,7 +147,7 @@ profile verifier и recovery checks: **247 passed, 0 failed**. Это отдел
 - Grok adapter отказывает launch-time `--model`; pinned Grok запускается direct.
   Отказ сохранён, модель не подменяется запуском без флага.
 - В одном nonce probe Orca сообщил `input_accepted`, но prompt остался в строке
-  ввода Codex. Warden сохранил worker и recovery fence. После просмотра именно
+  ввода Codex. Overseer сохранил worker и recovery fence. После просмотра именно
   этого owned prompt оператор отправил только Enter; исходный Dispatch завершился.
   Новый nonce probe прошёл автоматически. Это наблюдаемое ограничение unattended
   submission в Orca, требующее исправления на его стороне.

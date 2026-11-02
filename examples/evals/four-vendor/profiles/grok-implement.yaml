@@ -19,6 +19,6 @@ quota:
   signatures: []
 verification:
   probe: "grok --prompt-file verification-fixtures/grok-prompt.txt --output-format json --always-approve --reasoning-effort {{effort}} --max-turns 10 --disable-web-search --verbatim --model {{model}}"
-  expect: "WARDEN_GROK_WRITE_OK"
+  expect: "OSEER_GROK_WRITE_OK"
   what_to_check: ["The model reads a real local file and returns its title; model/effort in launch flags are requested settings, not vendor receipts."]
   note: "Configured 2026-10-21. No inferred cost or inherited verification stamp."

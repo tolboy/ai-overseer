@@ -1,14 +1,14 @@
 # Reproducible cross-project smoke
 
-The narrow, repeatable proof that the machine boundary holds across a project Warden has never
+The narrow, repeatable proof that the machine boundary holds across a project AI Overseer has never
 seen:
 
 ```text
-Orca tracked implementer -> target worktree -> Warden validate/gates -> evidence ledger
+Orca tracked implementer -> target worktree -> Overseer validate/gates -> evidence ledger
                          -> Conductor machine nodes -> fail-closed human gate
 ```
 
-The smoke uses a throwaway Git repository — not Warden itself, and not a project you care about.
+The smoke uses a throwaway Git repository — not Overseer itself, and not a project you care about.
 
 This document is the **cross-project boundary** smoke and predates the full loop. For the loop
 end to end with live vendors, read [`LIVE-CYCLE.md`](LIVE-CYCLE.md); for a version that needs
@@ -16,7 +16,7 @@ no vendor, no key and no network at all, run [`examples/demo/run.sh`](../example
 The dated sections below are kept as they were written, because a transcript that gets edited
 after the fact stops being evidence. Their model IDs, CLI flags, account names and
 prices are historical observations, not recommended current personal settings. Do not
-copy a dated eval profile into `~/.warden` as a default. Use the current
+copy a dated eval profile into `~/.oseer` as a default. Use the current
 [setup](SETUP.md), [API execution guide](API-CONNECTIONS.md) and
 [Jev routing guide](JEV-ROUTING.md); later live acceptance is recorded in
 [Stage 3](ACCEPTANCE-STAGE3-2026-10-28.md),
@@ -25,10 +25,10 @@ copy a dated eval profile into `~/.warden` as a default. Use the current
 
 ## 1. Prerequisites
 
-Build Warden once:
+Build Overseer once:
 
 ```text
-cd <warden>
+cd <ai-overseer>
 build.cmd
 test.cmd
 ```
@@ -47,9 +47,9 @@ Never use `safe.directory=*`.
 The verified fixture is a clean Git repository with this task:
 
 ```yaml
-# .warden/project.yaml
+# .oseer/project.yaml
 version: 1
-project: "warden-e2e-smoke"
+project: "oseer-e2e-smoke"
 base_ref: "main"
 checks:
   smoke: ["verify.cmd"]
@@ -63,12 +63,12 @@ defaults:
 ```
 
 ```yaml
-# .warden/tasks/create-result.yaml
+# .oseer/tasks/create-result.yaml
 version: 1
 id: create-result
-goal: Create result.txt containing exactly one line WARDEN_OK
+goal: Create result.txt containing exactly one line OSEER_OK
 non_goals:
-  - "Do not modify verification or Warden contract files"
+  - "Do not modify verification or Overseer contract files"
 risk: low
 scope: outcome
 checks: smoke
@@ -93,9 +93,9 @@ Commit the contract and checker while deliberately leaving `result.txt` absent.
 Run from the target repository:
 
 ```text
-<warden>\bin\warden.cmd validate create-result
-<warden>\bin\warden.cmd gates create-result --run-id smoke-red
-<warden>\bin\warden.cmd ledger
+<ai-overseer>\bin\oseer.cmd validate create-result
+<ai-overseer>\bin\oseer.cmd gates create-result --run-id smoke-red
+<ai-overseer>\bin\oseer.cmd ledger
 ```
 
 Expected: validation succeeds, gates return `command_failed`, and ledger contains one failed
@@ -108,9 +108,9 @@ The exact IDs are returned by Orca and must be copied, never guessed:
 
 ```text
 orca repo add --path C:\absolute\path\to\target --json
-orca orchestration run-create --objective "Warden cross-project smoke" --json
-orca orchestration task-create --spec "Create result.txt with exactly WARDEN_OK; change nothing else; run verify.cmd; send worker_done once" --json
-orca worktree create --repo name:warden-e2e-smoke --name warden-e2e-create-result --no-parent --base-branch main --agent codex --setup run --json
+orca orchestration run-create --objective "Overseer cross-project smoke" --json
+orca orchestration task-create --spec "Create result.txt with exactly OSEER_OK; change nothing else; run verify.cmd; send worker_done once" --json
+orca worktree create --repo name:oseer-e2e-smoke --name oseer-e2e-create-result --no-parent --base-branch main --agent codex --setup run --json
 orca terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
 orca orchestration dispatch --task <task-id> --to <handle> --from <coordinator-handle> --inject --json
 ```
@@ -123,8 +123,8 @@ Completion is accepted only when `dispatch-show` is settled and the coordinator 
 Run from the Orca task worktree:
 
 ```text
-<warden>\bin\warden.cmd gates create-result --run-id smoke-green
-<warden>\bin\warden.cmd ledger
+<ai-overseer>\bin\oseer.cmd gates create-result --run-id smoke-green
+<ai-overseer>\bin\oseer.cmd ledger
 git status --short
 ```
 
@@ -139,27 +139,27 @@ run with the target worktree as `project_dir`:
 
 ```text
 $env:PYTHONUTF8='1'
-conductor run <warden>\conductor\gates.yaml `
+conductor run <ai-overseer>\conductor\gates.yaml `
   --skip-gates --no-interactive `
   --input task=create-result `
   --input run_id=conductor-smoke `
   --input project_dir=C:\absolute\path\to\target-worktree
 ```
 
-`--skip-gates` selects the first human-gate option. Warden deliberately puts `Reject` first,
+`--skip-gates` selects the first human-gate option. Overseer deliberately puts `Reject` first,
 so automation must finish failed **after** both machine nodes pass. A success here would be a
 fail-open defect.
 
 ## Verified 2026-08-26
 
-- Warden baseline: `fc54be7`; follow-up hardening was still uncommitted during the run.
+- Overseer baseline: `fc54be7`; follow-up hardening was still uncommitted during the run.
 - JVM checks: 155 passed after blocker fixes.
-- Orca runtime: 1.4.188; UI showed separate Warden, Claude, Grok and smoke worktrees.
+- Orca runtime: 1.4.188; UI showed separate Overseer, Claude, Grok and smoke worktrees.
 - Codex implementation dispatch: completed, only `result.txt` modified.
 - Claude review dispatch: completed with `worker_done`.
 - Grok review produced an artifact, but its dispatch capability was revoked after
   `agent_prompt_stalled`; the task is recorded failed rather than relabelled successful.
-- Warden: `smoke-green` passed.
+- Overseer: `smoke-green` passed.
 - Conductor: validate and machine gates passed; automated human gate selected Reject and the
   workflow terminated failed as designed.
 
@@ -169,7 +169,7 @@ A second, smaller fixture, run because the Codex account's quota was genuinely s
 is not a state worth simulating when it is available for free. Reviewer role, two profiles,
 Codex first on purpose:
 
-- `warden role reviewer --dry-run` resolved `codex-review`; nothing spent.
+- `oseer role reviewer --dry-run` resolved `codex-review`; nothing spent.
 - With an inline `{{prompt}}`, the run was refused before dispatch as
   `role_prompt_undeliverable`: a 3660-character argument through an npm `.cmd` shim would have
   reached the vendor as one line with `--json` stripped off. Measured, not assumed.
@@ -179,32 +179,32 @@ Codex first on purpose:
 - Both transcripts survive: `raw/reviewer.stdout.txt` and `raw/reviewer.attempt-2.stdout.txt`.
 - The reviewer returned `verdict: fail` with one P1 against the fixture — `result.txt` was
   written with LF, and the gate's `findstr /x` needs CRLF. Confirmed independently:
-  `warden gates` returned `command_failed` on the same tree. The finding was correct.
+  `oseer gates` returned `command_failed` on the same tree. The finding was correct.
 
-Two defects in Warden itself were found by this run and fixed: `where.exe` resolution picked
+Two defects in Overseer itself were found by this run and fixed: `where.exe` resolution picked
 the extensionless npm shim that Java cannot start, and a failed run's report quoted only
 stderr while the vendor's own explanation was on stdout.
 
 ## Verified 2026-08-27 — Direct CLI loop on cheap models
 
-Throwaway Git repositories under `%LOCALAPPDATA%\\Temp\\warden-e2e-*`, configuration in a
-separate `WARDEN_CONFIG_HOME` so the operator's `~/.warden` was not overwritten. Models were
+Throwaway Git repositories under `%LOCALAPPDATA%\\Temp\\oseer-e2e-*`, configuration in a
+separate `OSEER_CONFIG_HOME` so the operator's `~/.oseer` was not overwritten. Models were
 lowered only in that test home: Claude `--model sonnet` (resolved `claude-sonnet-5`), Codex
 `-m gpt-5.4-mini`.
 
 - Red gates on a fixture without `result.txt`: `command_failed`, report written.
-- Reviewer `warden role reviewer` via Direct CLI (`claude.exe`, argv prompt, `--allowedTools
+- Reviewer `oseer role reviewer` via Direct CLI (`claude.exe`, argv prompt, `--allowedTools
   Read,Grep,Glob`): 78s, $0.14, fingerprint matched, schema accepted, `verdict: fail`. The P1
   was correct — an `if exist result.txt` check passes for any content. Artifact and raw
   transcript kept.
-- Implementer `warden run` (low risk, no review) via Direct CLI (`codex.cmd`, stdin,
+- Implementer `oseer run` (low risk, no review) via Direct CLI (`codex.cmd`, stdin,
   `--approve-for-me`): first attempt exited 2 in 177ms because `--sandbox workspace-write`
   cannot combine with `--approve-for-me` (stderr kept). Retry without `--sandbox` completed
-  in 106s, wrote `result.txt` as `WARDEN_OK\\r\\n`, gates passed, `next_action: human_gate`.
+  in 106s, wrote `result.txt` as `OSEER_OK\\r\\n`, gates passed, `next_action: human_gate`.
   Nothing was merged. Codex `--json` is JSONL; the role artifact is recovered from
   `item.completed` / `agent_message`, not from the trailing `turn.completed` usage event.
 
-Warden is the source of truth for its own behaviour, and it does not create worktrees itself.
+Overseer is the source of truth for its own behaviour, and it does not create worktrees itself.
 
 
 ## What these smokes do and do not prove
@@ -223,7 +223,7 @@ Still not proven anywhere, and refused rather than faked:
 
 - visual QA pixel-diff and baseline comparison (not implemented);
 - tamper-evident external ledger storage;
-- automatic landing — which is not a gap but a decision. Warden never merges.
+- automatic landing — which is not a gap but a decision. Overseer never merges.
 
 ### Where the receipts behind this file are, as of 2026-09-09
 
@@ -232,10 +232,10 @@ those receipts lived in have since been cleared, so what can be re-audited today
 than what this file records, and saying that no link broke would not be the same as saying
 nothing was lost.
 
-- The `warden-orca-review-smoke` and `p1-closure-smoke` fixtures were copied whole, verified,
+- The `oseer-orca-review-smoke` and `p1-closure-smoke` fixtures were copied whole, verified,
   and kept outside this repository before removal. Their evidence, including ten decision
   records, is auditable from that archive.
-- The `warden-e2e-smoke` probe worktree named in section 2 was deleted without being archived.
+- The `oseer-e2e-smoke` probe worktree named in section 2 was deleted without being archived.
   Two run directories went with it, neither holding a decision record. **Those runs cannot be
   re-audited**; recovery has not been attempted and is not confirmed possible. What survives
   of them is this file's own account, which is a record rather than a receipt. The fixture
@@ -244,20 +244,20 @@ nothing was lost.
 
 ### Attempted 2026-09-03 — `runner: orca` reviewer, Claude `opus`
 
-Throwaway repo `warden-orca-review-smoke`, Orca worktree
-`w-orca-claude-review`, isolated `WARDEN_CONFIG_HOME` (operator `~/.warden` not
+Throwaway repo `oseer-orca-review-smoke`, Orca worktree
+`w-orca-claude-review`, isolated `OSEER_CONFIG_HOME` (operator `~/.oseer` not
 written). Codex session quota was 100%; the reviewer profile was Claude
 `opus` (Opus 5 alias) on `runner: orca`, not a failover from Codex.
 
 - `--dry-run` resolved `orca-claude-review` / `runner: orca` / `model: opus` and
   wrote the prompt. No `raw/`.
-- Live `warden role reviewer review-smoke --run-id orca-claude-live` (39s):
+- Live `oseer role reviewer review-smoke --run-id orca-claude-live` (39s):
   Orca 1.4.196 created a **visible** agent terminal (`surface: visible`,
   `agentIdentity: claude`, dispatch `ctx_731cacb05fa5`). That is the Agents /
   Dashboard row.
 - Claude Code printed the folder-trust / “Quick safety check” screen and did
   not become a ready TUI. Orca settled `worker-start` as `ok: true` with
-  `state: failed`, `lastError: agent_prompt_stalled`. Warden mapped that to
+  `state: failed`, `lastError: agent_prompt_stalled`. Overseer mapped that to
   `role_orca_start_failed`, `worker_stop_ok: true` (already settled,
   `processAction: none`), closed the coordinator, one `vendor_attempts` row,
   $0. Not `worker_done`. Direct CLI remains the default.
@@ -265,15 +265,15 @@ written). Codex session quota was 100%; the reviewer profile was Claude
 The leftover Claude tab was closed after the run. The failed dispatch remains
 `reclaimable` in `worker-list`; it is not a live worker.
 
-Same day, the **loop** (`warden run review-smoke --run-id orca-loop-1`), not a
-lone `warden role`:
+Same day, the **loop** (`oseer run review-smoke --run-id orca-loop-1`), not a
+lone `oseer role`:
 
 - Direct CLI implementer (`grok-implement`, grok-4.6, 54.6s, $0.013): worktree
   card said `implement · implementer (grok-implement / grok) · running`.
   `orca terminal list` on that worktree had **no** `agentIdentity` — Grok did
   not appear in Agents.
 - Machine gates passed (`java tools/Verify.java`).
-- Orca-hosted reviewer (`orca-claude-review`, claude/opus): Warden called
+- Orca-hosted reviewer (`orca-claude-review`, claude/opus): Overseer called
   `orchestration worker-start` (not a human `orca --agent`). A second visible
   Claude terminal appeared (`agentIdentity: claude`, dispatch `ctx_30af11a51417`)
   and stalled the same way (`agent_prompt_stalled` → `role_orca_start_failed`,
@@ -283,26 +283,26 @@ lone `warden role`:
 ### Proven 2026-09-04 — `runner: orca` reviewer in Agent Dashboard
 
 The same throwaway repository was opened in a fresh Orca worktree,
-`w-dashboard-proof-20260904`, with the isolated `WARDEN_CONFIG_HOME`. Claude's one-time folder
+`w-dashboard-proof-20260904`, with the isolated `OSEER_CONFIG_HOME`. Claude's one-time folder
 trust screen was accepted before the measured run; without that preflight Orca correctly
-reported `agent_prompt_stalled` and Warden failed `role_orca_start_failed` rather than claiming
+reported `agent_prompt_stalled` and Overseer failed `role_orca_start_failed` rather than claiming
 an agent was ready.
 
-`warden role reviewer review-smoke --run-id dashboard-proof-green2-20260904` then completed in
+`oseer role reviewer review-smoke --run-id dashboard-proof-green2-20260904` then completed in
 148.1s with Claude `opus` (the installed Claude Code 2.1.259 UI identified it as Opus 5 with
 high effort) on Orca 1.4.196:
 
 - run `run_2656a32b63ea`, task `task_367b76c01219`, dispatch `ctx_4571f80b7920`;
-- while Warden was running, the desktop Agent Dashboard showed `1 total`, `WORKING 1`,
+- while Overseer was running, the desktop Agent Dashboard showed `1 total`, `WORKING 1`,
   `NEEDS YOU 0`, `DONE 0`, the exact smoke worktree, and live activity including
   `java tools/Verify.java`;
 - the archived Orca transcript contains the reviewer's short progress summaries, file reads,
-  tool calls, and the gate result `PASS: result.txt contains WARDEN_OK` (exit 0). It does not
+  tool calls, and the gate result `PASS: result.txt contains OSEER_OK` (exit 0). It does not
   expose private chain-of-thought;
 - message `msg_d4642fd42a65` delivered an explicit `outcome: succeeded` and the typed
-  `warden_artifact`. Orca 1.4 represented its payload as a JSON string, which the adapter now
+  `oseer_artifact`. Orca 1.4 represented its payload as a JSON string, which the adapter now
   normalizes while still checking the nested task and dispatch IDs;
-- Warden returned `ok`, `settlement: completed`, `worker_done_succeeded`, accepted the typed
+- Overseer returned `ok`, `settlement: completed`, `worker_done_succeeded`, accepted the typed
   artifact, matched the read-only content fingerprint, acknowledged delivery
   `delivery_9058ec7506fc`, and released the worker;
 - `worker-show` ended at `dispatchStatus: completed`, `workerState: succeeded`, terminal
@@ -313,19 +313,19 @@ The fixture's reviewer also reported a P2 in `tools/Verify.java`: `strip()` make
 smoke gate tolerate surrounding blank lines. That does not invalidate the runner lifecycle
 proof—the gate reads the declared project file and fails on wrong non-whitespace content—but
 the fixture should not be mistaken for a production-strength acceptance suite. Mobile display
-and resolving a Warden human decision from Orca Mobile were explicitly left for a later smoke.
+and resolving an Overseer human decision from Orca Mobile were explicitly left for a later smoke.
 
 
 ### Proven 2026-09-04 — human control and a recoverable Orca lifecycle
 
-Same throwaway repository and isolated `WARDEN_CONFIG_HOME`, in the already-trusted Orca
+Same throwaway repository and isolated `OSEER_CONFIG_HOME`, in the already-trusted Orca
 worktree `w-dashboard-proof-20260904` on Orca 1.4.196. The reviewer profile stays Claude
 `opus` (Opus 5) on `runner: orca`. Every line below is a command that ran, not a design note.
 
-**Warden was killed while its worker was running, and did not start a second one.**
-`warden role reviewer review-smoke --run-id restart-1-20260904` recorded run `run_eaace88c90d2`,
+**Overseer was killed while its worker was running, and did not start a second one.**
+`oseer role reviewer review-smoke --run-id restart-1-20260904` recorded run `run_eaace88c90d2`,
 task `task_907905028954` and dispatch `ctx_0ea77dc4fd6d` in
-`.warden/runs/restart-1-20260904/orca.json` before the agent was ready. The Java process was
+`.oseer/runs/restart-1-20260904/orca.json` before the agent was ready. The Java process was
 then killed; `worker-show` still reported `dispatched` and `worker-list` still showed one
 active terminal. The same command run again attached: `resumed: true`, recovery verdict
 `resume` / `dispatch_in_flight`, `coordinator_reused: true`, and 84s later
@@ -333,7 +333,7 @@ active terminal. The same command run again attached: `resumed: true`, recovery 
 one settlement.
 
 **A second run refused to start beside it.** While that worker was live,
-`warden role reviewer review-smoke --run-id contend-1-20260904` failed in 2.7s with
+`oseer role reviewer review-smoke --run-id contend-1-20260904` failed in 2.7s with
 `role_orca_worker_active`, naming `ctx_0ea77dc4fd6d` and how to fence it. Nothing was dispatched
 and nothing was spent.
 
@@ -344,7 +344,7 @@ written before the kill would still be a violation.
 
 **A timeout leaves nothing running.** With the same profile at `wall_clock_minutes: 1`,
 `timeout-3-20260904` ended after 63.9s with `role_orca_timeout`. Orca refused the fence with
-`dispatch_inactive` — it does not stop what is already stopped — so Warden verified the claim
+`dispatch_inactive` — it does not stop what is already stopped — so Overseer verified the claim
 instead of trusting it: `worker-show` reported the dispatch `failed`, stage `process_exited`,
 `observation.status: exited`, and `worker-list` showed zero in flight. The record marks the
 worker `stopped`, so no later run tries to attach to it. Two earlier attempts,
@@ -354,7 +354,7 @@ worker `stopped`, so no later run tries to attach to it. Two earlier attempts,
 **A read-only role that writes is still refused after a successful settlement.** A profile
 deliberately declared `read_only: true` behind the implementer prompt was pointed at task
 `note-smoke`, whose goal is a new file. The Orca-hosted agent created `agent-note.txt`, sent
-`worker_done` with `outcome: succeeded`, and Warden released the worker, acknowledged the
+`worker_done` with `outcome: succeeded`, and Overseer released the worker, acknowledged the
 delivery, and then failed the role `role_violated_read_only` on the moved fingerprint
 (`readonly-2-20260904`). A clean settlement does not buy a pass.
 
@@ -372,21 +372,21 @@ attached to `ctx_56b8bbf08bf8`, reused the coordinator, and returned `ok` with
 `verdict: pass`; the reviewer's own summary quotes the answer it was given. The worker was
 released and the delivery acknowledged.
 
-That last step needed two fixes found by running it. Warden was not acknowledging the question
+That last step needed two fixes found by running it. Overseer was not acknowledging the question
 delivery, so the FIFO replayed the same question to every later attach and an answered worker
 could never be collected; and a delivery carrying both a question and a `worker_done` read the
 question first. Completion now outranks a question in the same delivery, and a question is
 acknowledged and then waited past, so an answer given while the controller is still running
 lets that same process finish.
 
-**A decision made in Orca, admitted by Warden only on Warden's terms.** `accept-gate-20260904`
+**A decision made in Orca, admitted by Overseer only on Overseer's terms.** `accept-gate-20260904`
 ran the loop green — Grok implementer, machine gates, Claude Opus 5 reviewer on Orca — and
 published gate `gate_aa4a43cdc9d5` with options `accept` and `reject`. Answering it from an
-Orca terminal and running `warden approve accept-gate-20260904 --from-orca` recorded the
+Orca terminal and running `oseer approve accept-gate-20260904 --from-orca` recorded the
 decision with actor `orca-gate:gate_aa4a43cdc9d5` and `lands: false`. Around that, four
 refusals, each measured:
 
-| What was tried | What Warden answered |
+| What was tried | What Overseer answered |
 |---|---|
 | Import before anyone answered | `gate_pending` |
 | Gate answered "please retry if you can" | `gate_resolution_unmapped` |
@@ -401,7 +401,7 @@ fact and `decision.json` still reads `retry`. The gate is a doorbell; the record
 **Answering a gate needs a bound Run.** `gate-resolve` from an unbound shell fails
 `run_required`. The recipe that works from any Orca terminal, desktop or mobile, is
 `orca orchestration run-use --id <run>` and then
-`orca orchestration gate-resolve --id <gate> --resolution accept`. Warden closes its own
+`orca orchestration gate-resolve --id <gate> --resolution accept`. Overseer closes its own
 coordinator after publishing, because a gate is addressed to a Run and not to a terminal.
 
 **A Windows argv defect, found by the first publish failing.** `--options ["accept","reject"]`
@@ -411,20 +411,20 @@ Orca named it exactly — `invalid_argument`, "its quotes are missing". `OrcaCli
 now escapes them, verified by sending all three spellings to the live CLI and watching which
 one it accepted.
 
-**The Agent Dashboard row is the live terminal title, and the agent overwrites it.** Warden now
+**The Agent Dashboard row is the live terminal title, and the agent overwrites it.** Overseer now
 renames the worker terminal at start (`worker_row_named: true`, e.g. `claude reviewer -
 note-smoke`), which is what a row shows for an agent that never titles itself. Claude Code then
-replaces it with its own summary within seconds — the observed titles were `◑ Warden role
-reviewer for task review-smoke` and `◐ Warden reviewer for note-smoke`, both compressions of
-the first sentence of the spec Warden writes. The task's `display_name` (`reviewer / claude`)
+replaces it with its own summary within seconds — the observed titles were `◑ Overseer role
+reviewer for task review-smoke` and `◐ Overseer reviewer for note-smoke`, both compressions of
+the first sentence of the spec Overseer writes. The task's `display_name` (`reviewer / claude`)
 is stored by Orca and does not appear in the row. Closing that gap fully is an Orca change, not
-a Warden one.
+an Overseer one.
 
 **A decision gate renders nowhere in Orca's desktop UI.** Checked by publishing a pending gate
 and looking: the Agent Dashboard shows agent sessions and read `0 total` with no worker running,
 and global search returns worktrees, not orchestration objects. What a person actually sees is
-the worktree card Warden already writes, which the search surfaces as
-`stopped: preflight_outside_scope · 0 call(s) · $0.0000 · warden approve ui-gate-2-20260904
+the worktree card Overseer already writes, which the search surfaces as
+`stopped: preflight_outside_scope · 0 call(s) · $0.0000 · oseer approve ui-gate-2-20260904
 --decision retry|abort · or orca gate gate_a4d86…`. So the run now says, in its own narration
 and on that card, both the gate id and the two commands that answer it from any Orca terminal:
 `orchestration run-use --id <run>` then `orchestration gate-resolve --id <gate> --resolution
@@ -441,11 +441,11 @@ still code and unit tests only. The Orca runner reports no cost, so its calls la
 
 The 2026-09-04 rows above proved an Orca-hosted reviewer starts, settles on `worker_done`, is
 acknowledged and released. They did not prove what it was *started as*: the launch receipt is
-newer than those runs. This row is that check, run through `warden role` so exactly one worker
+newer than those runs. This row is that check, run through `oseer role` so exactly one worker
 is paid for.
 
-Config home is the temporary `%LOCALAPPDATA%\Temp\warden-orca-e2e-home`; the operator's
-`~/.warden` was not touched. The fixture's `orca-claude-review` had to be corrected first: its
+Config home is the temporary `%LOCALAPPDATA%\Temp\oseer-orca-e2e-home`; the operator's
+`~/.oseer` was not touched. The fixture's `orca-claude-review` had to be corrected first: its
 2026-09-03 form declared `prompt_delivery: stdin`, which `runner: orca` now refuses because
 Orca does not forward stdin, so the profile no longer loaded at all. Delivery was set to
 `workspace_file` and `effort: max` added so the receipt would have something to verify; the
@@ -466,14 +466,14 @@ Live, run `orca-receipt-1` on Orca 1.4.197, `orca_run_id run_d4bddc24757d`:
   "orca_requested": {"agent": "claude", "model": "opus", "effort": "max"},
   "effective":      {"agent": "claude", "model": "opus", "effort": "max"},
   "status": "matched",
-  "effort_source": "warden_profile",
+  "effort_source": "oseer_profile",
   "source": "orca_launch_receipt",
   "provider_execution_verified": false
 }
 ```
 
-**Proved by this run.** The effort Warden asks for reaches Orca and comes back in both halves
-of the receipt, so `effort_source: warden_profile` is a fact and not a hope — an Orca-hosted
+**Proved by this run.** The effort Overseer asks for reaches Orca and comes back in both halves
+of the receipt, so `effort_source: oseer_profile` is a fact and not a hope — an Orca-hosted
 Opus no longer runs at Orca's default while a profile claims otherwise. The worker started
 ready, settled `worker_done_succeeded`, and was released with its transcript archived
 (`processAction: closed_agent_terminal`). `read_only_check` matched on a worktree content

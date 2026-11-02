@@ -3,7 +3,7 @@
 # work should be buildable offline from a bare JDK.
 set -e
 cd "$(dirname "$0")"
-RELEASE="${WARDEN_JAVA_RELEASE:-21}"
+RELEASE="${OSEER_JAVA_RELEASE:-21}"
 # Only what this script produces. `out` is gitignored, which makes it the natural place to
 # park a live run's configuration or a reviewer's saved reproductions — and `rm -rf out`
 # destroyed all of it on the next build, unrecoverably, because nothing there is tracked.

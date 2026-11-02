@@ -1,4 +1,4 @@
-# Shared agent tools (Warden)
+# Shared agent tools (AI Overseer)
 
 Cross-project helpers for agent loops on Windows and the cloud box.
 

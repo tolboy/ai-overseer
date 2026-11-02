@@ -10,7 +10,7 @@ Stage 4 is implemented. Model selection through Jev remains Stage 5.
 | API transmission | Native API and fresh pongs send exact `reasoning.effort` after catalog admission. Real loopback HTTP tests inspect the request body. Unsupported/missing/stale capability data stops before a request. |
 | OpenCode transmission | The verified adapter configures the relay, which enforces the selected value on every upstream turn and strips competing harness reasoning options. Verified harness tests observe the effective upstream JSON. |
 | CLI/Orca transmission | CLI argv and Orca launch receipts have separate transmission evidence. Failed spawn and mismatched/unknown Orca launch settings do not claim delivery. Known model catalog restrictions apply to explicit run overrides too. |
-| Unsupported level and fallback | No Warden remapping from `max` to another value. Unsupported effort and provider effort mismatches do not trigger automatic provider fallback. Classifier refusal/failure retains configured workflow and effort; explicit task/run/handover choices retain priority when admissible. |
+| Unsupported level and fallback | No AI Overseer remapping from `max` to another value. Unsupported effort and provider effort mismatches do not trigger automatic provider fallback. Classifier refusal/failure retains configured workflow and effort; explicit task/run/handover choices retain priority when admissible. |
 | Planning | Preparatory planning retains its own explicit settings. Execution routing occurs later; retroactive application would misreport the planner's call. |
 | Questions and threshold | Six real Jev requests plus deterministic distribution replay compare simple, complex and ambiguous cases at 0.5/0.6/0.75. Keep 0.6 provisionally; no optimum or task-performance guarantee claimed. |
 | Honest receipts | Requested, transmitted, effective and independently provider-reported effort are distinct. Token usage never confirms effort. Unknown values and provider mismatches are explicit. Aggregate relay confirmation requires all turns to report the matching value and is cleared after later failures. Safe measurements preserve provenance and transmission fields. |
@@ -24,8 +24,8 @@ Direct GonkaRouter/JoinGonka effort settings remain unsupported until their mode
 and wire controls are registered; their ordinary API/OpenCode usage still works.
 
 The fresh live OpenRouter catalog listed **none, low, high, max** for
-`deepseek/deepseek-v4-flash-0731`. In particular, Warden does not offer `medium` for this
-model. A gateway can translate effort internally; exact Warden transmission does not
+`deepseek/deepseek-v4-flash-0731`. In particular, Overseer does not offer `medium` for this
+model. A gateway can translate effort internally; exact Overseer transmission does not
 prove what its upstream provider ultimately used.
 
 Protocol source, checked 2026-10-29:

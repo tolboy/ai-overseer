@@ -1,10 +1,10 @@
 # Setup
 
-Warden is installed once. Each project you point it at gets only its own
-`.warden/project.yaml` and task files — never a vendor name, never a model, never a key.
+AI Overseer is installed once. Each project you point it at gets only its own
+`.oseer/project.yaml` and task files — never a vendor name, never a model, never a key.
 
-Throughout this document, `<warden>` is wherever you cloned this repository and `<project>`
-is the repository you want Warden to work on.
+Throughout this document, `<ai-overseer>` is wherever you cloned this repository and `<project>`
+is the repository you want Overseer to work on.
 
 ## Requirements
 
@@ -15,28 +15,28 @@ is the repository you want Warden to work on.
 | Node | Only for the browser harness (`scripts/visual-qa.mjs`). Standard library only |
 | Browser | Only for the browser harness: Chrome or Edge, already installed |
 | Vendor CLIs | Whatever you intend to use — `codex`, `claude`, `grok`, … Installed and signed in by you |
-| [Orca](https://www.onorca.dev/download) | Optional. `warden do` uses it for isolation when it is running, and shows the run on its board and mobile app. Without it, `git worktree` |
+| [Orca](https://www.onorca.dev/download) | Optional. `oseer do` uses it for isolation when it is running, and shows the run on its board and mobile app. Without it, `git worktree` |
 
 Nothing is downloaded at build time. If the build needs the network, that is a bug.
 
-## 1. Build Warden, offline
+## 1. Build Overseer, offline
 
 ```bash
-cd <warden>
+cd <ai-overseer>
 ./build.sh
 ./test.sh
-./bin/warden --version
+./bin/oseer --version
 ```
 
 ```text
-cd <warden>
+cd <ai-overseer>
 build.cmd
 test.cmd
-bin\warden.cmd --version
+bin\oseer.cmd --version
 ```
 
 Your installed JDK may be newer than 21; `javac --release 21` deliberately emits Java 21
-bytecode so one build runs everywhere. Override the floor with `WARDEN_JAVA_RELEASE` if you
+bytecode so one build runs everywhere. Override the floor with `OSEER_JAVA_RELEASE` if you
 have a reason.
 
 Before going further, run the offline demo. It takes seconds, costs nothing, and proves the
@@ -49,13 +49,13 @@ machine half of the loop works on your machine:
 ## 2. Create your operator configuration
 
 ```text
-<warden>/bin/warden setup
+<ai-overseer>/bin/oseer setup
 ```
 
-This creates `~/.warden/` and never overwrites a file that already exists:
+This creates `~/.oseer/` and never overwrites a file that already exists:
 
 ```text
-~/.warden/
+~/.oseer/
 ├ policy.yaml            which profiles may fill which role; rotation; failover; workflow
 ├ profiles/*.yaml        one vendor filling one role: command, args, quota signatures, model
 ├ prompts/*.md           the role prompt templates (implementer, reviewer, visual_qa, planner)
@@ -63,12 +63,12 @@ This creates `~/.warden/` and never overwrites a file that already exists:
 ```
 
 A `planner` prompt and schema are shipped next to the other three. The shipped policy does
-not name the role; `warden do --prepare auto|always` is how it runs, and only if a profile
-declares it. The planner drafts; Warden validates.
+not name the role; `oseer do --prepare auto|always` is how it runs, and only if a profile
+declares it. The planner drafts; Overseer validates.
 
-Set `WARDEN_CONFIG_HOME` to put this somewhere other than `~/.warden`. Note that this is
-**not** `WARDEN_HOME`, which the launcher scripts use for the installation directory — the two
-were once the same name, and the collision silently pointed `warden setup` at the repository.
+Set `OSEER_CONFIG_HOME` to put this somewhere other than `~/.oseer`. Note that this is
+**not** `OSEER_HOME`, which the launcher scripts use for the installation directory — the two
+were once the same name, and the collision silently pointed `oseer setup` at the repository.
 
 The shipped profiles are examples, and none of them is usable yet. That is the next step.
 
@@ -79,8 +79,8 @@ A profile is not released by the resolver until its own probe has run and passed
 edit to these files plus one command.
 
 ```text
-warden profiles                                       what loads, what is eligible, and why not
-warden profiles --verify grok-review                  run this profile's probe; stamp it if it passes
+oseer profiles                                       what loads, what is eligible, and why not
+oseer profiles --verify grok-review                  run this profile's probe; stamp it if it passes
 ```
 
 `--verify` keeps the transcript and prints `what_to_check`. Read it: that list is where you
@@ -94,19 +94,19 @@ reply, and exit code alone would have stamped it.
 **Do the implementer last, and do it deliberately.** It is the only role with
 `read_only: false` — the only one that writes to your worktree, and the one whose profile
 carries whatever auto-approval flag its vendor needs. Run its probe standalone, then
-`warden role implementer <task> --dry-run`, and only then let the loop drive it. What protects
+`oseer role implementer <task> --dry-run`, and only then let the loop drive it. What protects
 the repository is not the date: it is the fingerprint taken around every role.
 
 ## Changing the roster
 
-`warden roster` prints which profile fills which role, and the workflow those roles run in,
+`oseer roster` prints which profile fills which role, and the workflow those roles run in,
 without opening the files. JSON is the default; `--text` is a table.
 
 ```text
-warden roster
-warden roster --text
-warden roster set reviewer --profiles grok-review,claude-review --strategy rotate
-warden roster model grok-review --model grok-4.6-build --effort high
+oseer roster
+oseer roster --text
+oseer roster set reviewer --profiles grok-review,claude-review --strategy rotate
+oseer roster model grok-review --model grok-4.6-build --effort high
 ```
 
 `set` rewrites only the `profiles:` line (and `strategy:` if you pass it) under that role in
@@ -116,18 +116,18 @@ is appended there rather than invented elsewhere.
 
 Both edits validate the candidate in memory, take an exclusive per-file lock, check the
 source SHA-256, save a backup, and atomically replace the file. Invalid YAML never reaches
-the active file. `config_busy` means another Warden editor holds the lock;
+the active file. `config_busy` means another Overseer editor holds the lock;
 `config_conflict` means the file changed since the edit was prepared. Reload before retrying.
 An unsupported atomic replacement fails with `atomic_replace_unsupported`, preserving the
 active file. Backups remain available after a failed replacement.
 
-For a delayed edit (including a future settings form), JSON `warden roster` returns
+For a delayed edit (including a future settings form), JSON `oseer roster` returns
 `file_versions`, keyed by `policy.yaml` and `profiles/<name>.yaml`. Each digest belongs to
 the exact bytes parsed for that report. Pass the relevant value to either write command:
 
 ```text
-warden roster set reviewer --profiles grok-review,claude-review --expected-sha256 <policy-hash>
-warden roster model grok-review --model <model> --expected-sha256 <profile-hash>
+oseer roster set reviewer --profiles grok-review,claude-review --expected-sha256 <policy-hash>
+oseer roster model grok-review --model <model> --expected-sha256 <profile-hash>
 ```
 
 Successful writes return `before_sha256` and `sha256`. Without the optional flag, the CLI
@@ -135,23 +135,23 @@ still checks the version it read while preparing its own edit. A verification pr
 retains its source digest: an edit made during the probe prevents stamping the changed
 profile. Verification stamps use the same atomic writer and save `*.before-verify-*`.
 
-The small `*.warden-write.lock` sidecar stays on disk; the OS releases its lock on exit or
+The small `*.oseer-write.lock` sidecar stays on disk; the OS releases its lock on exit or
 crash. Do not delete it while writers are running. These guarantees cover one file at a
 time and writers using this protocol. An external editor that ignores the sidecar can race
 the last digest check and rename. Atomic replacement does not guarantee directory metadata
-survives a power failure. A process killed before rename can leave a `.warden-config-*.tmp`
+survives a power failure. A process killed before rename can leave a `.oseer-config-*.tmp`
 file; the live configuration stays complete and the next edit can proceed.
 
 `model` does the same to `profiles/<name>.yaml`. Changing the model invalidates
 `verification.verified_on` — that date stamped a probe against the old model — so the line is
 removed unless you pass `--keep-verified`. The command prints `verify_with` for
-`warden profiles --verify <name>`.
+`oseer profiles --verify <name>`.
 
 To change effort, profile or runner **for one run** without touching those files:
 
 ```text
-warden run level-bakery --effort review-second=xhigh --host review-second=orca
-warden do "…" --use look=claude-visual-qa-mcp
+oseer run level-bakery --effort review-second=xhigh --host review-second=orca
+oseer do "…" --use look=claude-visual-qa-mcp
 ```
 
 `--host <stage>=orca` runs that stage as an Orca worker, so Agent Dashboard can show
@@ -166,7 +166,7 @@ on both channels, as always.
 
 Every overlay is checked against the roster before the first paid stage — a stage name this
 workflow does not have, an effort the runner cannot deliver, a host that cannot travel — so
-a mistyped flag costs nothing. `warden run --dry-run` prints the resulting cast:
+a mistyped flag costs nothing. `oseer run --dry-run` prints the resulting cast:
 
 ```text
 plan  implement -> review -> review-second -> look
@@ -181,7 +181,7 @@ The same map may live on the task as `use:`, where a replan preserves it and
 
 ### Build the next run in the dashboard
 
-Open `warden dashboard` (or add `--open-orca`) and use **Следующий запуск**. Choose
+Open `oseer dashboard` (or add `--open-orca`) and use **Следующий запуск**. Choose
 an existing project task, then a profile for each role stage. Profile options expose
 vendor, model, effort, runner and verification; the vendor filter only narrows this
 list. Saved task `use:` is populated in the controls; clearing a field removes that
@@ -227,12 +227,12 @@ candidate hash and the same project/task, policy, profile inventory and rotation
 revision. A changed file or concurrent edit returns a conflict/busy refusal, requiring
 reload and a fresh diff. Untouched YAML sections remain verbatim; edited sections use
 flow mappings and retain their comments ahead of the section. Backups preserve the
-exact predecessor. External editors that ignore Warden locks can race an optimistic
+exact predecessor. External editors that ignore Overseer locks can race an optimistic
 check; filesystem atomic-replace support remains required.
 
 The form does not execute commands. Model variants come from declared profiles;
 custom effort does not prove model support or receive a verification stamp. The
-versioned `warden roster` commands remain available for CLI edits.
+versioned `oseer roster` commands remain available for CLI edits.
 
 ### Read results in the dashboard
 
@@ -268,7 +268,7 @@ When the stop is `blocking_findings_remain` or `quality_exhausted` and every ope
 blocker is a `contract_gap`, the same gate offers `waive`:
 
 ```text
-warden approve <run> --decision waive --finding <id>
+oseer approve <run> --decision waive --finding <id>
 ```
 
 That closes the stop, writes `contract_gap_waived` on the ledger and `contract_gap_waiver`
@@ -292,11 +292,11 @@ manual_verification:
   - "hover"
 ```
 
-`warden setup` does not overwrite an existing `prompts/reviewer.md`. Copy the new grammar
+`oseer setup` does not overwrite an existing `prompts/reviewer.md`. Copy the new grammar
 paragraphs into it, or a reviewer that still has the old prompt can file the same P1.
 
-Set `WARDEN_CONFIG_HOME` the same way every other command does if the configuration is not in
-`~/.warden`.
+Set `OSEER_CONFIG_HOME` the same way every other command does if the configuration is not in
+`~/.oseer`.
 
 ## Visual QA through the vendor's own tools (MCP)
 
@@ -306,16 +306,16 @@ bring its own camera: a profile that names the MCP servers the vendor may reach,
 stage that says the agent takes the pictures.
 
 ```yaml
-# ~/.warden/profiles/claude-visual-qa-mcp.yaml  (shipped by `warden setup`, unverified)
+# ~/.oseer/profiles/claude-visual-qa-mcp.yaml  (shipped by `oseer setup`, unverified)
 mcp:
-  config: mcp/visual.json          # the vendor's own format; Warden hands it to the flag below
+  config: mcp/visual.json          # the vendor's own format; Overseer hands it to the flag below
 args: [..., "--mcp-config", "{{mcp_config}}", "--allowedTools", "Read,Glob,mcp__browser"]
 capabilities:
   vision: { delivery: workspace_file, verification: required, acquires: true }
 ```
 
 ```yaml
-# ~/.warden/policy.yaml
+# ~/.oseer/policy.yaml
 workflow:
   stages:
     - { stage: look, run: role, role: visual_qa, when: [visual_qa_required],
@@ -326,14 +326,14 @@ workflow:
 instructions to the looking role — "play Bakery and photograph the hop" — not CDP locators.
 Preflight does not ask `scripts/visual-qa.mjs` about them; that grammar is for the harness
 stage, and applying it here is how a Unity look used to die as `visual_qa_contract_invalid`
-for want of `testid=`. What Warden adds is the same for every target: the role is told where
+for want of `testid=`. What Overseer adds is the same for every target: the role is told where
 to save its screenshots (the run's `screenshots/` directory; `{{evidence_dir}}` in args if
 the vendor wants it as a flag) and to list them in `screenshots_taken`; each listed file
 must exist there and be non-empty, its digest goes onto the step row as `image_evidence`,
 and a verdict that lists none is refused as `visual_qa_no_evidence` — no fix round, because
 no implementer can make a model take a picture. The camera itself can be an MCP server
 (Unity, a browser) or a desktop computer-use skill (`orca computer`) that can see the
-window even when no engine MCP is configured. The configuration file's digest is recorded on the role contract. Warden never reads
+window even when no engine MCP is configured. The configuration file's digest is recorded on the role contract. Overseer never reads
 the file's format and never checks what a picture shows: that is what the profile's probe is
 for, and the template's `verification.probe` asks the model to take one screenshot, open it
 with its own read tool and name two words visible in it. Run that against **your** server, look
@@ -345,11 +345,11 @@ Which server drives which target is your choice, and outside what this repositor
 |---|---|---|
 | Svelte, React, plain browser UI | a browser-automation MCP server (Playwright- or DevTools-based) with a screenshot tool | the dev server's page, not `about:blank` |
 | Tauri 2 desktop | a desktop-automation server that can focus the application's window and capture it; or the app's WebView through the same browser server when it exposes a DevTools port | the window, at the size the scenario names |
-| Unity | an editor bridge exposing play-mode control and a screenshot or camera capture tool. Start from `examples/mcp/unity.json` (`http://127.0.0.1:8081/mcp`) and copy it to `~/.warden/mcp/visual.json` | the scene in play mode, not the editor chrome. A task opts in with `visual_qa.required: true` and `evidence: agent`; that run skips the CDP harness. |
+| Unity | an editor bridge exposing play-mode control and a screenshot or camera capture tool. Start from `examples/mcp/unity.json` (`http://127.0.0.1:8081/mcp`) and copy it to `~/.oseer/mcp/visual.json` | the scene in play mode, not the editor chrome. A task opts in with `visual_qa.required: true` and `evidence: agent`; that run skips the CDP harness. |
 | Node.js services | usually nothing to look at; keep `visual_qa.required: false` and let the machine gates judge | — |
 
 Grant the role only the server's tools and `Read`: it is read-only, and it does not need a
-shell to take a picture. For `runner: orca` Warden cannot hand the file to the worker; name
+shell to take a picture. For `runner: orca` Overseer cannot hand the file to the worker; name
 the servers in the vendor's own settings and keep `mcp.config` pointing at a copy so its digest
 is still recorded. Before the first call the loop checks that the profile chosen for an
 `evidence: agent` stage declares `acquires: true` (`visual_qa_unavailable` otherwise) and that
@@ -408,9 +408,9 @@ the next independent `visual_qa` profile runs and the ledger records `role_failo
 cause. The refused profile is skipped for the rest of that process, so a later stage does not
 pay for the same refusal; a different profile of the same vendor is not skipped. The default
 `stop` does not switch. The exclusion lasts for the process that learned it. A later
-`warden run` starts clean.
+`oseer run` starts clean.
 
-`warden do <goal> --prepare always` runs the planner, then the plan reviewer over the compiled
+`oseer do <goal> --prepare always` runs the planner, then the plan reviewer over the compiled
 contract. The reviewer is told which workflow stages will judge the candidate. Blocking
 findings send the planner back once, including when a contract file was already on disk so
 it could carry budgets: the planner has already replaced that file's body, and the redraft
@@ -420,7 +420,7 @@ reviewer stage takes the first profile of the rotation and the second stage the 
 every run; each reader's blocking findings go back to the implementer under
 `max_fix_attempts`, and `recheck_after_fix` on the first review means a repair made for the
 second reader is read again by the first. The run ends at the human gate. Profile names are
-yours: `warden roster` shows what fills what. Nothing here has run live yet; `--dry-run`
+yours: `oseer roster` shows what fills what. Nothing here has run live yet; `--dry-run`
 prices it without dispatching anyone.
 
 ## 4. Connect a project
@@ -428,16 +428,16 @@ prices it without dispatching anyone.
 From the root of the target repository:
 
 ```text
-<warden>/bin/warden init --base-ref origin/main
+<ai-overseer>/bin/oseer init --base-ref origin/main
 ```
 
 Use `--base-ref HEAD` only for a local repository with no long-lived remote ref; otherwise
 name the reviewed base such as `origin/main`. The command creates:
 
 ```text
-<project>/.warden/project.yaml
-<project>/.warden/tasks/<task-id>.yaml
-<project>/.warden/runs/.gitignore
+<project>/.oseer/project.yaml
+<project>/.oseer/tasks/<task-id>.yaml
+<project>/.oseer/runs/.gitignore
 ```
 
 `init` recognises npm, a Gradle wrapper, Maven, Cargo and Make, and writes a conservative
@@ -446,20 +446,20 @@ read every one and replace the placeholder goal. A directory with files but no r
 build system is refused rather than given a guessed command: a guessed gate fails for reasons
 that have nothing to do with the task.
 
-Do not copy Warden's own `.warden/` into a project. That directory describes Warden itself.
+Do not copy Overseer's own `.oseer/` into a project. That directory describes Overseer itself.
 
 Then run the cheap checks, before spending anything on an agent:
 
 ```text
-<warden>/bin/warden validate <task-id>
-<warden>/bin/warden gates <task-id> --run-id <run-id>
+<ai-overseer>/bin/oseer validate <task-id>
+<ai-overseer>/bin/oseer gates <task-id> --run-id <run-id>
 ```
 
 Both must run with the target project as the current directory.
 
 ## 5. Isolation
 
-`warden do` cuts a worktree from the branch you are actually on, so the loop never writes to
+`oseer do` cuts a worktree from the branch you are actually on, so the loop never writes to
 your working checkout. Two backends, one guarantee:
 
 | | |
@@ -478,7 +478,7 @@ setup:
   - "npm ci"
 ```
 
-That runs only in a worktree Warden made, and only when it is new. Orca runs the repository's
+That runs only in a worktree Overseer made, and only when it is new. Orca runs the repository's
 own setup when Orca made the checkout, so this is not read then.
 
 `--in-place` skips isolation and lets the implementer edit the tree you are standing in. That
@@ -509,24 +509,24 @@ change it.
 Two things that work:
 
 ```text
-warden do --goal-file goal.txt --project <project> --scope ui
+oseer do --goal-file goal.txt --project <project> --scope ui
 ```
 
 or enable Windows Settings → Time & language → Language & region → Administrative language
 settings → "Use Unicode UTF-8 for worldwide language support", which makes the ANSI code page
 65001 and fixes it for every program.
 
-`warden doctor` reports this under `argument_encoding`, and `warden do` refuses a mangled goal
+`oseer doctor` reports this under `argument_encoding`, and `oseer do` refuses a mangled goal
 rather than writing question marks into a contract.
 
 ## 7. Conductor, if you use it
 
 Conductor is optional. `conductor/gates.yaml` is the
 executable outer workflow: its required `project_dir` input points at the target repository,
-and the compiled Warden classpath is resolved relative to the workflow file.
+and the compiled Overseer classpath is resolved relative to the workflow file.
 
 The division is deliberate. Conductor owns the outer timeout and the native fail-closed human
-gate; Warden owns contract linting, machine gates and the bounded role loop. Conductor does
+gate; Overseer owns contract linting, machine gates and the bounded role loop. Conductor does
 not duplicate the role DAG — two competing resume/retry state machines would be worse than
 either.
 
@@ -538,7 +538,7 @@ On Windows, Conductor may require `PYTHONUTF8=1` before validation or execution.
 ## 8. Checking your setup
 
 ```text
-warden doctor
+oseer doctor
 ```
 
 reports the Java runtime, which profiles load and which are eligible, the effective workflow

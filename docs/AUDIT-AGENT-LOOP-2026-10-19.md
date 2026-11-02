@@ -1,4 +1,4 @@
-**Аудит Warden: петля агентов, ограничения, настройки и измерение результата**
+**Аудит AI Overseer: петля агентов, ограничения, настройки и измерение результата**
 
 Итоговая live-проверка 2026-10-21: [четыре вендора, paired evals и Orca recovery](AGENT-LOOP-LIVE-VALIDATION-2026-10-21.md).
 
@@ -6,7 +6,7 @@
 
 Дата: 2026-10-19. Срез: `7c7f4083eb5c0a99df891bac39897afb02092039`, ветка `fix/keep-pinned-contract-copy`.
 
-Вывод: у Warden уже есть содержательная основа для управляемой петли: машинные gates, независимость проверяющих, ограниченные исправления, подтверждённое завершение Orca, наследование бюджета и durable evidence. Первый приоритет — исключить два одновременных direct CLI workflow в одном рабочем дереве: такой допуск воспроизведён. Затем нужно закрыть потерю protocol output и deadline backoff, исправить данные измерений и сравнения, после этого расширить существующий локальный dashboard конструктором следующего запуска. Измеренных оснований объявлять текущий набор моделей/effort оптимальным пока нет.
+Вывод: у Overseer уже есть содержательная основа для управляемой петли: машинные gates, независимость проверяющих, ограниченные исправления, подтверждённое завершение Orca, наследование бюджета и durable evidence. Первый приоритет — исключить два одновременных direct CLI workflow в одном рабочем дереве: такой допуск воспроизведён. Затем нужно закрыть потерю protocol output и deadline backoff, исправить данные измерений и сравнения, после этого расширить существующий локальный dashboard конструктором следующего запуска. Измеренных оснований объявлять текущий набор моделей/effort оптимальным пока нет.
 
 Проверялись актуальные исходники, тесты, CLI и локальный dashboard. Вендорам задачи не отправлялись; платные probes и live dispatch Orca не запускались. Production-код и личная конфигурация не изменялись. Три исходных untracked документа про Orca UI сохранены.
 
@@ -59,23 +59,23 @@ F09, колонки dashboard и подробный preview задачи — в
 
 **F10, P1 — разные run ID обходят защиту от одновременной работы в одном checkout.**
 
-Источники: [Main.java:433](../src/main/java/dev/warden/Main.java#L433), [TaskLoop.java:599](../src/main/java/dev/warden/run/TaskLoop.java#L599), [EvidenceLedger.java:133](../src/main/java/dev/warden/ledger/EvidenceLedger.java#L133).
+Источники: [Main.java:433](../src/main/java/dev/oseer/Main.java#L433), [TaskLoop.java:599](../src/main/java/dev/oseer/run/TaskLoop.java#L599), [EvidenceLedger.java:133](../src/main/java/dev/oseer/ledger/EvidenceLedger.java#L133).
 
-Сценарий: два `warden run` с разными run ID направлены в одно рабочее дерево, профили direct с правом записи. Ожидается `worktree_busy` либо изоляция второго workflow. Фактически резервируется только `.warden/runs/<runId>/run.json`; общего execution lease нет. Synthetic probe запустил два настоящих TaskLoop и DirectCliExecutor: оба дочерних Java CLI одновременно дошли до барьера, `simultaneousDirectWriters=2`; после release оба workflow завершились `ready_for_human`. Вендоров не было; столкновения исходников намеренно не устраивались. Подтверждён одновременный допуск, а смешение изменений/ошибочная атрибуция fingerprint — возможные последствия реальных writers.
+Сценарий: два `oseer run` с разными run ID направлены в одно рабочее дерево, профили direct с правом записи. Ожидается `worktree_busy` либо изоляция второго workflow. Фактически резервируется только `.oseer/runs/<runId>/run.json`; общего execution lease нет. Synthetic probe запустил два настоящих TaskLoop и DirectCliExecutor: оба дочерних Java CLI одновременно дошли до барьера, `simultaneousDirectWriters=2`; после release оба workflow завершились `ready_for_human`. Вендоров не было; столкновения исходников намеренно не устраивались. Подтверждён одновременный допуск, а смешение изменений/ошибочная атрибуция fingerprint — возможные последствия реальных writers.
 
 Исправление: cross-process lease канонического рабочего дерева на всю цепочку, включая gates и readers; аналогичная защита standalone writable `role`. Разные изолированные worktrees должны продолжать работать параллельно. После падения контроллера recovery должен подтвердить остановку прежнего worker до нового writer. Проверки: два разных run ID из двух JVM в одном root; standalone role против workflow; другой worktree того же репозитория; crash/осиротевший child; освобождение lease после безопасного завершения. Probe (`out/audit-loop-2026-10-19/ConcurrencyProbe.java`), результат (`out/audit-loop-2026-10-19/concurrency-result.json`).
 
 1. **F01 — backoff не ограничен остатком deadline.**
 
-   Источники: [TaskLoop.java:984](../src/main/java/dev/warden/run/TaskLoop.java#L984), [TaskLoop.java:1055](../src/main/java/dev/warden/run/TaskLoop.java#L1055), [TaskLoop.java:5268](../src/main/java/dev/warden/run/TaskLoop.java#L5268), [GateRunner.java:139](../src/main/java/dev/warden/gate/GateRunner.java#L139), [RoleRunner.java:897](../src/main/java/dev/warden/role/RoleRunner.java#L897).
+   Источники: [TaskLoop.java:984](../src/main/java/dev/oseer/run/TaskLoop.java#L984), [TaskLoop.java:1055](../src/main/java/dev/oseer/run/TaskLoop.java#L1055), [TaskLoop.java:5268](../src/main/java/dev/oseer/run/TaskLoop.java#L5268), [GateRunner.java:139](../src/main/java/dev/oseer/gate/GateRunner.java#L139), [RoleRunner.java:897](../src/main/java/dev/oseer/role/RoleRunner.java#L897).
 
    Сценарий: после rate limit у цепочки осталось 61 секунду, сервер просит retry через 900 секунд. `hasRoom()` допускает ожидание, `sleeper.accept(pause)` получает все 900 секунд. Проверка перед следующим dispatch остановит вызов, но сам срок уже превышен. Ожидается отказ от retry, который не помещается вместе с минимальным следующим вызовом, либо ограниченная остатком пауза. Фактически deadline проверяется только перед паузой и следующей попыткой.
 
-   Отдельная граница текущего дизайна: baseline, reproduction и machine gates получают `timeout_minutes`, без остатка chain deadline. При `max_elapsed_minutes: 2` и timeout=20 минут проверка может работать 20 минут; последний gate может закончиться после deadline. Это прямо оговорено в `budget_plan.time_reserve` ([TaskLoop.java:773](../src/main/java/dev/warden/run/TaskLoop.java#L773)), поэтому здесь это отмечено как ограничение общего лимита, а не скрытая регрессия. Для жёсткого общего wall-clock нужен абсолютный monotonic deadline во всех адаптерах и проверка перед terminal success. Проверки: retry wait длиннее остатка; для расширения семантики также gate длиннее остатка и последний gate после deadline. Остановка должна сохранить корректный reason и сведения о кандидате.
+   Отдельная граница текущего дизайна: baseline, reproduction и machine gates получают `timeout_minutes`, без остатка chain deadline. При `max_elapsed_minutes: 2` и timeout=20 минут проверка может работать 20 минут; последний gate может закончиться после deadline. Это прямо оговорено в `budget_plan.time_reserve` ([TaskLoop.java:773](../src/main/java/dev/oseer/run/TaskLoop.java#L773)), поэтому здесь это отмечено как ограничение общего лимита, а не скрытая регрессия. Для жёсткого общего wall-clock нужен абсолютный monotonic deadline во всех адаптерах и проверка перед terminal success. Проверки: retry wait длиннее остатка; для расширения семантики также gate длиннее остатка и последний gate после deadline. Остановка должна сохранить корректный reason и сведения о кандидате.
 
 2. **F02, P1 — усечение stdout уничтожает хвост протокола.**
 
-   Источники: [DirectCliExecutor.java:135](../src/main/java/dev/warden/execution/DirectCliExecutor.java#L135), [DirectCliExecutor.java:148](../src/main/java/dev/warden/execution/DirectCliExecutor.java#L148), [DirectCliExecutor.java:169](../src/main/java/dev/warden/execution/DirectCliExecutor.java#L169), [ProcessRunner.java:150](../src/main/java/dev/warden/process/ProcessRunner.java#L150).
+   Источники: [DirectCliExecutor.java:135](../src/main/java/dev/oseer/execution/DirectCliExecutor.java#L135), [DirectCliExecutor.java:148](../src/main/java/dev/oseer/execution/DirectCliExecutor.java#L148), [DirectCliExecutor.java:169](../src/main/java/dev/oseer/execution/DirectCliExecutor.java#L169), [ProcessRunner.java:150](../src/main/java/dev/oseer/process/ProcessRunner.java#L150).
 
    Сценарий: CLI выводит больше 4 MiB tool events, затем финальные `item.completed` и `turn.completed`. Probe: `exit=0`, `stdoutLength=4194304`, `truncated=true`, `hasFinalArtifact=false`, `hasUsage=false`. Ожидается: конечный artifact и usage доступны независимо от объёма предшествующего журнала. Фактически сохраняется prefix, из него же пишется raw transcript и извлекаются artifact/telemetry; executor не выводит флаг усечения в отчёт. Это может превратить успешную оплаченную работу в `role_artifact_unparseable` с неизвестной стоимостью.
 
@@ -83,7 +83,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 3. **F03 — crash между attempt journal и role summary скрывает локальные расходы.**
 
-   Источники: [LedgerReader.java:41](../src/main/java/dev/warden/ledger/LedgerReader.java#L41), [RoleRunner.java:887](../src/main/java/dev/warden/role/RoleRunner.java#L887).
+   Источники: [LedgerReader.java:41](../src/main/java/dev/oseer/ledger/LedgerReader.java#L41), [RoleRunner.java:887](../src/main/java/dev/oseer/role/RoleRunner.java#L887).
 
    Сценарий: vendor вернул результат; `vendor_attempt` сохранён; процесс оборвался до `role_run`. На одном fixture локальный ledger показывает calls=0 и cost=null без `incomplete`, global corpus показывает calls=1 и cost=$1.25. Ожидается: завершённая попытка учитывается в обоих представлениях либо локальный отчёт явно сообщает неполноту. Фактически localView безусловно удаляет `vendor_attempt`.
 
@@ -91,7 +91,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 4. **F04 — retry A → A отображается как failover.**
 
-   Источники: [RoleRunner.java:1002](../src/main/java/dev/warden/role/RoleRunner.java#L1002), [LedgerReader.java:333](../src/main/java/dev/warden/ledger/LedgerReader.java#L333), [RunReport.java:417](../src/main/java/dev/warden/ledger/RunReport.java#L417), [Dashboard.java:298](../src/main/java/dev/warden/dashboard/Dashboard.java#L298).
+   Источники: [RoleRunner.java:1002](../src/main/java/dev/oseer/role/RoleRunner.java#L1002), [LedgerReader.java:333](../src/main/java/dev/oseer/ledger/LedgerReader.java#L333), [RunReport.java:417](../src/main/java/dev/oseer/ledger/RunReport.java#L417), [Dashboard.java:298](../src/main/java/dev/oseer/dashboard/Dashboard.java#L298).
 
    Сценарий: A получает rate limit, повтор A успешен. Ожидается: 2 attempts, 1 retry, 0 failover. Fixture даёт `failovers=1`, переход `same-profile → same-profile`, dashboard `kind=switched`. Все дополнительные attempts трактуются как замена.
 
@@ -99,7 +99,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 5. **F05 — partial token telemetry нарушает правило unknown.**
 
-   Источник: [RunReport.java:326](../src/main/java/dev/warden/ledger/RunReport.java#L326).
+   Источник: [RunReport.java:326](../src/main/java/dev/oseer/ledger/RunReport.java#L326).
 
    Сценарий: две попытки сообщают только `tokens: {input: 100}`. Ожидается: input=200, output и total неизвестны. Fixture получает input=200, output=0, total=0, `tokens_unknown_calls=0`. Наличие любого поля делает весь объект «известным».
 
@@ -107,7 +107,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 6. **F06 — requested model подменяет неизвестную reported model.**
 
-   Источники: [LedgerReader.java:546](../src/main/java/dev/warden/ledger/LedgerReader.java#L546), [RoleRunner.java:1147](../src/main/java/dev/warden/role/RoleRunner.java#L1147), обещание в [METRICS.md:49](METRICS.md#L49).
+   Источники: [LedgerReader.java:546](../src/main/java/dev/oseer/ledger/LedgerReader.java#L546), [RoleRunner.java:1147](../src/main/java/dev/oseer/role/RoleRunner.java#L1147), обещание в [METRICS.md:49](METRICS.md#L49).
 
    Сценарий: CLI не сообщает inference model. Ожидается: reported неизвестна, requested видна отдельно. Фактически `attempt.model` заполняется из профиля, а `by_model` использует это значение при отсутствии `model_reported`. Fixture с requested=`declared-model-only` и effective/reported=`unknown` даёт local/global `by_model: {declared-model-only: 1}`. Для сравнения эффективности такая группа не доказывает, какая модель исполняла запрос. Результат (`out/audit-metrics-2026-10-19/compare-conditions-results.json`).
 
@@ -115,7 +115,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 7. **F07 — preflight независимости расходится с runtime при нескольких writers.**
 
-   Источники: [TaskLoop.java:1346](../src/main/java/dev/warden/run/TaskLoop.java#L1346), [TaskLoop.java:1643](../src/main/java/dev/warden/run/TaskLoop.java#L1643), [TaskLoop.java:2220](../src/main/java/dev/warden/run/TaskLoop.java#L2220), [Workflow.java:377](../src/main/java/dev/warden/config/Workflow.java#L377).
+   Источники: [TaskLoop.java:1346](../src/main/java/dev/oseer/run/TaskLoop.java#L1346), [TaskLoop.java:1643](../src/main/java/dev/oseer/run/TaskLoop.java#L1643), [TaskLoop.java:2220](../src/main/java/dev/oseer/run/TaskLoop.java#L2220), [Workflow.java:377](../src/main/java/dev/oseer/config/Workflow.java#L377).
 
    Сценарий: write-A/vendor-A → write-B/vendor-B → review/vendor-B, требуется independent vendor. Несколько implementer stages разрешены. Preview учитывает только A и допускает reader B; runtime накапливает обоих writers и отказывает reader уже после оплаченных стадий. Ожидается бесплатный ранний отказ. Runtime не ослабляет независимость; ошибка относится к preflight и бесполезному расходу. Offline probe подтвердил, что preview допускает reader B против `[writer-a]`, а реальные методы `overlayGap`, `judgeGap`, `toolingGap`, `readerGap` возвращают null. Тот же resolver против обоих writers возвращает `same_vendor_as_writer`. Полный workflow с оплатой не запускался. Результат (`out/audit-settings-2026-10-19/probe-result.json`).
 
@@ -123,7 +123,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 8. **F08, P3 — backup не заменяет транзакционную запись настройки.**
 
-   Источник: [RosterCommand.java:63](../src/main/java/dev/warden/config/RosterCommand.java#L63).
+   Источник: [RosterCommand.java:63](../src/main/java/dev/oseer/config/RosterCommand.java#L63).
 
    Сценарий: редактор/второй CLI меняет YAML между чтением и записью, либо процесс прекращается после truncate. Ожидается конфликт устаревшей версии или целый предыдущий/следующий файл. Фактически `Files.writeString` меняет активный файл до parse; нет lock/expected digest/atomic replace. Можно потерять чужую правку либо получить усечённую конфигурацию; backup остаётся способом ручного восстановления.
 
@@ -131,7 +131,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 9. **F09, P3 — таблица настроек вводит в заблуждение.**
 
-   Источники: [Dashboard.java:438](../src/main/java/dev/warden/dashboard/Dashboard.java#L438), [Dashboard.java:477](../src/main/java/dev/warden/dashboard/Dashboard.java#L477).
+   Источники: [Dashboard.java:438](../src/main/java/dev/oseer/dashboard/Dashboard.java#L438), [Dashboard.java:477](../src/main/java/dev/oseer/dashboard/Dashboard.java#L477).
 
    В шапке 6 колонок, в строке кандидата 5 ячеек. В браузере: профиль находится под «Этап», модель под «Кандидат», «да» под «Модель», допуск под «Проверен», сведения о цене под «Допуск», «Стоимость» пуста. Ожидается совпадение заголовков и значений.
 
@@ -139,13 +139,13 @@ F09, колонки dashboard и подробный preview задачи — в
 
 **Ограничения лимитов и fallback, которые интерфейс должен объяснять**
 
-`max_role_runs` ограничивает попытки, включая retry/failover, а не только число разных ролей. `CallPlan` оценивает чистое прохождение и ветви ремонта; запас на сбои вендора следует показывать отдельно от минимума успешного пути. При threshold `max_cost_usd` ограничивает известные цены между вызовами: неизвестные цены остаются unknown, а один допущенный вызов может превысить остаток. Strict reservation полезен при достоверных upper bounds профилей; сам Warden не обеспечивает достоверность произвольно введённой границы и не останавливает удалённый биллинг по долларовой величине.
+`max_role_runs` ограничивает попытки, включая retry/failover, а не только число разных ролей. `CallPlan` оценивает чистое прохождение и ветви ремонта; запас на сбои вендора следует показывать отдельно от минимума успешного пути. При threshold `max_cost_usd` ограничивает известные цены между вызовами: неизвестные цены остаются unknown, а один допущенный вызов может превысить остаток. Strict reservation полезен при достоверных upper bounds профилей; сам Overseer не обеспечивает достоверность произвольно введённой границы и не останавливает удалённый биллинг по долларовой величине.
 
-Профиль с исчерпанной quota исключается по имени в пределах RoleRunner. Это не общая модель лимита аккаунта: два профиля могут разделять подписку, а две модели одного вендора могут иметь разные окна. Нужны явные необязательные `quota_group/account_scope`, источник наблюдения, время наблюдения и cooldown/reset только при известном timestamp. Стоит различать «выбранная quota исчерпана», «остаток неизвестен» и «профиль ещё не проверялся». Нельзя выводить процент оставшейся подписки из числа вызовов Warden.
+Профиль с исчерпанной quota исключается по имени в пределах RoleRunner. Это не общая модель лимита аккаунта: два профиля могут разделять подписку, а две модели одного вендора могут иметь разные окна. Нужны явные необязательные `quota_group/account_scope`, источник наблюдения, время наблюдения и cooldown/reset только при известном timestamp. Стоит различать «выбранная quota исчерпана», «остаток неизвестен» и «профиль ещё не проверялся». Нельзя выводить процент оставшейся подписки из числа вызовов Overseer.
 
 Для удобного fallback важно видеть приоритет кандидатов, причину допуска, independence после каждого writer и ожидаемую цену следующего шага. Переключение после сломанного флага/схемы не следует автоматически маскировать как quota recovery. В актуальном main такой policy уже есть: `failover.on_vendor_failure` и `failover.max_per_stage` (PR #30/#50), с явным `cause`. Для него требуется доказанное завершение предыдущего writer: повтор без fencing рискует запустить двух редакторов; текущая поставка добавляет эту защиту для direct CLI.
 
-Передача контекста устроена содержательно: writer получает literal goal/non-goals, registry и закрытые finding IDs, предыдущий repair receipt, сведения об изменении кандидата и остаток бюджета; reviewer — registry и правила closure/reopen. Raw/tool logs автоматически не копируются во всю историю: gate feedback ссылается на полный report, failover handover перечисляет profile/vendor/code. Однако context file читается целиком ([RoleRunner.java:1217](../src/main/java/dev/warden/role/RoleRunner.java#L1217)); byte/token budget для контекста нет, cumulative registry растёт по уникальным finding IDs, schema и changed_files также передаются полностью. Полезно измерять prompt/context/schema bytes и размер registry на attempt, provider-reported input/cache usage с известной семантикой и долю повторного контекста. Следующий шаг — детерминированный компактный handoff с evidence references и явной обработкой превышения размера; goal, открытые blockers и ограничения нельзя молча обрезать. По одному большому input-token числу без понимания vendor accounting нельзя доказать расточительность.
+Передача контекста устроена содержательно: writer получает literal goal/non-goals, registry и закрытые finding IDs, предыдущий repair receipt, сведения об изменении кандидата и остаток бюджета; reviewer — registry и правила closure/reopen. Raw/tool logs автоматически не копируются во всю историю: gate feedback ссылается на полный report, failover handover перечисляет profile/vendor/code. Однако context file читается целиком ([RoleRunner.java:1217](../src/main/java/dev/oseer/role/RoleRunner.java#L1217)); byte/token budget для контекста нет, cumulative registry растёт по уникальным finding IDs, schema и changed_files также передаются полностью. Полезно измерять prompt/context/schema bytes и размер registry на attempt, provider-reported input/cache usage с известной семантикой и долю повторного контекста. Следующий шаг — детерминированный компактный handoff с evidence references и явной обработкой превышения размера; goal, открытые blockers и ограничения нельзя молча обрезать. По одному большому input-token числу без понимания vendor accounting нельзя доказать расточительность.
 
 **Минимальный web UI**
 
@@ -162,7 +162,7 @@ F09, колонки dashboard и подробный preview задачи — в
 
 Сначала форма может выпускать команду и task overlay без постоянной записи. Model/effort должны иметь проверенные варианты профиля и custom/unknown, поскольку syntactic validity и доставка флага не доказывают поддержку конкретной моделью. Механическим стадиям выбор модели не нужен. Presets «экономный», «обычный», «тщательная проверка» должны раскрываться в обычные видимые настройки; выбор конкретных моделей определяется evals. Обязательные по risk/contract readers нельзя скрыто снимать чекбоксом.
 
-Критерий согласованности: одинаковый вход в GUI preview и CLI dry-run даёт одинаковые cast, budget plan и причины отказа, без vendor call. Для постоянного Apply нужны F08, version/digest conflict и diff. API preview уже отдаёт model/effort/runner задачи ([TaskLoop.java:1627](../src/main/java/dev/warden/run/TaskLoop.java#L1627)), но текущий Dashboard выводит в «Запустится» только профиль ([Dashboard.java:479](../src/main/java/dev/warden/dashboard/Dashboard.java#L479)); это следует исправить в первой UI-поставке.
+Критерий согласованности: одинаковый вход в GUI preview и CLI dry-run даёт одинаковые cast, budget plan и причины отказа, без vendor call. Для постоянного Apply нужны F08, version/digest conflict и diff. API preview уже отдаёт model/effort/runner задачи ([TaskLoop.java:1627](../src/main/java/dev/oseer/run/TaskLoop.java#L1627)), но текущий Dashboard выводит в «Запустится» только профиль ([Dashboard.java:479](../src/main/java/dev/oseer/dashboard/Dashboard.java#L479)); это следует исправить в первой UI-поставке.
 
 **Что показывать после задачи**
 
@@ -176,9 +176,9 @@ F09, колонки dashboard и подробный preview задачи — в
 
 [HYPOTHESIS.md](HYPOTHESIS.md) уже задаёт полезный paired protocol: одна база, одинаковая задача, чередование порядка, общие checks, независимое чтение и дефекты после применения. Это хорошая отправная точка. Текущий `ledger --compare` недостаточен для вывода «эта модель/effort лучше»:
 
-- [LedgerCompare.java:538](../src/main/java/dev/warden/ledger/LedgerCompare.java#L538) группирует по prepare/risk/workflow/profile names. Замена model/effort под тем же именем профиля смешивает условия; лимиты, prompt/schema hashes и build не входят в condition key. Roster — множество имён фактически исполненных профилей, поэтому также теряется распределение по ролям, а выборка зависит от пройденного пути.
-- [LedgerCompare.java:453](../src/main/java/dev/warden/ledger/LedgerCompare.java#L453) ставит `comparable=true` по одному условию `units >= 3`. Это размер выборки, а не доказательство одинаковых условий, сложности задач или статистической надёжности.
-- Baseline schema ([LedgerCompare.java:45](../src/main/java/dev/warden/ledger/LedgerCompare.java#L45)) не связывает пары через `task_pair_id` и не хранит Warden operator effort/post-accept defects. Основная гипотеза о снижении труда оператора автоматически не проверяется.
+- [LedgerCompare.java:538](../src/main/java/dev/oseer/ledger/LedgerCompare.java#L538) группирует по prepare/risk/workflow/profile names. Замена model/effort под тем же именем профиля смешивает условия; лимиты, prompt/schema hashes и build не входят в condition key. Roster — множество имён фактически исполненных профилей, поэтому также теряется распределение по ролям, а выборка зависит от пройденного пути.
+- [LedgerCompare.java:453](../src/main/java/dev/oseer/ledger/LedgerCompare.java#L453) ставит `comparable=true` по одному условию `units >= 3`. Это размер выборки, а не доказательство одинаковых условий, сложности задач или статистической надёжности.
+- Baseline schema ([LedgerCompare.java:45](../src/main/java/dev/oseer/ledger/LedgerCompare.java#L45)) не связывает пары через `task_pair_id` и не хранит Overseer operator effort/post-accept defects. Основная гипотеза о снижении труда оператора автоматически не проверяется.
 
 Offline compare probe это подтвердил: два запуска `model-a/low` и `model-b/high` под `stable-profile`, с различиями в cast, role contract и measurement context, объединяются в одну группу `units=2`, `incomplete=false`. Результат (`out/audit-metrics-2026-10-19/compare-conditions-results.json`).
 

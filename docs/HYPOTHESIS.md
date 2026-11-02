@@ -14,18 +14,18 @@ verdicts are checkable afterwards** where the orchestrator's are the agent's own
 The second half is the part the first pilot already supported: the evidence layer held, and
 the independent reader found real defects. The first half is what the operator's verdict of
 2026-09-15 disputed — "too much fuss, it needs constant rework of its own" — and it is the
-half that decides whether Warden is a product or a plugin.
+half that decides whether AI Overseer is a product or a plugin.
 
 ## 2. What counts as evidence
 
 Only what the ledger already records, plus two numbers a person writes down. Nothing is asked
 of a model about its own performance.
 
-| Quantity | Warden side | Baseline side |
+| Quantity | Overseer side | Baseline side |
 |---|---|---|
-| Outcome | `outcomes.accepted` / `ready_for_human` / `stopped` from `warden ledger --compare`; a stopped chain is not a success | `completed` in the baseline row, judged by the same acceptance commands run afterwards |
-| Independent verdict | `candidate_review_passed`, with the reading's assurance label (`independent`, `same_vendor_peer`, …) | one read-only `warden role reviewer <task>` over the finished tree, paid and recorded like any other reading |
-| Defects found by a reader that were not in the acceptance | `open_blocking_findings` and the finding registry | the same `warden role reviewer` reading |
+| Outcome | `outcomes.accepted` / `ready_for_human` / `stopped` from `oseer ledger --compare`; a stopped chain is not a success | `completed` in the baseline row, judged by the same acceptance commands run afterwards |
+| Independent verdict | `candidate_review_passed`, with the reading's assurance label (`independent`, `same_vendor_peer`, …) | one read-only `oseer role reviewer <task>` over the finished tree, paid and recorded like any other reading |
+| Defects found by a reader that were not in the acceptance | `open_blocking_findings` and the finding registry | the same `oseer role reviewer` reading |
 | Vendor calls, reported cost, unpriced calls | `role_runs`, `cost_usd`, `unpriced_calls` per chain | `calls`, `cost_usd` in the baseline row, from the orchestrator's own logs; `null` when it does not say |
 | Elapsed, excluding the human | `elapsed_seconds` per chain (waiting on the gate is not counted) | `elapsed_minutes` |
 | Operator effort | minutes a person spent on the task outside the gate: writing the goal, answering stops, editing configuration, hand-fixing what the loop left | `operator_minutes` |
@@ -33,12 +33,12 @@ of a model about its own performance.
 
 Operator minutes are the one quantity the ledger cannot see, and the one the 2026-09-15
 verdict was about. They are written down per task, at the time, in the baseline file's row
-for the baseline side and in a one-line note for the Warden side. An estimate made a week
+for the baseline side and in a one-line note for the Overseer side. An estimate made a week
 later is not a measurement.
 
 ## 3. Protocol
 
-1. **Freeze.** One Warden build, one policy, one roster, for the whole series. The first
+1. **Freeze.** One Overseer build, one policy, one roster, for the whole series. The first
    pilot's lesson: a build changed mid-series cannot be compared with itself.
 2. **Pick tasks in pairs.** Three to five tasks per target type, each small enough to finish in
    one sitting and real enough to have an acceptance the project already runs. Target types
@@ -46,18 +46,18 @@ later is not a measurement.
    window or a Unity scene (only after the `claude-visual-qa-mcp` probe has passed against a
    server the operator configured; until then those tasks are not comparable, because the
    baseline agent has eyes and the loop does not).
-3. **Run each task both ways, on separate worktrees from the same base.** A: `warden do`
+3. **Run each task both ways, on separate worktrees from the same base.** A: `oseer do`
    with the five-role loop from [SETUP](SETUP.md#the-five-role-loop) and `--prepare always`.
    B: the same vendors driven by the orchestrator or by hand, given the same goal text, no
    contract. Order alternates between tasks so learning effects do not all favour one side.
 4. **Judge B with A's judge.** After B finishes, run the project's checks and the task's
-   acceptance commands, then one `warden role reviewer <task>` over B's tree. That makes the
+   acceptance commands, then one `oseer role reviewer <task>` over B's tree. That makes the
    verdict on B checkable in the same way as the verdict on A, and it prices B's independent
    reading, which B did not pay for on its own.
 5. **Write the baseline rows** (`docs/METRICS.md`, "Baseline file"): `label`, `task_kind`,
    `risk`, `completed`, `operator_minutes`, `elapsed_minutes`, `cost_usd`, `calls`. Unknown is
    `null`, never zero.
-6. **Compare.** `warden ledger --compare --baseline-file baseline.json --text` in the target
+6. **Compare.** `oseer ledger --compare --baseline-file baseline.json --text` in the target
    project. Groups with fewer than three units are marked not comparable; do not read one run
    as a trend.
 7. **Count defects afterwards.** For two weeks after each pair lands, note defects reported
@@ -94,10 +94,10 @@ What Conductor offers here, measured against the goals of this plan:
 | Need | Conductor | What covers it today |
 |---|---|---|
 | The operator sees every process and each agent's work | No surface of its own | Orca: worktree cards, agent rows, terminals, the run timeline on the dashboard |
-| Approve / reject from a phone | An external fail-closed gate, desktop-bound | Orca `gate-create` / `gate-resolve`, imported by `warden approve --from-orca`, with the wait bounded by `--wait-minutes` and the gate's own TTL |
-| Change roles and models per vendor | Nothing | `warden roster`, the profile files, `warden profiles --verify` |
+| Approve / reject from a phone | An external fail-closed gate, desktop-bound | Orca `gate-create` / `gate-resolve`, imported by `oseer approve --from-orca`, with the wait bounded by `--wait-minutes` and the gate's own TTL |
+| Change roles and models per vendor | Nothing | `oseer roster`, the profile files, `oseer profiles --verify` |
 | An outer timeout around the whole run | Yes, its node timeout | `budgets.max_elapsed_minutes`, summed across a chain and excluding human wait |
-| Fan-out across repositories, a DAG of several Warden tasks, CI-driven launches | Yes | Nothing; not a goal of this plan |
+| Fan-out across repositories, a DAG of several Overseer tasks, CI-driven launches | Yes | Nothing; not a goal of this plan |
 | The visual leg | Not enabled in its workflow | The harness and the visual role, in the loop |
 
 The cost of integrating further is the one [ADR 0001](adr/0001-layer-split.md) named: a second
@@ -107,24 +107,24 @@ goals needs a DAG across tasks. The evaluation therefore ends where the ADR did:
 stays an optional adapter, is not developed further here, and is reopened only if a fleet or
 CI launch needs a distributed DAG. `conductor/gates.yaml` and its validation tests remain.
 
-## 6. If the hypothesis fails: Warden as a plugin
+## 6. If the hypothesis fails: Overseer as a plugin
 
 If the series refutes the first half of the claim, the second half still stands on the
 pilot's evidence, and it is what an orchestrator lacks. The plugin keeps exactly that:
 
 - **The judge.** Machine gates, the browser harness, the agent-evidence check
   (`screenshots_taken` verified and hashed), the read-only fingerprint around every reader,
-  and an independent reading with an assurance label. Entry point: `warden role reviewer`
-  and `warden run` over a tree the host produced.
+  and an independent reading with an assurance label. Entry point: `oseer role reviewer`
+  and `oseer run` over a tree the host produced.
 - **The decision.** `decision.json`, bound to a worktree fingerprint, expiring, importable
-  from an Orca gate. Entry point: `warden approve` / `warden status`.
-- **The evidence.** `.warden/runs` and the home corpus, `warden ledger --compare` for the
+  from an Orca gate. Entry point: `oseer approve` / `oseer status`.
+- **The evidence.** `.oseer/runs` and the home corpus, `oseer ledger --compare` for the
   comparison the host cannot make about itself.
 
-What the plugin drops: `TaskLoop` as the thing that decides what runs next, `warden do` as the
-front door, the planner pair. The host (Paperclip, Hermes, OpenClaw) calls one Warden command
+What the plugin drops: `TaskLoop` as the thing that decides what runs next, `oseer do` as the
+front door, the planner pair. The host (Paperclip, Hermes, OpenClaw) calls one Overseer command
 per step, reads the single JSON object on stdout, treats `decision.json` as its gate, and
-lands nothing on Warden's behalf — Warden never lands. The preconditions are the ones the
+lands nothing on Overseer's behalf — Overseer never lands. The preconditions are the ones the
 layer split already states: the host must accept an external gate and run a command per step,
 and it must not be asked to duplicate the role DAG.
 

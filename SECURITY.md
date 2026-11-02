@@ -14,41 +14,41 @@ programme.
 
 ## Supported versions
 
-Warden is pre-1.0. Only the latest tag receives fixes; there are no maintenance branches.
+AI Overseer is pre-1.0. Only the latest tag receives fixes; there are no maintenance branches.
 
-## What Warden is, in threat-model terms
+## What Overseer is, in threat-model terms
 
-Warden is a **local orchestrator that grants a language-model process write access to a
+Overseer is a **local orchestrator that grants a language-model process write access to a
 Git worktree on your machine.** That is the whole security story, and it is worth stating
 plainly rather than burying it:
 
-- Warden starts vendor CLIs **you** installed, with **your** credentials, from profiles
-  **you** wrote in `~/.warden/`. It ships no keys, opens no network sockets of its own,
+- Overseer starts vendor CLIs **you** installed, with **your** credentials, from profiles
+  **you** wrote in `~/.oseer/`. It ships no keys, opens no network sockets of its own,
   and phones nothing home.
 - One of those roles — the implementer — runs with `read_only: false` and edits files.
   This is the intended behaviour, and it is also the largest piece of trust in the system.
-- Warden never merges, pushes or opens a pull request on its own. `warden land` does those
+- Overseer never merges, pushes or opens a pull request on its own. `oseer land` does those
   things, only after a recorded human `accept`, and only with explicit `--commit` /
   `--push` / `--pull-request` flags.
 
-## The boundaries Warden actually enforces
+## The boundaries Overseer actually enforces
 
 These are properties the code holds, not aspirations. Each has a test.
 
 | Boundary | Mechanism |
 |---|---|
 | A role cannot silently exceed its declared scope | The worktree's content fingerprint is taken before and after every role. A `read_only` role that wrote gets `role_violated_read_only` and its artifact is discarded whatever it claims |
-| A run cannot rewrite the terms it is judged by | The whole `.warden` tree except `runs/` is snapshotted before the first dispatch and compared after every role and around every gate command. Any change is `contract_mutated`, naming the path |
+| A run cannot rewrite the terms it is judged by | The whole `.oseer` tree except `runs/` is snapshotted before the first dispatch and compared after every role and around every gate command. Any change is `contract_mutated`, naming the path |
 | An unvetted vendor profile cannot be dispatched | The resolver refuses any profile without `verification.verified_on`, a date a human stamps after running the probe and reading its output. `--verify` alone never stamps it |
-| A vendor swap cannot happen unasked | `failover.on_quota_exhausted` defaults to `confirm`. `failover.on_vendor_failure` defaults to `stop`, so a network error, a timeout or a missing artifact does not swap vendors unless the policy says so. Authorisation is a recorded decision carried by `warden run --continue`, permitting exactly one role-to-profile substitution |
+| A vendor swap cannot happen unasked | `failover.on_quota_exhausted` defaults to `confirm`. `failover.on_vendor_failure` defaults to `stop`, so a network error, a timeout or a missing artifact does not swap vendors unless the policy says so. Authorisation is a recorded decision carried by `oseer run --continue`, permitting exactly one role-to-profile substitution |
 | Spending cannot run away | `budgets.max_role_runs` is checked before each dispatch and counts vendor calls, not roles. The dollar ceiling is best-effort by construction — see below |
 | Acceptance cannot be applied to a different tree | `accept` is refused when the worktree fingerprint moved after the decision was shown (`candidate_changed`) |
 
-## Where the trust actually sits, and what Warden does not protect you from
+## Where the trust actually sits, and what Overseer does not protect you from
 
-- **The vendor CLI is trusted with your worktree.** Warden bounds *when* it runs and
+- **The vendor CLI is trusted with your worktree.** Overseer bounds *when* it runs and
   *what is checked afterwards*. It does not sandbox the process, restrict its syscalls, or
-  filter its network access. `authority.network: false` in a task is a declaration Warden
+  filter its network access. `authority.network: false` in a task is a declaration Overseer
   passes to vendors that honour such a flag — it is not enforcement.
 - **Tool allowlists are not implemented.** A profile's `args` are whatever you wrote. If
   you pass an auto-approve flag to a vendor, you have granted that vendor whatever the flag
@@ -58,9 +58,9 @@ These are properties the code holds, not aspirations. Each has a test.
   allowed call under a $40 limit. `unpriced_calls` and `cost_ceiling_binding` report this;
   `max_role_runs` is the bound that always holds.
 - **Prompts carry your repository's content to third parties.** Every dispatch sends the
-  task contract, and the vendor reads your source. Do not point Warden at a repository whose
+  task contract, and the vendor reads your source. Do not point Overseer at a repository whose
   contents you may not send to the vendors in your policy.
-- **Evidence is not redacted.** `.warden/runs/<id>/` keeps raw vendor stdout/stderr,
+- **Evidence is not redacted.** `.oseer/runs/<id>/` keeps raw vendor stdout/stderr,
   rendered prompts and screenshots. The shipped `runs/.gitignore` keeps screenshots and raw
   transcripts out of Git while leaving `*.json`/`*.jsonl` visible — read it before committing
   a run, and never commit a run from a repository whose logs contain secrets.
@@ -76,5 +76,5 @@ These are properties the code holds, not aspirations. Each has a test.
 3. Leave `failover.on_quota_exhausted: confirm`. `auto` changes the author of the work and
    can silently cost you the independent reviewer.
 4. Prefer Orca worktree isolation over `--in-place` for any repository you care about.
-5. Keep `.warden/runs/` out of the published history unless you have read what is in it.
-6. Treat `warden land --push --pull-request` as the one command that leaves your machine.
+5. Keep `.oseer/runs/` out of the published history unless you have read what is in it.
+6. Treat `oseer land --push --pull-request` as the one command that leaves your machine.

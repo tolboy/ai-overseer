@@ -1,4 +1,4 @@
-# Warden — specification
+# AI Overseer — specification
 
 The tool runs AI agents by role inside someone else's repository, checks the result
 mechanically, and stops in front of a human. It **never merges anything**.
@@ -14,16 +14,16 @@ run live, [`docs/LIVE-CYCLE.md`](../docs/LIVE-CYCLE.md).
 The main idea, from which everything else follows:
 
 ```
-~/.warden/                      WHO runs
+~/.oseer/                      WHO runs
   profiles/*.yaml               vendors: which CLI, which flags, which limits
   policy.yaml                   role → profiles, rotation, independence
 
-<any project>/.warden/          WHAT "done" means for this project
+<any project>/.oseer/          WHAT "done" means for this project
   project.yaml                  check commands, scopes, defaults
   tasks/*.yaml                  tasks
   runs/                         the evidence base (gitignored)
 
-warden (installed once)         HOW: gates, roles, the loop, the ledger
+oseer (installed once)         HOW: gates, roles, the loop, the ledger
 ```
 
 **A vendor is a property of whoever runs, not of the project.** You have SuperGrok and Codex;
@@ -46,7 +46,7 @@ the other vendor's. Two independent readers only mean something while both verdi
 
 ## 2. Project files
 
-### `.warden/project.yaml` — the only mandatory file
+### `.oseer/project.yaml` — the only mandatory file
 
 ```yaml
 version: 1
@@ -78,7 +78,7 @@ defaults:
 the agent is not asked to repair a breakage it did not cause. The same commands are the
 floor of the later acceptance gate (baseline first, duplicates dropped), so a narrower
 task check cannot hide a regression of project health. Existing projects that omit the
-key, and a greenfield `warden init`, keep the previous behaviour: no pre-agent suite.
+key, and a greenfield `oseer init`, keep the previous behaviour: no pre-agent suite.
 
 For a JVM project only the contents of `checks` differ:
 
@@ -88,7 +88,7 @@ checks:
   full: ["./gradlew build", "./gradlew detekt"]
 ```
 
-### `.warden/tasks/<id>.yaml` — a task
+### `.oseer/tasks/<id>.yaml` — a task
 
 ```yaml
 version: 1
@@ -136,7 +136,7 @@ max_fix_attempts: 1             # repair rounds (default from project.yaml)
 timeout_minutes: 30             # one gate run's commands, shared
 ```
 
-The first four bound the **chain**, not one run: a `warden run --continue` answered `retry`
+The first four bound the **chain**, not one run: a `oseer run --continue` answered `retry`
 or `switch` starts from what the runs before it spent — calls, reported cost, unpriced calls,
 fix rounds and execution time — and the summary's `chain` block records the running totals.
 A continuation after a rejection, and any run without `--continue`, starts a chain of its
@@ -188,9 +188,9 @@ actual, scenario or suggestion contains an item (case-insensitive substring) is 
 as P2 with `severity_as_filed`, the matched item, and `advisory: true`. It does not block.
 A product defect is never lowered. The vendor artifact is left as filed.
 
-`warden pilot prepare` requires a declared `reproduction.command` to be in
+`oseer pilot prepare` requires a declared `reproduction.command` to be in
 `checks.acceptance` and writes it into the task's `reproduce` list. Preparation executes
-nothing: `reproduction_check.status` is `enforced_by_warden_run`, or `not_declared` when
+nothing: `reproduction_check.status` is `enforced_by_oseer_run`, or `not_declared` when
 omitted (acceptance strength is then unchecked).
 
 **A task with no executable acceptance criterion is not accepted.** This is not pedantry:
@@ -201,7 +201,7 @@ linter is the place where that requirement becomes mandatory rather than aspirat
 
 ## 3. User files
 
-### `~/.warden/profiles/grok-review.yaml`
+### `~/.oseer/profiles/grok-review.yaml`
 
 ```yaml
 version: 1
@@ -243,7 +243,7 @@ model: grok-4.6-build     # reaches the vendor only if args contain {{model}}
 
 `attachments.flag` is what separates a tester role from a role that was sent some filenames.
 Without it the screenshots only reach the prompt text; a vendor with its own read tool will
-open them, a vendor without one will read the paths as prose. Warden records in the report
+open them, a vendor without one will read the paths as prose. Overseer records in the report
 which of the two happened.
 
 ```yaml
@@ -253,7 +253,7 @@ capabilities:
   vision: { delivery: workspace_file, verification: required, acquires: true }
 ```
 
-`mcp.config` names the file that declares which MCP servers the vendor may reach; Warden does
+`mcp.config` names the file that declares which MCP servers the vendor may reach; Overseer does
 not read its format. It reaches the vendor only through `{{mcp_config}}` in `args` (declaring
 one without the other is refused for a direct runner), the file must exist when the role is
 dispatched (`role_mcp_config_missing`), and its digest is a term of the role contract. With
@@ -263,7 +263,7 @@ profile without it.
 
 `prompt_delivery: stdin` is the only channel that survives a Windows `.cmd` shim: cmd.exe
 truncates a multi-line argument at the first newline and silently drops every argument after
-it. Warden refuses to launch that combination (`role_prompt_undeliverable`) rather than
+it. Overseer refuses to launch that combination (`role_prompt_undeliverable`) rather than
 sending the vendor a corrupted question.
 
 ```yaml
@@ -271,7 +271,7 @@ runner: direct    # direct (default) | orca | local
 ```
 
 `runner` selects the adapter, not the model. `direct` runs the vendor's CLI in this process.
-`orca` starts a supervised worker inside an **already existing** Orca worktree: Warden creates
+`orca` starts a supervised worker inside an **already existing** Orca worktree: Overseer creates
 no worktrees. Completion is accepted only from `worker_done` or dispatch settlement — terminal
 text is not evidence. `local` POSTs an OpenAI-compatible chat completion to the profile's
 `endpoint` and reads `choices[0].message.content`. A local profile cannot declare
@@ -287,7 +287,7 @@ role: reviewer
 vendor: ollama
 runner: local
 endpoint: http://127.0.0.1:11434/v1/chat/completions   # absolute http/https; required
-api_key_env: LOCAL_WARDEN_KEY   # the NAME of a variable, never a token. Optional
+api_key_env: LOCAL_OSEER_KEY   # the NAME of a variable, never a token. Optional
 model: gemma4:e4b
 read_only: true
 limits:
@@ -310,7 +310,7 @@ JSON schema, a reported `blocked`/`failed`/`aborted` refused, and the worktree f
 compared around the call. Tokens are recorded from `usage` when the server reports them; a cost
 is never invented, so an unpriced call is counted as unpriced rather than as free.
 
-### `~/.warden/policy.yaml`
+### `~/.oseer/policy.yaml`
 
 ```yaml
 version: 1
@@ -339,8 +339,8 @@ floor, not a layer on top. The role adds what a machine cannot measure and costs
 
 `planner` is a loadable role like the others — a profile can declare it, `policy.yaml` can
 name it, and the resolver applies the same verification, strategy and independence rules.
-It is not a workflow stage and it is not in the shipped policy. `warden do --prepare
-off|auto|always` (default `off`) is what dispatches it. The planner drafts; Warden validates.
+It is not a workflow stage and it is not in the shipped policy. `oseer do --prepare
+off|auto|always` (default `off`) is what dispatches it. The planner drafts; Overseer validates.
 `--prepare auto` reuses a ready contract without a planner call, and refuses `task_conflict`
 when that file does not preserve the supplied operator goal or the invocation's scope and
 risk. Not built: an interactive draft editor, TTL on network observations, or subtask execution.
@@ -354,7 +354,7 @@ first review stage always gets the first profile.
 
 That second rule is not a refinement. The position used to come from a counter shared by every
 run in the project, which meant a run that died before reaching its reviewer, a fix round, or a
-bare `warden role` all shifted the pairing: an operator who wrote "the deep reader goes first"
+bare `oseer role` all shifted the pairing: an operator who wrote "the deep reader goes first"
 got whichever profile the arithmetic landed on. Rotation state for a paired role is now derived
 from `policy.yaml` and nothing else, so a failure cannot reorder it.
 
@@ -391,26 +391,26 @@ answered `retry` or `switch`, reuses the verdicts that still describe the tree.
 ## 4. Commands
 
 ```
-warden setup                create a starter ~/.warden; never overwrites
-warden profiles             which profiles load, which are eligible, and why not
-warden profiles --verify N  run profile N's own probe; stamps verified_on when it passes
-warden init                 create .warden/project.yaml, inferring checks from package.json,
+oseer setup                create a starter ~/.oseer; never overwrites
+oseer profiles             which profiles load, which are eligible, and why not
+oseer profiles --verify N  run profile N's own probe; stamps verified_on when it passes
+oseer init                 create .oseer/project.yaml, inferring checks from package.json,
                             build.gradle(.kts), pom.xml, Cargo.toml or Makefile
-warden pilot prepare        write a reviewable offline pilot bundle from an explicit JSON
+oseer pilot prepare        write a reviewable offline pilot bundle from an explicit JSON
                             spec (`--spec FILE --output DIR`). Does not run the target or
                             call vendors. See examples/pilot/README.md
-warden doctor               what is installed, authenticated, and misconfigured
-warden do "<goal>"          the whole workflow: isolation (Orca), a task, the loop; stops
+oseer doctor               what is installed, authenticated, and misconfigured
+oseer do "<goal>"          the whole workflow: isolation (Orca), a task, the loop; stops
                             before a human. --project DIR --scope NAME --in-place --dry-run
                             --init-repo --draft-only --goal-file FILE --quiet
                             --prepare off|auto|always (default off)
-warden validate <task>      check project.yaml, the task, the profiles and the policy
-warden gates <task>         preflight and machine gates, no vendors and no cost
-warden visual-qa <task>     start the preview, screenshot, assert control visibility
-warden role <role> <task>   one role; --dry-run spends nothing
-warden run <task>           the whole loop; stops before a human
+oseer validate <task>      check project.yaml, the task, the profiles and the policy
+oseer gates <task>         preflight and machine gates, no vendors and no cost
+oseer visual-qa <task>     start the preview, screenshot, assert control visibility
+oseer role <role> <task>   one role; --dry-run spends nothing
+oseer run <task>           the whole loop; stops before a human
                             --continue <run-id> carries a recorded decision forward
-                            --prepare off|auto|always records the mode `warden do`
+                            --prepare off|auto|always records the mode `oseer do`
                             had in force (does not dispatch a planner)
                             --no-orca-gate does not mirror the pending decision
                             into Orca
@@ -419,8 +419,8 @@ warden run <task>           the whole loop; stops before a human
                             answer. Imports one decision and exits; never starts,
                             retries or continues a run. Skipped when no gate was
                             published, with the reason named in the output
-warden ledger               a table of runs: verdicts, cost, time, findings.
-                            Default is local `.warden/runs`. `--global` reads the
+oseer ledger               a table of runs: verdicts, cost, time, findings.
+                            Default is local `.oseer/runs`. `--global` reads the
                             home corpus from outside a repository, filtered by
                             project identity (`--project-id`, or the identity
                             already recorded). Omitting both reports measurements
@@ -428,20 +428,20 @@ warden ledger               a table of runs: verdicts, cost, time, findings.
                             copies selected local runs or archives through the
                             same allowlist. Incomplete sources mark the report
                             incomplete rather than stating exact spend.
-warden report <run-id>      one run joined: stages, vendors, cost, tokens, screenshots,
+oseer report <run-id>      one run joined: stages, vendors, cost, tokens, screenshots,
                             changed files, the human decision, and `next_step` when
                             the summary has one. --text prints a next-step block
                             (kind, sentence, numbered commands, edits, consequences,
                             findings with suggestions) in place of the one-line
                             `safe_next_step` for summaries that have `next_step`
-warden status [run-id]      pending and resolved human decisions
+oseer status [run-id]      pending and resolved human decisions
                             --worktrees lists pending decisions across every
                             worktree of this repository. `status <run-id>` includes
                             `next_step` from that run's summary when it exists
-warden approve <run-id>     record a decision; never lands changes.
+oseer approve <run-id>     record a decision; never lands changes.
                             Must be run from the worktree the run lives in.
-                            Outside a Warden project the code is
-                            `not_a_warden_project`, not `unknown_run`.
+                            Outside an Overseer project the code is
+                            `not_a_oseer_project`, not `unknown_run`.
                             --from-orca takes the answer from the Orca decision
                             gate the run published, so a decision can be made
                             from another machine or a phone
@@ -464,24 +464,24 @@ warden approve <run-id>     record a decision; never lands changes.
                             finding registry, including an open or reopened P1
                             another reviewer filed), and when
                             --finding is omitted; the decision stays pending
-warden land <run-id>        plan (and with --commit/--push/--pull-request, carry out) the
+oseer land <run-id>        plan (and with --commit/--push/--pull-request, carry out) the
                             commit and request for an accepted run. Merges nothing
 ```
 
-`warden do` is the command an operator runs. Everything else is a piece of that loop. A goal
+`oseer do` is the command an operator runs. Everything else is a piece of that loop. A goal
 plus a project; the blast radius is not guessed (`--scope`, or the single scope in
-`project.yaml`). Isolation is `orca worktree create`; Warden never calls `git branch` itself.
+`project.yaml`). Isolation is `orca worktree create`; Overseer never calls `git branch` itself.
 `--in-place` is for a throwaway repository without Orca. Nothing is merged.
 
-`warden doctor` is the answer to "I cannot tell whether the machine half works on my box". It
+`oseer doctor` is the answer to "I cannot tell whether the machine half works on my box". It
 checks Java, the project contract, profile and policy loading, and Orca availability
 separately, and reports `argument_encoding`.
 
-`warden gates` costs nothing: it is how you confirm a project is connected at all without
+`oseer gates` costs nothing: it is how you confirm a project is connected at all without
 starting a single agent.
 
-`warden profiles --verify` runs the profile's own `verification.probe`, saves the transcript
-to `~/.warden/verification/`, prints `what_to_check`, and stamps `verified_on` when the probe
+`oseer profiles --verify` runs the profile's own `verification.probe`, saves the transcript
+to `~/.oseer/verification/`, prints `what_to_check`, and stamps `verified_on` when the probe
 passes. The field records a fact the tool can check — this probe ran on this date and passed —
 which is what the resolver needs: nothing is dispatched whose flags have never been executed.
 
@@ -522,10 +522,10 @@ Properties that are there on purpose:
    measure — clipped text, overlap, a collapsed layout. The role is enabled in the policy and
    is off by default: the harness is the floor, and paying for a look is the operator's call.
    Where no harness can drive the application, a stage declared `evidence: agent` lets the
-   role take its own screenshots through the MCP servers its profile names; Warden verifies
+   role take its own screenshots through the MCP servers its profile names; Overseer verifies
    the files it lists exist inside the run's evidence, hashes them (`image_evidence`), and
    refuses a verdict that lists none as `visual_qa_no_evidence`. What a picture shows is not
-   verified by Warden; the profile's probe is where that is proven.
+   verified by Overseer; the profile's probe is where that is proven.
 5. **A visual failure returns to the implementer**, like a failed gate or review, under the
    same attempt limit. `visual_qa_unavailable` and `visual_qa_port_occupied` are the
    exceptions: an implementer can fix neither a missing browser nor somebody else's server on
@@ -547,18 +547,18 @@ rather than inferred from behaviour.
 ## 6. How Conductor and Orca fit in
 
 ```
-Warden      domain workflow, gates, safety, evidence, metrics, decisions
+Overseer      domain workflow, gates, safety, evidence, metrics, decisions
 Orca        worktrees, agent hosting, dashboard/mobile, terminal and human interaction
 Conductor   optional external workflow adapter; not part of the primary path
 ```
 
-Neither Conductor nor Orca knows a vendor's name. Warden writes `decision.json`; Orca may
+Neither Conductor nor Orca knows a vendor's name. Overseer writes `decision.json`; Orca may
 show the wait; Conductor may wrap the same command with an outer timeout and an external
 gate. The cut is [`docs/adr/0001-layer-split.md`](../docs/adr/0001-layer-split.md).
 
-**The Orca objects a run owns are written down.** `.warden/runs/<run-id>/orca.json` records the
+**The Orca objects a run owns are written down.** `.oseer/runs/<run-id>/orca.json` records the
 Run, task, dispatch and coordinator identities before the worker is started, plus the
-read-only fingerprint taken at that moment. A Warden process that is killed while a worker is
+read-only fingerprint taken at that moment. A Overseer process that is killed while a worker is
 running can therefore be started again: it attaches to the same dispatch instead of opening a
 second agent in the same checkout. Two guards, because they fail differently — the record
 answers "is my worker still there", and an `orchestration worker-list` scan answers "does
@@ -568,8 +568,8 @@ unreachable census or a dispatch Orca will not describe is `role_orca_lifecycle_
 and a live worker in this worktree is `role_orca_worker_active`.
 
 **A pending decision is mirrored to Orca as a decision gate, and the mirror decides nothing.**
-The run publishes its question with Warden's own options and stores the gate id, the decision's
-version token and the candidate fingerprint. `warden approve --from-orca` admits the answer
+The run publishes its question with Overseer's own options and stores the gate id, the decision's
+version token and the candidate fingerprint. `oseer approve --from-orca` admits the answer
 only if it maps exactly onto one of those options, only while the pending decision has not
 moved, and — for an acceptance — only while the candidate fingerprint still matches. This is
 not defensiveness about Orca: measured on 1.4.196, `gate-resolve` takes free text rather than a
@@ -577,7 +577,7 @@ declared option, and re-resolving a settled gate replaces the answer. Both are r
 primitive that coordinates agents, and neither may reach an authorization record. `decision.json`
 stays the only decision.
 
-`--wait-minutes N` on that same command (and `warden run --wait-for-gate N`) polls while the
+`--wait-minutes N` on that same command (and `oseer run --wait-for-gate N`) polls while the
 gate is pending or unreadable, then runs the same validations on the answer that is finally
 imported. The wait never starts, retries or continues a run. A deadline is `gate_pending`
 with the decision file unchanged; silence is not an accept or a reject.
@@ -587,19 +587,19 @@ A Conductor node, when one is used, looks like this:
 ```yaml
   - name: task_loop
     type: script
-    command: warden
+    command: oseer
     args: ["run", "{{ workflow.input.task }}", "--json"]
-    timeout: 7800          # strictly greater than warden's internal limit
+    timeout: 7800          # strictly greater than oseer's internal limit
 ```
 
 **The nested-limit rule.** The outer one must be strictly greater than the inner one:
 
 ```
-Conductor node timeout  >  warden wall clock  >  vendor limits (--max-turns, effort)
+Conductor node timeout  >  oseer wall clock  >  vendor limits (--max-turns, effort)
 ```
 
 Whichever limit fires first decides whether you are left with evidence. If Conductor fires,
-the process is killed, the ledger is not written and the reason is unknown. If warden fires,
+the process is killed, the ledger is not written and the reason is unknown. If oseer fires,
 you have `role_timeout`, a duration, a cost, and confirmation that the tree was not touched.
 
 ---
@@ -627,7 +627,7 @@ configuration, resolved to an absolute path) and `{{evidence_dir}}`.
 The reviewer template used to name `git diff` and `git ls-files` as the way to find the diff,
 and a read-only profile whose tool grant is Read/Grep/Glob cannot run either: one measured
 review spent 16 of its 74 tool calls being refused for following that instruction, and then hit
-its turn ceiling. Warden can always run git; the model may not be able to.
+its turn ceiling. Overseer can always run git; the model may not be able to.
 
 Additionally available in a profile's arguments: `{{prompt}}`, `{{prompt_file}}`,
 `{{schema_json}}`, `{{repo_root}}`, `{{run_id}}`, `{{task_id}}` and `{{model}}`.
@@ -661,7 +661,7 @@ This is what the conformance suite checks. Every item is a defect that has alrea
     ordinary failure, the role switches to another vendor, and the exclusion lives in process
     memory — not in a file that would leave a vendor disabled after its quota reset.
 11. A visual check may not silently measure the wrong application. If something is already
-    answering on the URL and the task declared its own `start`, the run is refused: Warden
+    answering on the URL and the task declared its own `start`, the run is refused: Overseer
     cannot tell its own server from a forgotten stranger's, and one such run has already
     happened — the harness photographed an unrelated SvelteKit app on 127.0.0.1:4173.
 12. The declared viewport must match the one the CSS saw. Mobile emulation without a
@@ -683,7 +683,7 @@ This is what the conformance suite checks. Every item is a defect that has alrea
 ## 9. What the tool deliberately does not do
 
 - It does not merge, does not push, and does not call `git branch` or `git worktree add`.
-  `warden do` asks Orca to create a worktree; without Orca, `--in-place` only.
+  `oseer do` asks Orca to create a worktree; without Orca, `--in-place` only.
 - It does not let a model choose the vendor.
 - It stores no secrets: authentication stays with the vendor's CLI.
 - It does not claim to cover paths ignored by `.gitignore` — Git does not see them, so neither
