@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Every pull request is checked, whatever branch it targets. A stacked pull request
+  # that targets another pull request's branch (for example a rename on top of an
+  # unmerged feature branch) otherwise reaches review with no CI at all.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
