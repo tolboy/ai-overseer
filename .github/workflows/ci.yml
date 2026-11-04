@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Every pull request is checked, whatever branch it targets. A stacked pull request
+  # that targets another pull request's branch (for example a rename on top of an
+  # unmerged feature branch) otherwise reaches review with no CI at all.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -34,7 +36,7 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.jdk }}
 
-      # No cache step on purpose: there is nothing to cache. Warden downloads no
+      # No cache step on purpose: there is nothing to cache. Overseer downloads no
       # dependency at build time, and a green run here is also the offline-build proof.
 
       - name: Build and test (POSIX)
@@ -55,15 +57,15 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          ./bin/warden --version
-          ./bin/warden --help
+          ./bin/oseer --version
+          ./bin/oseer --help
 
       - name: CLI answers without a config (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          call bin\warden.cmd --version || exit /b 1
-          call bin\warden.cmd --help || exit /b 1
+          call bin\oseer.cmd --version || exit /b 1
+          call bin\oseer.cmd --help || exit /b 1
 
   demo:
     name: Demo fixture (no vendor call)

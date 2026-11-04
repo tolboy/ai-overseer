@@ -18,7 +18,7 @@ a = p.parse_args()
 root, classes, output = a.project.resolve(), a.classes.resolve(), a.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 fixture = Path(__file__).resolve().parent
-for src, dst in [('pilot-queue.test.mjs', 'pilot-queue.test.mjs'), ('task.yaml', '.warden/tasks/pilot-queue.yaml')]:
+for src, dst in [('pilot-queue.test.mjs', 'pilot-queue.test.mjs'), ('task.yaml', '.oseer/tasks/pilot-queue.yaml')]:
     if (root / dst).read_bytes().replace(b'\r\n', b'\n') != (fixture / src).read_bytes().replace(b'\r\n', b'\n'):
         raise SystemExit('Refusing a project without the exact pilot fixture: ' + dst)
 base = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
@@ -26,20 +26,20 @@ original = subprocess.check_output(['git', 'show', 'HEAD:pilot-queue.mjs'], cwd=
 if original.replace(b'\r\n', b'\n') != (fixture / 'pilot-queue.mjs').read_bytes().replace(b'\r\n', b'\n'):
     raise SystemExit('HEAD must contain the intentionally incomplete pilot module.')
 
-def warden(args, log):
+def oseer(args, log):
     with log.open('w', encoding='utf-8') as f:
-        done = subprocess.run(['java', '-cp', str(classes), 'dev.warden.Main', *args], cwd=root,
+        done = subprocess.run(['java', '-cp', str(classes), 'dev.oseer.Main', *args], cwd=root,
                               stdout=f, stderr=subprocess.STDOUT)
     return done.returncode
 
 manifest = {'experiments': [{'id': 'secondary-review-live', 'variants': ['agy-secondary', 'deepseek-secondary']}],
             'runs': []}
-receipts = {'base_commit': base, 'project': str(root), 'acceptance_actor': 'warden-live-fixture-operator',
+receipts = {'base_commit': base, 'project': str(root), 'acceptance_actor': 'oseer-live-fixture-operator',
             'acceptance_is_user_judgement': False, 'runs': []}
 sequence = [('agy', 1), ('deepseek', 1), ('deepseek', 2), ('agy', 2), ('agy', 3), ('deepseek', 3)]
 for index, (vendor, repeat) in enumerate(sequence):
     run_id = a.adopt_first if index == 0 and a.adopt_first else f'{a.prefix}-{vendor}-r{repeat}-measured'
-    run_dir = root / '.warden/runs' / run_id
+    run_dir = root / '.oseer/runs' / run_id
     summary = run_dir / 'task-run.json'
     if not (index == 0 and a.adopt_first):
         if run_dir.exists():
@@ -49,7 +49,7 @@ for index, (vendor, repeat) in enumerate(sequence):
         # Only this pilot's owned source file is restored. No reset/clean of user files.
         (root / 'pilot-queue.mjs').write_bytes(original)
         print('START', run_id, flush=True)
-        code = warden(['run', '.warden/tasks/pilot-queue.yaml', '--run-id', run_id,
+        code = oseer(['run', '.oseer/tasks/pilot-queue.yaml', '--run-id', run_id,
                        '--use', 'review-second=' + vendor + '-review', '--no-wait-for-gate'],
                       output / (run_id + '.log'))
     else:
@@ -73,12 +73,12 @@ for index, (vendor, repeat) in enumerate(sequence):
     if decision.get('state') == 'pending':
         if choice not in decision.get('options', []):
             raise SystemExit('Run does not offer the expected fixture decision: ' + run_id)
-        if warden(['approve', run_id, '--decision', choice, '--actor', 'warden-live-fixture-operator',
+        if oseer(['approve', run_id, '--decision', choice, '--actor', 'oseer-live-fixture-operator',
                    '--note', 'Automated disposable-fixture outcome after Node acceptance and vendor reviews: ' + choice + '. '
                    'This is a test operator, not an end-user quality judgement. Nothing is landed.', '--no-start'],
                   output / (run_id + '-accept.json')) != 0:
             raise SystemExit('Acceptance did not persist; inspect before resetting the fixture: ' + run_id)
-    elif decision.get('decision') != choice or decision.get('actor') != 'warden-live-fixture-operator':
+    elif decision.get('decision') != choice or decision.get('actor') != 'oseer-live-fixture-operator':
         raise SystemExit('Unexpected preexisting decision: ' + run_id)
     manifest['runs'].append({'run_id': run_id, 'experiment_id': 'secondary-review-live',
                              'task_pair_id': 'pilot-queue', 'variant': vendor + '-secondary',
@@ -91,5 +91,5 @@ for index, (vendor, repeat) in enumerate(sequence):
     (output / 'paired-baseline.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     (output / 'receipts.json').write_text(json.dumps(receipts, indent=2) + '\n', encoding='utf-8')
     print('FIXTURE_' + choice.upper(), run_id, 'role_runs=' + str(data.get('role_runs')), flush=True)
-warden(['ledger', '--compare', '--baseline-file', str(output / 'paired-baseline.json')], output / 'comparison.json')
+oseer(['ledger', '--compare', '--baseline-file', str(output / 'paired-baseline.json')], output / 'comparison.json')
 print('COMPLETE', output / 'comparison.json', flush=True)

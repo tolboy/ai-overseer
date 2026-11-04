@@ -9,7 +9,7 @@ control preserves the other setting.
 
 Candidates come from the operator's declared role roster. The classifier receives
 opaque `candidate_N` choices; it cannot name an undeclared model or connection.
-Warden remains responsible for capability admission, availability, tool/context
+AI Overseer remains responsible for capability admission, availability, tool/context
 requirements, explicit task/run choices and reviewer independence. Model selection
 happens before execution; later attempts do not reclassify or expand the workflow.
 Continuations retain chosen profiles separately from operator overrides while the
@@ -18,7 +18,7 @@ Role recommendations stay advisory, and mandatory reviews remain mandatory.
 
 An explicit profile pin has priority. If no model answer meets the configured
 confidence rule, the classifier fails, or a returned combination fails joint
-validation, Warden retains the configured order. If no admitted candidate exists,
+validation, Overseer retains the configured order. If no admitted candidate exists,
 normal preflight produces an explainable refusal. Unknown model cost is retained as
 unknown; it neither implies a free call nor independently excludes a candidate.
 An explicit strict cost cap continues to govern admission and classifier spending.
@@ -36,7 +36,7 @@ classifier distributions and joint-validation status. `suggested_profiles`,
 explicit overlay allows to execute.
 
 Each decision identifies the configured profile, selected profile/model, fixed
-Warden selection reason and whether the profile was fixed by explicit settings or continuation. Alternatives
+Overseer selection reason and whether the profile was fixed by explicit settings or continuation. Alternatives
 identify their opaque option, profile/model/vendor/runner, read-only capability,
 effort, capability hash and cost status. A snapshot is identity evidence, not a
 claim that an unavailable model was tested live.
@@ -56,13 +56,13 @@ credentials were not changed. Candidate profiles were copied from the existing
 verified local CLI configuration. Role wall clocks were narrowed to four minutes;
 the task allowed two role calls, no fix rounds and six minutes of execution.
 
-A manual `warden classify version --quiet` returned a valid typed choice between
+A manual `oseer classify version --quiet` returned a valid typed choice between
 `grok-implement` (`grok-4.7`) and `codex-implement` (`gpt-6.1-sol`). It chose Grok with
 probabilities 0.8/0.2. The only reviewer candidate was `agy-review`
 (`gemini-3.8-flash-high`). One classifier call reported 1,124 input / 39 output tokens
 and $0.000047208. This manual recommendation dispatched no role or availability ping.
 
-Then the actual Warden loop ran with model selection enabled and effort routing off:
+Then the actual Overseer loop ran with model selection enabled and effort routing off:
 
 1. All three candidate profiles passed fresh pongs.
 2. Jev chose Grok again, probability 0.79 versus 0.21. The auxiliary concentration
@@ -83,7 +83,7 @@ The source refinements after this live run only tighten failed-check handling an
 explicit host retention; the final regression covers them.
 
 Local receipts: `out/stage5-live/selection.log`, `live-loop.log`, `result.json`,
-`project/.warden/runs/stage5-live-accepted-cast/task-run.json`, `task-routing.json`,
+`project/.oseer/runs/stage5-live-accepted-cast/task-run.json`, `task-routing.json`,
 role receipts and the pending decision. These ignored artifacts include no copied key
 values. Two earlier zero-role fixture attempts stopped because the isolated settings
 file omitted the required `check` mapping. The fixture was corrected; candidate-check

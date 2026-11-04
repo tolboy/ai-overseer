@@ -87,14 +87,14 @@ users="U""sers"
 idea="Idea""Projects"
 
 win_path="C:${bs}${users}${bs}Anato${bs}src"
-slash_path="C:/${users}/${name}/orca/workspaces/warden-p1/.warden"
-posix_path="/home/${name}/warden/out"
-mac_path="/${users}/${name}/warden"
-bare_ident="built under ${idea}/warden/out"
+slash_path="C:/${users}/${name}/orca/workspaces/oseer-p1/.oseer"
+posix_path="/home/${name}/oseer/out"
+mac_path="/${users}/${name}/oseer"
+bare_ident="built under ${idea}/oseer/out"
 # A directory named like a home directory. Written in two pieces for the same reason as the
 # rest: spelled whole, this line would fail the gate that is scanning this file.
 home_named_dir="docs/ho""me/notes"
-demo_path="C:${bs}Temp${bs}warden-demo${bs}.warden${bs}runs${bs}demo-green"
+demo_path="C:${bs}Temp${bs}oseer-demo${bs}.oseer${bs}runs${bs}demo-green"
 elision="where.exe prints C:${bs}${users}${bs}...${bs}npm here"
 uuid="3f2a1b8c-9d4e-4f10-8a2b-77c6e0d51234"
 

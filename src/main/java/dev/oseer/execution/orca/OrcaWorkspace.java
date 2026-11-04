@@ -1,0 +1,555 @@
+package dev.oseer.execution.orca;
+
+import dev.oseer.process.ProcessRunner;
+import dev.oseer.run.Progress;
+import dev.oseer.run.Workspace;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Overseer's run, written onto the Orca workspace card that holds it.
+ *
+ * Orca already shows every worktree as a card with a short comment and a status column, and
+ * mirrors both to its mobile app. Overseer was silent towards all of it, so an operator with
+ * seventeen worktrees saw seventeen identical cards — including the four that were waiting on
+ * a human decision. Two fields per checkpoint fix that, and they are fields Orca already had.
+ *
+ * <p><b>Never fails a run.</b> Every call swallows everything. The board is a convenience, and
+ * a convenience that can abort a paid twenty-minute loop is a liability. The one thing this
+ * class will not do is retry: a checkpoint that missed is superseded by the next one within a
+ * stage, and the final one is written twice — once by the loop, once by {@code oseer approve}.
+ */
+public final class OrcaWorkspace implements Workspace {
+
+    /**
+     * Short. An Orca card gives a comment one line, and a note that overflows it is a note
+     * whose ending — which is where the cost and the verdict live — is the part that is cut.
+     */
+    private static final int MAX_NOTE = 140;
+
+    /** Bounded hard: a board update is never worth making the operator wait for the loop. */
+    private static final Duration TIMEOUT = Duration.ofSeconds(15);
+
+    private final OrcaClient orca;
+    private final Path worktree;
+    private final String selector;
+
+    /**
+     * The live view this run opened, if it opened one: by {@link #watch} in this process, or
+     * found on disk by {@link #adopt} in a later one. Null otherwise.
+     */
+    private String terminal;
+    private String runId;
+    /** The Orca Run this Overseer run owns, shared with the executor and the gate. */
+    private String orcaRunId;
+    /** The stage row created by {@link #stage} and not yet settled by {@link #stageEnded}. */
+    private String openTask;
+
+    /**
+     * The last line written to the card, so a beat can re-say it with the clock attached.
+     *
+     * Volatile because {@link #note} is called from the loop and {@link #working} from the
+     * heartbeat, a minute apart and never in step.
+     */
+    private volatile String lastNote = "";
+
+    /**
+     * Set once the run has told the board it stopped, after which no beat may say otherwise.
+     *
+     * A heartbeat is closed before its stage returns, but closing it only stops the next beat;
+     * one already inside a fifteen-second Orca call can still land afterwards. Without this
+     * flag the last thing an operator would read on a run that ended waiting for them is
+     * `reviewer 5m00s`, written a moment after the tab had correctly said NEEDS YOU. The
+     * ordering is the board's to defend, not the caller's to get right every time.
+     */
+    private volatile boolean stopped;
+
+    /**
+     * True while another board owns the card. With `--watch` the automatic desktop
+     * projection writes the card and its activity journal, and this board keeps the tab, its
+     * name and the stage rows. When that projection is refused or fails, this board writes
+     * the card again, as it did before the two were composed.
+     */
+    private volatile java.util.function.BooleanSupplier cardElsewhere = () -> false;
+
+    private OrcaWorkspace(OrcaClient orca, Path worktree, String selector) {
+        this.orca = orca;
+        this.worktree = worktree;
+        this.selector = selector;
+    }
+
+    /**
+     * A board for this directory, or {@link Workspace#NONE}.
+     *
+     * The probe is the point: Overseer runs in plain checkouts, in `git worktree` directories and
+     * under `--in-place` just as often as it runs under Orca, and a tool that printed a warning
+     * about a missing desktop app on every one of those would be worse than one that says
+     * nothing. If Orca does not claim this directory, there is no board, and that is not an
+     * error state.
+     */
+    public static Workspace attach(ProcessRunner processes, Path worktree) {
+        return attach(new OrcaClient(processes), worktree);
+    }
+
+    /** The same probe over a given client; tests pass one that answers for Orca. */
+    public static Workspace attach(OrcaClient orca, Path worktree) {
+        try {
+            if (!Boolean.TRUE.equals(orca.status(worktree).get("available"))) return Workspace.NONE;
+            OrcaClient.Rpc current = orca.invoke(worktree, Duration.ofSeconds(15),
+                    List.of("worktree", "current"));
+            if (!current.ok()) return Workspace.NONE;
+            String selector = OrcaSettlement.worktreeSelector(current.envelope());
+            if (selector == null) return Workspace.NONE;
+            return new OrcaWorkspace(orca, worktree, selector);
+        } catch (Exception notOurProblem) {
+            return Workspace.NONE;
+        }
+    }
+
+    @Override
+    public void note(String text) {
+        String flat = clip(text);
+        lastNote = flat;
+        set(List.of("--comment", flat));
+    }
+
+    @Override
+    public void state(State state) {
+        if (state != State.RUNNING) {
+            stopped = true;
+            // A stage that never reported was stopped by the run, not finished by it.
+            settle(false, "the run stopped before this stage reported an outcome");
+        }
+        set(List.of("--workspace-status", column(state)));
+        retitle(state);
+    }
+
+    /**
+     * The tab this run opened, found from the lifecycle file.
+     *
+     * The process that records an answer is rarely the one that opened the tab: `oseer
+     * approve`, the decision page and the supervisor each build their own board. Without the
+     * handle on disk the tab went on saying NEEDS YOU after the question was answered.
+     */
+    @Override
+    public void adopt(String runId) {
+        if (terminal != null || runId == null) return;
+        try {
+            OrcaLifecycle.Snapshot recorded = new OrcaLifecycle(worktree, runId).read();
+            if (recorded.watchTerminal() == null) return;
+            this.runId = runId;
+            this.terminal = recorded.watchTerminal();
+            this.orcaRunId = recorded.orcaRunId();
+        } catch (Exception notOurProblem) {
+            // No tab to rename is not a decision that failed.
+        }
+    }
+
+    /**
+     * The tab stops asking, without claiming the next run has started. The column is left
+     * where it is: a continuation moves it to running when it actually starts, and one that
+     * never starts leaves the card where a person will look.
+     */
+    @Override
+    public void answered(String decision) {
+        if (terminal == null || runId == null || decision == null) return;
+        stopped = true;
+        rename("oseer " + runId + " - " + decision);
+    }
+
+    /**
+     * Once a minute, on both surfaces Orca gives a worktree: the tab and the card.
+     *
+     * The tab is what an operator with three runs going reads without clicking anything, and
+     * `oseer lh-eyes-2` on all three of them says nothing at all; `oseer lh-eyes-2 ·
+     * implementer (grok-implement) 12m00s` says which one to leave alone, and which profile
+     * is spending the minutes. The card is the same sentence for the phone, which cannot
+     * see a tab strip — the note the stage already wrote, with the clock appended, so the
+     * position, the stage name and the vendor survive.
+     *
+     * Both are best-effort and both are skipped when their surface is not there: a run without
+     * `--watch` has no tab to name, and one that never wrote a card has nothing to extend.
+     */
+    @Override
+    public void working(String who, long millis) {
+        if (stopped) return;
+        if (runId != null && terminal != null) {
+            rename("oseer " + runId + " · " + who + " " + Progress.elapsed(millis));
+        }
+        String note = lastNote;
+        if (!note.isEmpty()) {
+            set(List.of("--comment", clip(note + " · " + Progress.elapsed(millis))));
+        }
+    }
+
+    /**
+     * Say on the tab what the run now wants.
+     *
+     * A tab is the one surface an operator cannot fail to notice: it is in front of them, it
+     * has a name, and it survives the run that made it. The card is a better summary and it is
+     * only better if you can find it — which on this Orca build the operator could not, while
+     * they could list their tabs from memory. So the tab says it too, and at the one moment it
+     * matters most it says it in words that are hard to read past.
+     */
+    private void retitle(State state) {
+        if (terminal == null || runId == null) return;
+        String title = switch (state) {
+            case RUNNING -> "oseer " + runId;
+            case WAITING_FOR_HUMAN -> "oseer " + runId + " - NEEDS YOU";
+            case SETTLED -> "oseer " + runId + " - done";
+        };
+        rename(title);
+    }
+
+    /** One name onto one tab. Never fails a run; a stale tab name is not a stale run. */
+    private void rename(String title) {
+        if (terminal == null) return;
+        try {
+            orca.invoke(worktree, TIMEOUT, List.of("terminal", "rename",
+                    "--terminal", terminal, "--title", title));
+        } catch (Exception notOurProblem) {
+            // The window is still there with the narration in it; only its name is stale.
+        }
+    }
+
+    /**
+     * Orca's own status ids. Overseer's three states are named for what they mean to a person;
+     * these are what Orca's board calls the columns, and the mapping is the only place the two
+     * vocabularies have to meet.
+     */
+    private static String column(State state) {
+        return switch (state) {
+            case RUNNING -> "in-progress";
+            case WAITING_FOR_HUMAN -> "in-review";
+            case SETTLED -> "completed";
+        };
+    }
+
+    /**
+     * A terminal in this worktree that follows the run's narration.
+     *
+     * Overseer calls Orca, the way it does for isolation and for the card. The alternative —
+     * starting `oseer run` inside an Orca terminal — reads the same from the outside and is
+     * a different thing: it makes Orca the host of the run, so the loop dies with the tab and
+     * a run launched from anywhere else is invisible.
+     *
+     * The file is created before the terminal opens. `Get-Content -Wait` on a path that does
+     * not exist yet is an error, not a wait, and the first thing the operator would see in the
+     * window Overseer just opened for them would be a red line about a missing file.
+     */
+    @Override
+    public void watch(Path narration, String runId) {
+        // Preparation (planner, replan) and the loop both ask for the narration window on the
+        // same workspace. The first tab already follows this run; a second create would open
+        // another one and abandon the handle of the first.
+        if (this.terminal != null) return;
+        // Another board for the same run (preparation and the loop in different processes,
+        // or a board rebuilt in this one) may already have opened the tab. The lifecycle file
+        // is the only state they share, so the handle recorded there is reused while Orca
+        // still knows it; a stale handle is an ordinary restart and gets a fresh tab.
+        if (reuseRecordedTerminal(runId)) return;
+        try {
+            if (!Files.isRegularFile(narration)) {
+                Files.createDirectories(narration.getParent());
+                Files.writeString(narration, "");
+            }
+            OrcaClient.Rpc opened = orca.invoke(worktree, TIMEOUT, List.of(
+                    "terminal", "create",
+                    "--worktree", selector,
+                    "--title", "oseer " + runId,
+                    "--command", follow(narration, runId)));
+            if (opened.ok()) {
+                this.runId = runId;
+                this.terminal = handleOf(opened.result());
+                String handle = terminal;
+                if (handle != null) {
+                    new OrcaLifecycle(worktree, runId).mutate(OrcaLifecycle.of(
+                            snapshot -> snapshot.withWatchTerminal(handle)));
+                }
+            }
+        } catch (Exception notOurProblem) {
+            // A window that did not open is not a run that failed.
+        }
+    }
+
+    private boolean reuseRecordedTerminal(String runId) {
+        if (runId == null) return false;
+        try {
+            String recorded = new OrcaLifecycle(worktree, runId).read().watchTerminal();
+            if (recorded == null || recorded.isBlank()) return false;
+            OrcaClient.Rpc shown = orca.invoke(worktree, TIMEOUT,
+                    List.of("terminal", "show", "--terminal", recorded));
+            if (!shown.ok()) return false;
+            this.runId = runId;
+            this.terminal = recorded;
+            return true;
+        } catch (Exception notOurProblem) {
+            return false;
+        }
+    }
+
+    /** Leave the card to another board while {@code elsewhere} says it is writing it. */
+    void leaveCardTo(java.util.function.BooleanSupplier elsewhere) {
+        this.cardElsewhere = elsewhere == null ? () -> false : elsewhere;
+    }
+
+    /**
+     * A command line with no quotes in it, and a script beside the narration that has them.
+     *
+     * The first version put the whole thing on the command line —
+     * {@code powershell -NoExit -Command "Get-Content -LiteralPath '...' -Wait"} — and Orca
+     * answered {@code Unknown command: terminal create -LiteralPath '...' -Wait -Tail 200}.
+     * The argument had been torn apart at the first double quote, which is precisely the
+     * Windows argv defect this codebase already documents and guards against for vendor
+     * prompts: the JVM wraps an argument containing a space but does not escape a quote inside
+     * it. Writing the guard and then walking into it one class over is worth recording.
+     *
+     * So nothing quoted goes on the command line. The path lives inside a script file, where
+     * quoting is somebody else's problem, and the terminal is pointed at that script by a
+     * repository-relative path — no absolute path, no spaces, nothing to escape.
+     *
+     * `-NoExit` and the trailing `exec` are the other half. A tab that dies the moment the
+     * tail is interrupted leaves the operator reading the approve command in a window they
+     * then have to close and replace with another one, in the right directory, typed from
+     * memory. The command they need is on the screen; the prompt should be underneath it.
+     */
+    private String follow(Path narration, String runId) throws java.io.IOException {
+        boolean windows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        String name = windows ? "follow.ps1" : "follow.sh";
+        Path script = narration.getParent().resolve(name);
+        Files.writeString(script, followScript(narration, windows));
+        String relative = ".oseer/runs/" + runId + "/" + name;
+        // `-ExecutionPolicy Bypass` because the default policy refuses to load a .ps1 at all,
+        // and the first window this opened said so instead of showing the run. It applies to
+        // this one process, and the script is three lines Overseer wrote a moment ago into the
+        // run's own directory.
+        return windows
+                ? "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File " + relative
+                : "sh " + relative;
+    }
+
+    /**
+     * A row on the Orca run for an Overseer stage that has no Agent Dashboard worker.
+     *
+     * Direct CLIs never become WORKING sessions. Creating a task still puts the stage on
+     * the run the card belongs to, so a phone can see `review-second · claude-review`
+     * without rewriting the roster onto {@code runner: orca}. Never starts a worker.
+     */
+    @Override
+    public void stage(String label) {
+        if (stopped || label == null || label.isBlank()) return;
+        try {
+            ensureRun();
+            if (orcaRunId == null || terminal == null) return;
+            settle(false, "no outcome was reported before the next stage began");
+            String title = clip(label);
+            OrcaClient.Rpc created = orca.invoke(worktree, TIMEOUT, List.of(
+                    "orchestration", "task-create",
+                    "--spec", "Overseer stage: " + title,
+                    "--task-title", title,
+                    "--display-name", title,
+                    "--run", orcaRunId,
+                    "--from", terminal));
+            if (!created.ok()) return;
+            String id = OrcaSettlement.taskId(created.envelope());
+            if (id == null) {
+                Object first = OrcaSettlement.first(created.result(), "id", "taskId");
+                id = first == null ? null : String.valueOf(first);
+            }
+            openTask = id;
+        } catch (Exception notOurProblem) {
+            // A missing task row is not a missing stage.
+        }
+    }
+
+    /**
+     * The stage row is closed with the stage's own outcome. It used to be created and never
+     * touched again, so every stage of every run sat open on the Run for good, and a passed
+     * review looked exactly like one still in progress.
+     */
+    @Override
+    public void stageEnded(boolean ok, String summary) {
+        settle(ok, summary);
+    }
+
+    private void settle(boolean ok, String summary) {
+        String task = openTask;
+        if (task == null || orcaRunId == null || terminal == null) return;
+        openTask = null;
+        try {
+            orca.invoke(worktree, TIMEOUT, List.of(
+                    "orchestration", "task-update",
+                    "--id", task,
+                    "--status", ok ? "completed" : "failed",
+                    "--result", OrcaClient.jsonArgument(Map.of("summary", clip(summary))),
+                    "--run", orcaRunId,
+                    "--from", terminal));
+        } catch (Exception notOurProblem) {
+            // An unsettled row is a stale row, not a stale run.
+        }
+    }
+
+    /**
+     * The Run the executor and the gate use too, found or made through the lifecycle file,
+     * with this tab bound to it. Made lazily, at the first stage, so a continuation that
+     * inherits its predecessor's Run has done so before anything here asks.
+     */
+    private void ensureRun() {
+        if (orcaRunId != null || terminal == null || runId == null) return;
+        try {
+            String from = terminal;
+            String oseer = runId;
+            OrcaLifecycle.OwnedRun owned = new OrcaLifecycle(worktree, oseer).orcaRun(() -> {
+                OrcaClient.Rpc created = orca.invoke(worktree, TIMEOUT, List.of(
+                        "orchestration", "run-create",
+                        "--objective", "oseer " + oseer,
+                        "--from", from));
+                return created.ok() ? nestedRunId(created.result()) : null;
+            });
+            if (owned.id() == null) return;
+            if (!owned.created()) {
+                OrcaClient.Rpc bound = orca.invoke(worktree, TIMEOUT, List.of(
+                        "orchestration", "run-use", "--id", owned.id(), "--from", from));
+                if (!bound.ok()) return;
+            }
+            orcaRunId = owned.id();
+        } catch (Exception notOurProblem) {
+            // The card and the tab still name the stage.
+        }
+    }
+
+    private static String nestedRunId(Map<String, Object> result) {
+        if (result == null) return null;
+        Object run = result.get("run");
+        if (run instanceof Map<?, ?> map && map.get("id") != null) return String.valueOf(map.get("id"));
+        for (String key : List.of("runId", "id", "run_id")) {
+            if (result.get(key) != null) return String.valueOf(result.get(key));
+        }
+        return null;
+    }
+
+    @Override
+    public void show(Path file, String runId, String title) {
+        try {
+            if (!Files.isRegularFile(file)) return;
+            orca.invoke(worktree, TIMEOUT, List.of(
+                    "terminal", "create",
+                    "--worktree", selector,
+                    "--title", title,
+                    "--command", showCommand(worktree, file, runId, windows())));
+        } catch (Exception notOurProblem) {
+            // A window that did not open is not a run that failed.
+        }
+    }
+
+    /**
+     * `orca file open`, which is how a picture gets onto the board and onto the phone.
+     *
+     * A relative path on purpose. Orca resolves it inside the worktree it was given, so
+     * nothing quoted or absolute goes on the command line — the same rule the followed
+     * terminal obeys, and for the same Windows argv reason. A file outside the worktree is
+     * not revealed at all rather than reached for with an absolute path Overseer would have
+     * to escape.
+     */
+    @Override
+    public void reveal(Path file) {
+        try {
+            if (file == null || !Files.isRegularFile(file)) return;
+            Path absolute = file.toAbsolutePath().normalize();
+            Path base = worktree.toAbsolutePath().normalize();
+            if (!absolute.startsWith(base)) return;
+            String relative = base.relativize(absolute).toString().replace('\\', '/');
+            orca.invoke(worktree, TIMEOUT, List.of(
+                    "file", "open", "--worktree", selector, "--path", relative));
+        } catch (Exception notOurProblem) {
+            // A picture that did not open is not a run that failed.
+        }
+    }
+
+    /** Keep UI helpers in run evidence, never beside the versioned task contract. */
+    public static String showCommand(Path worktree, Path file, String runId, boolean windows)
+            throws java.io.IOException {
+        if (runId == null || !runId.matches("[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}")) {
+            throw new IllegalArgumentException("invalid run id");
+        }
+        String relative = ".oseer/runs/" + runId + "/show-contract." + (windows ? "ps1" : "sh");
+        Path script = worktree.resolve(relative);
+        Files.createDirectories(script.getParent());
+        Files.writeString(script, showScript(file, windows));
+        return (windows ? "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "
+                : "sh ") + relative;
+    }
+
+    /**
+     * Print the file and stay. No `-Wait`: the contract is finished, and a window that keeps
+     * following a file nobody is writing looks like a run that has not started.
+     */
+    public static String showScript(Path file, boolean windows) {
+        String path = file.toAbsolutePath().toString();
+        if (windows) {
+            // Windows PowerShell 5.1 also needs a BOM to decode non-ASCII paths in the script.
+            return "\uFEFF[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
+                    + "Get-Content -LiteralPath '" + path.replace("'", "''")
+                    + "' -Encoding utf8\r\n";
+        }
+        return "#!/bin/sh\ncat '" + path.replace("'", "'\\''")
+                + "'\nexec ${SHELL:-sh}\n";
+    }
+
+    private boolean windows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
+    }
+
+    /**
+     * The script the followed window runs.
+     *
+     * `-Encoding utf8` is the whole point of this being a method. Overseer writes the narration
+     * as UTF-8, and Windows PowerShell's `Get-Content` decodes with the ANSI code page unless
+     * told otherwise, so the em dash in a line like "3 blocking finding(s) from reviewer - see
+     * oseer report" reached the operator as three mojibake characters in the window Overseer
+     * itself had just opened for them. The console's own output encoding is set for the same
+     * reason: decoding the file correctly is not enough if the terminal then re-encodes it.
+     */
+    public static String followScript(Path narration, boolean windows) {
+        String path = narration.toAbsolutePath().toString();
+        if (windows) {
+            return "\uFEFF[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
+                    + "Get-Content -LiteralPath '" + path.replace("'", "''")
+                    + "' -Wait -Tail 200 -Encoding utf8\r\n";
+        }
+        return "#!/bin/sh\ntail -n 200 -f '" + path.replace("'", "'\\''")
+                + "'\nexec ${SHELL:-sh}\n";
+    }
+
+    private void set(List<String> fields) {
+        try {
+            if (cardElsewhere.getAsBoolean()) return;
+            java.util.List<String> args = new java.util.ArrayList<>(
+                    List.of("worktree", "set", "--worktree", selector));
+            args.addAll(fields);
+            orca.invoke(worktree, TIMEOUT, args);
+        } catch (Exception notOurProblem) {
+            // Deliberately silent. See the class comment: this channel may not cost a run.
+        }
+    }
+
+    /** `result.terminal.handle`, or `result.handle` — Orca has answered both shapes. */
+    private static String handleOf(Map<String, Object> result) {
+        Object nested = result.get("terminal");
+        if (nested instanceof Map<?, ?> map && map.get("handle") != null) {
+            return String.valueOf(map.get("handle"));
+        }
+        Object handle = result.get("handle");
+        return handle == null ? null : String.valueOf(handle);
+    }
+
+    private static String clip(String text) {
+        String flat = text == null ? "" : text.replace('\n', ' ').replace('\r', ' ').trim();
+        if (flat.length() <= MAX_NOTE) return flat;
+        return flat.substring(0, MAX_NOTE - 1) + "…";
+    }
+}

@@ -1,6 +1,6 @@
 {
   "experiments": [
-    {"id": "pilot", "variants": ["manual", "warden"]}
+    {"id": "pilot", "variants": ["manual", "oseer"]}
   ],
   "rows": [
     {
@@ -22,10 +22,10 @@
   ],
   "runs": [
     {
-      "run_id": "replace-with-final-warden-run-id",
+      "run_id": "replace-with-final-oseer-run-id",
       "experiment_id": "pilot",
       "task_pair_id": "example-task",
-      "variant": "warden",
+      "variant": "oseer",
       "repeat": 1,
       "operator_minutes": null
     }

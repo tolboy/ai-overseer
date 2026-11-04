@@ -27,7 +27,7 @@ an observation, with upstream freshness unknown. Grok's refreshed cache carries 
 source's `fetched_at`. Failed CLI requests can fall back to a local cache with a typed
 diagnostic. Unsupported clients keep manual model entry and update instructions.
 
-Warden expires observations after 24 hours as a conservative policy, not a vendor
+AI Overseer expires observations after 24 hours as a conservative policy, not a vendor
 guarantee. Missing, invalid or future source dates stay unknown. File modification time
 is separate and never substitutes for `fetched_at`. Failed refreshes retain earlier
 models only as stale data. Current dated metadata is required for explicit API effort;

@@ -4,7 +4,7 @@
 		"id": "pilot-task",
 		"goal": "Replace this sentence with the real task; the acceptance command must fail on the unchanged base.",
 		"non_goals": [
-			"Do not modify Warden, the frozen task contract, or the acceptance checker"
+			"Do not modify Overseer, the frozen task contract, or the acceptance checker"
 		],
 		"risk": "medium",
 		"scope": [
@@ -35,7 +35,7 @@
 		"command": "npm run test:red"
 	},
 	"profiles": {
-		"source_home": "REPLACE-WITH-WARDEN-CONFIG-HOME",
+		"source_home": "REPLACE-WITH-OSEER-CONFIG-HOME",
 		"implementer": "existing-writer-profile",
 		"reviewer": "existing-reviewer-profile"
 	}

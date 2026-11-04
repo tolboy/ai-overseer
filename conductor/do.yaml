@@ -1,6 +1,6 @@
 workflow:
-  name: warden-do
-  description: Run one prepared Warden task, surface its durable decision, and never land changes.
+  name: oseer-do
+  description: Run one prepared Overseer task, surface its durable decision, and never land changes.
   version: 0.2.0
   entry_point: run_task
   input:
@@ -34,7 +34,7 @@ agents:
     args:
       - "-cp"
       - "{{ workflow.dir }}/../out/classes"
-      - "dev.warden.Main"
+      - "dev.oseer.Main"
       - "run"
       - "{{ workflow.input.task }}"
       - "--no-wait-for-gate"
@@ -43,7 +43,7 @@ agents:
       - "--prepare"
       - "{{ workflow.input.prepare }}"
     working_dir: "{{ workflow.input.project_dir }}"
-    # Warden permits task timeouts up to 240 minutes. Give shutdown/evidence writes 15 more.
+    # Overseer permits task timeouts up to 240 minutes. Give shutdown/evidence writes 15 more.
     timeout: 15300
     routes:
       - to: human_approval
@@ -59,7 +59,7 @@ agents:
   # on a human's behalf, never accept on one. Reordering these would let a flag land work.
   - name: human_approval
     type: human_gate
-    prompt: "Warden gates passed. Inspect the worktree diff, task-run.json, screenshots and {{ workflow.input.project_dir }}/.warden/runs/{{ workflow.input.run_id }}/decision.json."
+    prompt: "Overseer gates passed. Inspect the worktree diff, task-run.json, screenshots and {{ workflow.input.project_dir }}/.oseer/runs/{{ workflow.input.run_id }}/decision.json."
     options:
       - label: Reject
         value: reject
@@ -70,7 +70,7 @@ agents:
 
   - name: human_failover
     type: human_gate
-    prompt: "{{ run_task.output.decision_reason }}\n\nSwitching changes who wrote the work, and on a small roster it can leave one vendor reviewing its own output. Inspect {{ workflow.input.project_dir }}/.warden/runs/{{ workflow.input.run_id }}/decision.json."
+    prompt: "{{ run_task.output.decision_reason }}\n\nSwitching changes who wrote the work, and on a small roster it can leave one vendor reviewing its own output. Inspect {{ workflow.input.project_dir }}/.oseer/runs/{{ workflow.input.run_id }}/decision.json."
     options:
       - label: Abort
         value: abort
@@ -82,7 +82,7 @@ agents:
   - name: record_switch
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "switch", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "switch", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -92,7 +92,7 @@ agents:
 
   - name: human_intervention
     type: human_gate
-    prompt: "Warden stopped on a problem. Inspect {{ workflow.input.project_dir }}/.warden/runs/{{ workflow.input.run_id }}/task-run.json and decision.json. No worker is allowed to continue implicitly."
+    prompt: "Overseer stopped on a problem. Inspect {{ workflow.input.project_dir }}/.oseer/runs/{{ workflow.input.run_id }}/task-run.json and decision.json. No worker is allowed to continue implicitly."
     options:
       - label: Abort
         value: abort
@@ -104,7 +104,7 @@ agents:
   - name: record_accept
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "accept", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "accept", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -115,7 +115,7 @@ agents:
   - name: record_reject
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "reject", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "reject", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -126,7 +126,7 @@ agents:
   - name: record_abort
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "abort", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "abort", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -137,7 +137,7 @@ agents:
   - name: record_retry
     type: script
     command: java
-    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.warden.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "retry", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
+    args: ["-cp", "{{ workflow.dir }}/../out/classes", "dev.oseer.Main", "approve", "{{ workflow.input.run_id }}", "--decision", "retry", "--expected-updated-at", "{{ run_task.output.decision_updated_at }}", "--actor", "{{ workflow.input.actor }}"]
     working_dir: "{{ workflow.input.project_dir }}"
     timeout: 60
     routes:
@@ -148,7 +148,7 @@ agents:
   - name: accepted
     type: terminate
     status: success
-    reason: Human acceptance was durably recorded. Warden still performs no commit, merge or push.
+    reason: Human acceptance was durably recorded. Overseer still performs no commit, merge or push.
 
   - name: rejected
     type: terminate
@@ -168,9 +168,9 @@ agents:
   - name: switch_authorized
     type: terminate
     status: failed
-    reason: "Human authorized a vendor substitution. It applies to a NEW run id: re-run with `warden run <task> --run-id <new> --continue {{ workflow.input.run_id }}`. This workflow does not reuse the attempt or the budget of the run that stopped."
+    reason: "Human authorized a vendor substitution. It applies to a NEW run id: re-run with `oseer run <task> --run-id <new> --continue {{ workflow.input.run_id }}`. This workflow does not reuse the attempt or the budget of the run that stopped."
 
   - name: decision_record_failed
     type: terminate
     status: failed
-    reason: The human choice could not be written to Warden's durable decision record; fail closed.
+    reason: The human choice could not be written to Overseer's durable decision record; fail closed.

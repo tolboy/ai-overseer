@@ -49,7 +49,7 @@ environment output is published.
 
 ## Native probe and its limits
 
-Two ordinary `warden run` invocations without `--watch` used the existing disposable
+Two ordinary `oseer run` invocations without `--watch` used the existing disposable
 desktop fixture and an isolated, synthetic profile. Each synthetic adapter ran a
 real `java -version` helper and emitted vendor-shaped tool events. It then waited
 for an explicit local release so the projection could be inspected before the

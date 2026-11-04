@@ -1,0 +1,457 @@
+package dev.oseer.gate;
+
+import dev.oseer.config.ConfigLoader;
+import dev.oseer.config.OverseerTree;
+import dev.oseer.git.GitRepository;
+import dev.oseer.ledger.EvidenceLedger;
+import dev.oseer.process.ProcessRunner;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** Deterministic preflight and acceptance gates. No model participates in routing decisions. */
+public final class GateRunner {
+    private final ProcessRunner processes;
+    private Path home;
+
+    private record Kind(String phase, String reportName, String eventType) {}
+
+    private static final Kind ACCEPTANCE = new Kind("acceptance", "machine-gate", "machine_gate");
+    private static final Kind BASELINE = new Kind("baseline", "baseline-gate", "baseline_gate");
+
+    private static final Kind REPRODUCTION = new Kind("reproduction", "reproduction-gate", "reproduction_gate");
+
+    public GateRunner(ProcessRunner processes) { this.processes = processes; }
+
+    /**
+     * The operator home this gate writes measurements into. Must be passed by the caller;
+     * this class never reads the environment.
+     */
+    public GateRunner withHome(Path home) {
+        this.home = home;
+        return this;
+    }
+
+    public record Outcome(boolean ok, String code, Path report, Map<String, Object> data) {}
+
+    public Outcome run(ConfigLoader.Loaded loaded, String runId) throws IOException, InterruptedException {
+        return run(loaded, runId, null, null);
+    }
+
+    /**
+     * Run gates against the immutable base and `.oseer` snapshot selected before the first
+     * agent dispatch. Null values preserve the standalone {@code oseer gates} behaviour,
+     * which takes its own snapshot on entry and so only sees a command mutating the config.
+     */
+    public Outcome run(ConfigLoader.Loaded loaded, String runId, Map<String, String> pinnedConfig,
+                       String pinnedMergeBase) throws IOException, InterruptedException {
+        return runCommands(loaded, runId, pinnedConfig, pinnedMergeBase,
+                loaded.resolved().acceptanceCommands(), ACCEPTANCE);
+    }
+
+    /**
+     * Establish project health before the first vendor is dispatched. The commands are the
+     * explicit project-owned baseline set; the ordinary machine gate runs them again because
+     * {@code ResolvedTask.acceptanceCommands()} contains their ordered union with task checks.
+     */
+    public Outcome runBaseline(ConfigLoader.Loaded loaded, String runId,
+                               Map<String, String> pinnedConfig, String pinnedMergeBase)
+            throws IOException, InterruptedException {
+        return runCommands(loaded, runId, pinnedConfig, pinnedMergeBase,
+                loaded.resolved().baselineCommands(), BASELINE);
+    }
+
+    /** A red proof uses the same scope, timeout and immutable-contract guards as baseline. */
+    public Outcome runReproduction(ConfigLoader.Loaded loaded, String runId,
+                                   Map<String, String> pinnedConfig, String pinnedMergeBase)
+            throws IOException, InterruptedException {
+        return runCommands(loaded, runId, pinnedConfig, pinnedMergeBase,
+                loaded.resolved().reproduceCommands(), REPRODUCTION);
+    }
+
+    private Outcome runCommands(ConfigLoader.Loaded loaded, String runId,
+                                Map<String, String> pinnedConfig, String pinnedMergeBase,
+                                List<String> commandsToRun, Kind kind)
+            throws IOException, InterruptedException {
+        try (var execution = dev.oseer.execution.WorktreeLease.acquire(loaded.root(), runId)) {
+            dev.oseer.execution.WorktreeLease.requireLocalDispatch(loaded.root());
+            return runCommandsOwned(loaded, runId, pinnedConfig, pinnedMergeBase, commandsToRun, kind);
+        }
+    }
+
+    private Outcome runCommandsOwned(ConfigLoader.Loaded loaded, String runId,
+                                Map<String, String> pinnedConfig, String pinnedMergeBase,
+                                List<String> commandsToRun, Kind kind)
+            throws IOException, InterruptedException {
+        EvidenceLedger ledger = new EvidenceLedger(loaded.root(), runId, home);
+        try {
+        GitRepository git = new GitRepository(loaded.root(), processes);
+        // A standalone gate also pins recovery copies when no run snapshot was supplied.
+        Map<String, String> config = pinnedConfig != null ? pinnedConfig
+                : OverseerTree.snapshot(loaded.root(), runId);
+        String contractHash = OverseerTree.digest(config);
+        String mergeBase;
+        try {
+            mergeBase = pinnedMergeBase != null ? pinnedMergeBase
+                    : git.mergeBase(loaded.resolved().baseRef());
+        } catch (Exception failure) {
+            return finish(ledger, kind, false, "base_ref_unresolvable", base(loaded, contractHash, null,
+                    List.of(), List.of(), failure.getMessage()));
+        }
+        List<String> mutated = OverseerTree.changedSince(loaded.root(), config);
+        if (!mutated.isEmpty()) {
+            Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                    List.copyOf(git.changedPaths(mergeBase)), List.of(),
+                    "configuration changed after the run snapshot and before machine gates");
+            report.put("configuration_changed", mutated);
+            return finish(ledger, kind, false, "contract_mutated", report);
+        }
+
+        Set<String> initialPaths = git.changedPaths(mergeBase);
+        List<String> initialViolations = git.outsideScope(OverseerTree.sourcePaths(initialPaths),
+                loaded.resolved().scopePaths());
+        if (!initialViolations.isEmpty()) {
+            return finish(ledger, kind, false, "preflight_outside_scope", base(loaded, contractHash, mergeBase,
+                    List.copyOf(initialPaths), initialViolations, null));
+        }
+        if (kind.equals(REPRODUCTION) && !OverseerTree.sourcePaths(initialPaths).isEmpty()) {
+            return finish(ledger, kind, false, "candidate_present", base(loaded, contractHash,
+                    mergeBase, List.copyOf(initialPaths), List.of(), "reproduction requires an unchanged tree"));
+        }
+        String baselineSource = kind.equals(BASELINE) || kind.equals(REPRODUCTION) ? git.sourceFingerprint(mergeBase) : null;
+
+        List<Map<String, Object>> commands = new ArrayList<>();
+        long totalMillis = 0;
+        for (int index = 0; index < commandsToRun.size(); index++) {
+            String command = commandsToRun.get(index);
+            List<String> beforeMutations = OverseerTree.changedSince(loaded.root(), config);
+            if (!beforeMutations.isEmpty()) {
+                Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                        List.copyOf(git.changedPaths(mergeBase)), List.of(),
+                        "configuration changed before command " + index);
+                report.put("configuration_changed", beforeMutations);
+                return finish(ledger, kind, false, "contract_mutated", report);
+            }
+            Set<String> beforePaths = git.changedPaths(mergeBase);
+            List<String> beforeViolations = git.outsideScope(OverseerTree.sourcePaths(beforePaths),
+                    loaded.resolved().scopePaths());
+            if (!beforeViolations.isEmpty()) {
+                return finish(ledger, kind, false, "blast_radius_before_command", base(loaded, contractHash,
+                        mergeBase, List.copyOf(beforePaths), beforeViolations, null));
+            }
+
+            Duration remaining = Duration.ofMinutes(loaded.resolved().timeoutMinutes()).minusMillis(totalMillis);
+            if (remaining.isNegative() || remaining.isZero()) {
+                return finish(ledger, kind, false, "gate_timeout", base(loaded, contractHash, mergeBase,
+                        List.copyOf(git.changedPaths(mergeBase)), List.of(), "shared task timeout exhausted"));
+            }
+            ProcessRunner.Result result = processes.run(shell(command), loaded.root(), remaining);
+            totalMillis += result.durationMillis();
+            commands.add(commandEvidence(index, command, result));
+
+            List<String> afterMutations = OverseerTree.changedSince(loaded.root(), config);
+            if (!afterMutations.isEmpty()) {
+                Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                        List.copyOf(git.changedPaths(mergeBase)), List.of(),
+                        "configuration changed by command " + index);
+                report.put("configuration_changed", afterMutations);
+                report.put("commands", commands);
+                return finish(ledger, kind, false, "contract_mutated", report);
+            }
+            Set<String> afterPaths = git.changedPaths(mergeBase);
+            List<String> violations = git.outsideScope(OverseerTree.sourcePaths(afterPaths),
+                    loaded.resolved().scopePaths());
+            if (baselineSource != null) {
+                String afterSource = git.sourceFingerprint(mergeBase);
+                if (!baselineSource.equals(afterSource)) {
+                    Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                            List.copyOf(afterPaths), violations,
+                            "a " + kind.phase() + " command changed project source before vendor dispatch");
+                    report.put("commands", commands);
+                    report.put("source_fingerprint_before", baselineSource);
+                    report.put("source_fingerprint_after", afterSource);
+                    return finish(ledger, kind, false, kind.phase() + "_mutated_source", report);
+                }
+            }
+            if (!violations.isEmpty()) {
+                Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                        List.copyOf(afterPaths), violations, null);
+                report.put("commands", commands);
+                return finish(ledger, kind, false, "blast_radius_after_command", report);
+            }
+            // A reproduction that fails because its command does not exist proves nothing
+            // about the defect: a typo in `reproduce` would otherwise read as a red base.
+            if (kind.equals(REPRODUCTION) && !result.timedOut() && commandNotFound(result)) {
+                Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                        List.copyOf(afterPaths), List.of(),
+                        "the shell could not find the command (exit " + result.exitCode() + ")");
+                report.put("commands", commands);
+                return finish(ledger, kind, false, "reproduction_command_not_found", report);
+            }
+            // A gate that cannot run here says nothing about the candidate. Routed to a fix
+            // round it buys a vendor call whose only way to go green is to work around this
+            // machine (measured 2026-10-13: an implementer began searching a pnpm store for
+            // Playwright inside a project script). So it stops for a person instead.
+            if (!kind.equals(REPRODUCTION) && !result.timedOut() && !result.ok()) {
+                String signal = environmentSignal(result);
+                // The signal alone does not prove the machine is at fault: a writer can mistype
+                // an import or a binary, or drop a dependency, and at the baseline the tree may
+                // already hold such a candidate (an existing PR branch). Only a name
+                // the candidate does not mention anywhere it changed is the environment's;
+                // a signal that names nothing is left to the ordinary failure.
+                if (signal != null) {
+                    String name = missingName(result);
+                    if (name == null || candidateMentions(git, loaded.root(), mergeBase, afterPaths, name)) {
+                        signal = null;
+                    }
+                }
+                if (signal != null) {
+                    Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                            List.copyOf(afterPaths), List.of(),
+                            "command could not run in this environment: " + signal);
+                    report.put("commands", commands);
+                    report.put("environment_signal", signal);
+                    report.put("environment_command", command);
+                    return finish(ledger, kind, false, "gate_environment_error", report);
+                }
+            }
+            if (result.timedOut() || (!kind.equals(REPRODUCTION) && !result.ok())) {
+                Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                        List.copyOf(afterPaths), List.of(), result.timedOut() ? "command timed out" : "command failed");
+                report.put("commands", commands);
+                return finish(ledger, kind, false,
+                        result.timedOut() ? "command_timeout" : "command_failed", report);
+            }
+        }
+
+        Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                List.copyOf(git.changedPaths(mergeBase)), List.of(), null);
+        report.put("commands", commands);
+        if (kind.equals(REPRODUCTION)) {
+            List<String> passed = commands.stream().filter(item -> Long.valueOf(0).equals(item.get("exit_code")))
+                    .map(item -> String.valueOf(item.get("command"))).toList();
+            if (!passed.isEmpty()) {
+                report.put("passed_commands", passed);
+                return finish(ledger, kind, false, "reproduction_passed_before_change", report);
+            }
+        }
+        report.put("worktree_fingerprint", git.fingerprint(mergeBase));
+        report.put("does_not_cover", List.of("paths ignored by .gitignore"));
+        return finish(ledger, kind, true, "passed", report);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            Map<String, Object> report = base(loaded, null, null, List.of(), List.of(),
+                    "gate execution interrupted");
+            return finish(ledger, kind, false, "gate_interrupted", report);
+        } catch (Exception failure) {
+            Map<String, Object> report = base(loaded, null, null, List.of(), List.of(),
+                    failure.getClass().getSimpleName() + ": " + failure.getMessage());
+            return finish(ledger, kind, false, "gate_internal_error", report);
+        }
+    }
+
+    private Outcome finish(EvidenceLedger ledger, Kind kind, boolean ok, String code,
+                           Map<String, Object> report)
+            throws IOException {
+        report.put("phase", kind.phase());
+        report.put("ok", ok);
+        report.put("code", code);
+        report.put("finished_at", Instant.now().toString());
+        Path path = ledger.writeReport(kind.reportName(), report);
+        ledger.append(kind.eventType(),
+                Map.of("ok", ok, "code", code, "report", path.toString()));
+        ledger.recordCorpusVisibility(report);
+        return new Outcome(ok, code, path, report);
+    }
+
+    private static Map<String, Object> base(ConfigLoader.Loaded loaded, String hash, String mergeBase,
+                                            List<String> changed, List<String> violations, String message) {
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("schema_version", 1L);
+        report.put("task_id", loaded.resolved().id());
+        report.put("project", loaded.project().project());
+        report.put("contract_sha256", hash);
+        report.put("base_ref", loaded.resolved().baseRef());
+        report.put("merge_base", mergeBase);
+        report.put("scope_paths", loaded.resolved().scopePaths());
+        report.put("changed_paths", changed);
+        report.put("violations", violations);
+        if (message != null) report.put("message", message);
+        return report;
+    }
+
+    private static Map<String, Object> commandEvidence(int index, String command, ProcessRunner.Result result) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("index", (long) index);
+        item.put("command", command);
+        item.put("exit_code", (long) result.exitCode());
+        item.put("timed_out", result.timedOut());
+        item.put("duration_ms", result.durationMillis());
+        item.put("stdout", result.stdout());
+        item.put("stderr", result.stderr());
+        item.put("stdout_truncated", result.stdoutTruncated());
+        item.put("stderr_truncated", result.stderrTruncated());
+        return item;
+    }
+
+    /**
+     * Whether the shell, not the command, produced the failure.
+     *
+     * POSIX `sh` answers 127. `cmd.exe /c` answers 1 — measured on Windows 11, where 9009 is
+     * only the errorlevel inside a batch file — and says so on stderr in the host's language,
+     * so the English sentence is the only one recognised; on another locale a missing command
+     * still reads as a red base, which the reproduction report's stderr tail shows.
+     */
+    static boolean commandNotFound(ProcessRunner.Result result) {
+        if (result.exitCode() == 127 || result.exitCode() == 9009) return true;
+        String stderr = result.stderr() == null ? "" : result.stderr();
+        return result.exitCode() == 1
+                && stderr.contains("is not recognized as an internal or external command");
+    }
+
+    // A bare specifier: not relative ('./x'), not POSIX-absolute ('/x'), not a Windows drive
+    // ('C:\\x', 'C:/x') or UNC ('\\\\host\\x') path. Those are the project's own files.
+    private static final java.util.regex.Pattern NODE_MISSING_PACKAGE = java.util.regex.Pattern.compile(
+            "Cannot find (?:module|package) '(?![A-Za-z]:[\\\\/])((?:@[^'/\\s]+/)?[^'./\\\\\\s][^'\\s]*)'");
+    private static final java.util.regex.Pattern SHELL_NOT_FOUND = java.util.regex.Pattern.compile(
+            "([^\\s:'\"]+): (?:command )?not found");
+    private static final java.util.regex.Pattern CMD_NOT_RECOGNIZED = java.util.regex.Pattern.compile(
+            "'([^']+)' is not recognized as an internal or external command");
+    private static final java.util.regex.Pattern SPAWN_ENOENT = java.util.regex.Pattern.compile(
+            "spawn (\\S+) ENOENT");
+
+    /**
+     * Why a failed gate command is the machine's problem rather than the candidate's, or null.
+     *
+     * Recognised: the shell could not find the command; Node could not resolve a bare package
+     * (`Cannot find module 'playwright'`, `ERR_MODULE_NOT_FOUND ... Cannot find package`); a
+     * child process could not be spawned (`spawn chromium ENOENT`). A relative or absolute
+     * specifier (`'./util'`, `'/abs/x'`) is not recognised: a broken import in the project's
+     * own files is exactly what an implementer is there to repair.
+     */
+    public static String environmentSignal(ProcessRunner.Result result) {
+        if (result.ok() || result.timedOut()) return null;
+        if (commandNotFound(result)) return "command not found (exit " + result.exitCode() + ")";
+        String text = (result.stderr() == null ? "" : result.stderr()) + "\n"
+                + (result.stdout() == null ? "" : result.stdout());
+        java.util.regex.Matcher missing = NODE_MISSING_PACKAGE.matcher(text);
+        if (missing.find()) return "module not found: " + missing.group(1);
+        java.util.regex.Matcher spawn = SPAWN_ENOENT.matcher(text);
+        if (spawn.find()) return "executable not found: " + spawn.group(1);
+        return null;
+    }
+
+    /** The module or executable a recognised signal names, or null when it names none. */
+    public static String missingName(ProcessRunner.Result result) {
+        if (environmentSignal(result) == null) return null;
+        String text = (result.stderr() == null ? "" : result.stderr()) + "\n"
+                + (result.stdout() == null ? "" : result.stdout());
+        for (java.util.regex.Pattern pattern : List.of(NODE_MISSING_PACKAGE, SPAWN_ENOENT,
+                SHELL_NOT_FOUND, CMD_NOT_RECOGNIZED)) {
+            java.util.regex.Matcher matcher = pattern.matcher(text);
+            if (matcher.find()) return matcher.group(1);
+        }
+        return null;
+    }
+
+    /**
+     * Whether the candidate touches the missing name: a changed path (including a deleted or
+     * renamed executable), a changed line of a tracked file, or the content of a changed file
+     * (which covers new, untracked ones). For a scoped package the bare package name is
+     * searched too. Unreadable evidence counts as a mention, so doubt goes to the
+     * implementer's fix round, the behaviour before this classification existed.
+     */
+    public static boolean candidateMentions(GitRepository git, Path root, String mergeBase,
+                                     Set<String> changed, String name) {
+        java.util.List<String> needles = new java.util.ArrayList<>(List.of(name));
+        // The package a subpath belongs to: `lodash/fp` -> `lodash`, `@scope/pkg/sub` ->
+        // `@scope/pkg`, so a dependency dropped from a manifest is found by its own name.
+        String[] parts = name.split("/");
+        if (name.startsWith("@") && parts.length > 2) needles.add(parts[0] + "/" + parts[1]);
+        else if (!name.startsWith("@") && parts.length > 1 && !parts[0].isEmpty()) needles.add(parts[0]);
+        try {
+            // Only the candidate's own files: the contract under .oseer names the gate
+            // command, and a command that names its tool would otherwise always "mention" it.
+            List<String> sources = List.copyOf(OverseerTree.sourcePaths(changed));
+            if (sources.isEmpty()) return false;
+            // A deleted or renamed executable never appears in a content line as its own
+            // path (diff headers are skipped below). Match the missing name against changed
+            // paths first, including deletions and rename sources.
+            for (String path : sources) {
+                if (pathMatchesMissing(path, name)) return true;
+            }
+            List<String> args = new ArrayList<>(List.of("diff", "--no-color", "--unified=0", mergeBase, "--"));
+            args.addAll(sources);
+            ProcessRunner.Result diff = git.git(args);
+            if (!diff.ok() || diff.stdoutTruncated()) return true;
+            for (String line : diff.stdout().split("\n")) {
+                if (!(line.startsWith("+") || line.startsWith("-"))
+                        || line.startsWith("+++") || line.startsWith("---")) continue;
+                for (String needle : needles) if (line.contains(needle)) return true;
+            }
+            for (String path : sources) {
+                Path file = root.resolve(path);
+                if (!Files.isRegularFile(file)) continue;
+                if (Files.size(file) > 2_000_000L) return true;
+                String content = Files.readString(file, java.nio.charset.StandardCharsets.ISO_8859_1);
+                for (String needle : needles) if (content.contains(needle)) return true;
+            }
+            return false;
+        } catch (Exception unreadable) {
+            return true;
+        }
+    }
+
+    /**
+     * Whether a changed path is the missing executable (or its basename). Strips a leading
+     * {@code ./} so {@code ./tools/check} matches {@code tools/check}.
+     */
+    public static boolean pathMatchesMissing(String path, String name) {
+        return pathMatchesMissing(path, name,
+                System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win"));
+    }
+
+    /** Explicit platform variant for case-insensitive and PATHEXT executable matching. */
+    public static boolean pathMatchesMissing(String path, String name, boolean windows) {
+        String p = path.replace('\\', '/');
+        String n = name.replace('\\', '/');
+        while (n.startsWith("./")) n = n.substring(2);
+        if (pathEqualsMissing(p, n, windows)) return true;
+        String pathBase = p.contains("/") ? p.substring(p.lastIndexOf('/') + 1) : p;
+        String nameBase = n.contains("/") ? n.substring(n.lastIndexOf('/') + 1) : n;
+        if (nameBase.isEmpty()) return false;
+        if (pathBase.equals(nameBase)) return true;
+        if (!windows) return false;
+        if (pathBase.equalsIgnoreCase(nameBase)) return true;
+        // cmd.exe resolves an extensionless name through PATHEXT (.cmd, .bat, .exe, .com).
+        for (String ext : List.of(".cmd", ".bat", ".exe", ".com")) {
+            if (pathEqualsMissing(p, n + ext, windows)) return true;
+            if (pathBase.equalsIgnoreCase(nameBase + ext)) return true;
+        }
+        return false;
+    }
+
+    private static boolean pathEqualsMissing(String path, String name, boolean windows) {
+        if (path.equals(name) || path.endsWith("/" + name)) return true;
+        if (!windows) return false;
+        // Windows resolves executables case-insensitively (Check.CMD vs check).
+        String pl = path.toLowerCase(java.util.Locale.ROOT);
+        String nl = name.toLowerCase(java.util.Locale.ROOT);
+        return pl.equals(nl) || pl.endsWith("/" + nl);
+    }
+
+    private static List<String> shell(String command) {
+        boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
+        return windows ? List.of("cmd.exe", "/d", "/s", "/c", command)
+                : List.of("/bin/sh", "-lc", command);
+    }
+
+}

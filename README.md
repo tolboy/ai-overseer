@@ -1,4 +1,4 @@
-# Warden
+# AI Overseer
 
 **Runs AI agents by role inside someone else's repository, checks the result mechanically,
 and stops in front of a human. It never merges anything.**
@@ -7,19 +7,22 @@ Java, **zero dependencies**, built by a single `javac` invocation. A tool that h
 language model write access to your repository should not drag a hundred-artifact supply
 chain in behind it — and it should build with no network.
 
-[![CI](https://github.com/tolboy/warden-agentic-sdlc/actions/workflows/ci.yml/badge.svg)](https://github.com/tolboy/warden-agentic-sdlc/actions/workflows/ci.yml)
+[![CI](https://github.com/tolboy/ai-overseer/actions/workflows/ci.yml/badge.svg)](https://github.com/tolboy/ai-overseer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 *[Русская версия](README.ru.md)*
 
+The command is `oseer`. Upgrading an existing installation? Follow the
+[rename and configuration migration](docs/RENAME.md) before running it.
+
 ```bash
 ./build.sh          # or build.cmd on Windows
 ./test.sh           # or test.cmd
-./bin/warden --help
+./bin/oseer --help
 ```
 
 Compiled with `--release 21` — a floor, not a ceiling: the bytecode runs on any newer JVM.
-Override with `WARDEN_JAVA_RELEASE`.
+Override with `OSEER_JAVA_RELEASE`.
 
 API-backed read-only text roles and verified native OpenCode implementers can share
 user-owned connections alongside CLI subscriptions. OpenCode coding admission requires
@@ -43,15 +46,15 @@ passes — and prints the evidence both runs left behind. See
 
 ## The first real run
 
-Build Warden once. After that it is one command — a goal and a project:
+Build Overseer once. After that it is one command — a goal and a project:
 
 ```text
-/path/to/warden/bin/warden do --project /path/to/repo --scope code "Add a Settings button"
+/path/to/ai-overseer/bin/oseer do --project /path/to/repo --scope code "Add a Settings button"
 ```
 
 Nothing is merged — it stops at the human gate.
 
-**About that worktree.** `warden do` does not edit the branch you are looking at. It cuts a
+**About that worktree.** `oseer do` does not edit the branch you are looking at. It cuts a
 fresh worktree from your actual current branch and runs the loop in there — with `git worktree`
 by default, or with [Orca](https://www.onorca.dev/download) when Orca is running, in which case
 the worktree appears in Orca's sidebar and on its mobile app. `--isolation git|orca` settles it
@@ -65,11 +68,11 @@ own setup when Orca made the worktree.
 `--in-place` skips isolation entirely and lets the implementer edit the tree you are standing
 in — fine for a throwaway repository, and the wrong choice for anything else.
 
-Warden admits one execution controller per checkout, including standalone roles and machine
-gates. A different run id does not bypass that lock. After a crash, run `warden recover` from
+Overseer admits one execution controller per checkout, including standalone roles and machine
+gates. A different run id does not bypass that lock. After a crash, run `oseer recover` from
 that checkout: it releases the fence only after the recorded vendor PID/start-time identities
 have stopped. Incomplete receipts require inspection followed by
-`warden recover --confirm-stopped`; known live processes still refuse recovery. Retained Orca
+`oseer recover --confirm-stopped`; known live processes still refuse recovery. Retained Orca
 workers must be reconciled through their Orca role/run. Build daemons started by gates do not
 hold the vendor fence.
 
@@ -78,8 +81,8 @@ controller keeps a bounded preview and parses the full spool for final artifacts
 usage and errors. Reaching the raw ceiling stops the call with `role_output_limit_exceeded`;
 failed capture or unsettled processes also stop automatic failover.
 
-**Before you pay.** `warden do --draft-only` stops as soon as the worktree exists and a draft
-contract has been written, and prints the path to it. Warden does not invent browser
+**Before you pay.** `oseer do --draft-only` stops as soon as the worktree exists and a draft
+contract has been written, and prints the path to it. Overseer does not invent browser
 scenarios: for a task whose goal names no control at all, the draft leaves only "the page
 renders and logs no console errors" plus a comment saying what belongs there. Almost every
 real task has its scenarios written by hand, and this is the one place worth stopping —
@@ -88,21 +91,21 @@ after it, vendor calls start costing money.
 `--prepare off|auto|always` (default `off`) is separate from that stop. `off` keeps today's
 deterministic `TaskDraft`. `auto` dispatches a read-only planner only when the task id has
 no contract on disk yet, and reuses a ready contract only when it still preserves the
-supplied goal, scope and risk. `always` dispatches it even then. The planner drafts; Warden
+supplied goal, scope and risk. `always` dispatches it even then. The planner drafts; Overseer
 validates. `--prepare always --draft-only` spends the planner and never the implementer.
 
 ```text
-warden do --project /path/to/repo --draft-only "Add a Settings button"
+oseer do --project /path/to/repo --draft-only "Add a Settings button"
 ```
 ```text
-warden run <task-id> --run-id <id>
+oseer run <task-id> --run-id <id>
 ```
 
 **A new project from nothing.** A directory with no `.git` is not an error if that is what you
 meant:
 
 ```text
-warden do --project /path/to/new-project --init-repo --in-place "Landing page with a Create button"
+oseer do --project /path/to/new-project --init-repo --in-place "Landing page with a Create button"
 ```
 
 `--init-repo` runs `git init` and commits whatever is already in the directory as a baseline.
@@ -118,14 +121,14 @@ command is a gate that fails for reasons unrelated to the task.
 
 **A non-Latin goal only works through a file.** The JVM decodes command-line arguments using
 `sun.jnu.encoding`; where that is not UTF-8 (ordinary Windows), Cyrillic becomes `?` before
-`main` is even entered, and no JVM flag changes it. Warden refuses such a goal rather than
+`main` is even entered, and no JVM flag changes it. Overseer refuses such a goal rather than
 writing it into a contract:
 
 ```text
-warden do --goal-file goal.txt --project /path/to/repo --scope ui
+oseer do --goal-file goal.txt --project /path/to/repo --scope ui
 ```
 
-`warden doctor` reports this state under `argument_encoding`.
+`oseer doctor` reports this state under `argument_encoding`.
 
 Piecewise and without spending a token: `init`, `validate`, `gates`, `visual-qa`,
 `role --dry-run`.
@@ -145,7 +148,7 @@ that run, and the images it took are opened on the Orca card when the run stops,
 person answering the gate from a phone is looking at the screen the verdict is about.
 
 Who runs a stage, at what effort, on which runner is a per-run overlay rather than an edit
-to `~/.warden`: `--use <stage>=<profile>`, `--effort <stage>=<level>`, `--host <stage>=orca`
+to `~/.oseer`: `--use <stage>=<profile>`, `--effort <stage>=<level>`, `--host <stage>=orca`
 on the command line, or the same map as `use:` on the task. Every one of them is checked
 against the roster before the first paid call, and the run header prints the resulting
 `cast` — which profile fills which stage — so a roster change can be checked with
@@ -153,7 +156,7 @@ against the roster before the first paid call, and the run header prints the res
 next run of the task once you have dealt with the blocker, and refuses when nothing has
 changed since the stop. The same gate offers `waive` when the stop is
 `blocking_findings_remain` or `quality_exhausted` and every open blocker is a
-`contract_gap`: `warden approve <run> --decision waive --finding <id>` records the waiver,
+`contract_gap`: `oseer approve <run> --decision waive --finding <id>` records the waiver,
 closes the stop, and lands nothing. It is refused when the stop is anything else
 (a machine-gate failure does not become waivable because an earlier run left a
 contract gap in the history), and when any open P1 is a product defect, including
@@ -179,7 +182,7 @@ visual_qa:
 
 Matchers `text=` / `css=` / `testid=` / `role=`, assertions `visible` / `hidden` / `click`
 / `focused`. `press=KEY` sends Escape, Enter, Tab, Space, an arrow or one character
-(`testid=dialog press=Escape` focuses that element first). `warden validate` and
+(`testid=dialog press=Escape` focuses that element first). `oseer validate` and
 `run --dry-run` reject a step the grammar does not have.
 A separate `wait N` step holds for N seconds and takes a frame: everything else here judges
 the page 1.2 s after a click and is therefore blind to any interface running on its own clock
@@ -200,7 +203,7 @@ canvas-heavy page — the role can bring its own camera. A stage declared `evide
 dispatches a profile that names its MCP servers (`mcp.config`) and declares
 `capabilities.vision.acquires: true`; the model drives the application with those tools, saves
 what it judged into the run's `screenshots/` directory and lists the files in
-`screenshots_taken`. Warden checks that each listed file exists there and is not empty, hashes
+`screenshots_taken`. Overseer checks that each listed file exists there and is not empty, hashes
 it onto the step row, and refuses a verdict that lists none as `visual_qa_no_evidence`. It does
 not check what the picture shows; that is what the profile's probe is for. See
 [`docs/SETUP.md`](docs/SETUP.md#visual-qa-through-the-vendors-own-tools-mcp).
@@ -219,18 +222,18 @@ Here the tool is separated from the projects it connects to.
 ## How it is put together
 
 ```
-   ~/.warden/  WHO runs                      <project>/.warden/  WHAT "done" means
+   ~/.oseer/  WHO runs                      <project>/.oseer/  WHAT "done" means
    ├ policy.yaml      role → profiles        ├ project.yaml   checks, scopes, defaults
    ├ profiles/*.yaml  vendor, flags, quota   ├ tasks/*.yaml   goal, risk, scope, visual_qa
    └ prompts/ schemas/                       └ runs/          evidence (runs/.gitignore)
                     │                                    │
                     └──────────────────┬─────────────────┘
                                        ▼
-                             warden do "<goal>"
+                             oseer do "<goal>"
                                        │
                  ┌─────────────────────┴───────────────────────┐
                  │  Orca worktree · draft (or planner) · linter│
-                 │  Warden creates no branches and merges none │
+                 │  Overseer creates no branches and merges none │
                  └─────────────────────┬───────────────────────┘
                                        ▼
   ╔═══ the loop: what happens next is decided by code, not a model ════════════╗
@@ -249,12 +252,12 @@ Here the tool is separated from the projects it connects to.
                     human gate ──── the only one who merges
 ```
 
-Three places and one boundary. `~/.warden/` is **who** runs: a vendor is a property of the
+Three places and one boundary. `~/.oseer/` is **who** runs: a vendor is a property of the
 operator's subscription, not of the repository, so no model name reaches a project's
 **configuration** — not `project.yaml`, not any task. A run's report does name the vendor:
 that is evidence, and the `.gitignore` in `runs/` leaves `*.json`/`*.jsonl` visible to Git
-while screenshots and raw transcripts stay out. `<project>/.warden/` is **what "done" means
-here**: check commands, scopes, tasks. Warden itself is **how**: gates, roles, the loop,
+while screenshots and raw transcripts stay out. `<project>/.oseer/` is **what "done" means
+here**: check commands, scopes, tasks. Overseer itself is **how**: gates, roles, the loop,
 evidence.
 
 The boundary runs through the human gate. Everything to the left is deterministic and leaves
@@ -268,8 +271,8 @@ only feedback in the whole loop that cost someone's attention rather than a vend
 objection rather than a failed check:
 
 ```text
-warden approve <run-id> --decision reject --note "the fire is drawn twice the height of the person beside it"
-warden run <task> --run-id <new> --continue <run-id>
+oseer approve <run-id> --decision reject --note "the fire is drawn twice the height of the person beside it"
+oseer run <task> --run-id <new> --continue <run-id>
 ```
 
 It grants no permission: a vendor substitution is still authorised only by a `switch`
@@ -280,7 +283,7 @@ the specific stage failure, and burying it under a stale rejection would be wors
 work — no browser, an occupied port, a tree that was dirty before it started — used to take a
 green implementer and an independent review down with it, and the only way forward was to pay
 for both again. `--continue` on a `retry` decision for such a failure carries the verdicts
-already reached, but only if **both** the source fingerprint **and** the entire `.warden`
+already reached, but only if **both** the source fingerprint **and** the entire `.oseer`
 contract are byte-for-byte the same: otherwise a role judged a different candidate, or
 different terms. Any doubt means the full chain again, and the reason is recorded in
 `reuse_declined`. A role that passed but filed a blocking finding is not carried: that is not
@@ -289,18 +292,18 @@ cancels the carry entirely, and exactly what was carried is stated in the questi
 asked at the gate.
 
 Connecting a new project = run `init`, review the generated contract, and describe its check
-commands. Do not copy Warden's own `.warden/`: that is Warden's contract, not a template.
+commands. Do not copy Overseer's own `.oseer/`: that is Overseer's contract, not a template.
 
 ## What you see while a run is going
 
 The loop runs for tens of minutes. It used to print nothing for all of it and then emit one
 JSON object at the end, so "where are we now" had to be worked out from file timestamps in
 four run directories. Now `do` and `run` narrate themselves **on stderr**. The same picture is
-on the local page `warden dashboard` serves (and `--open-orca` opens in an Orca tab): every
+on the local page `oseer dashboard` serves (and `--open-orca` opens in an Orca tab): every
 run with its stage timeline, verdicts, cost and decision. Its first table is the decisions
 still waiting for you. A button there opens that decision's page, or puts it back up when
 the run that asked has stopped waiting, so a question left unanswered never needs
-`warden decide` typed in the worktree.
+`oseer decide` typed in the worktree.
 
 The same panel has a **Следующий запуск** form: select a task and role profiles,
 inspect model/effort/runner and the call budget, then copy a CLI dry-run, run command
@@ -329,14 +332,14 @@ note  starting from the rejection recorded on chapter-hearth-3; the implementer 
       ok  2m14s   7 screenshot(s)
 [5/5] look      claude-visual-qa  claude/opus  dispatching, up to 25 min
       ok  2m36s   cost $1.4202   verdict fail
-      1 blocking finding(s) from visual_qa — see warden report for what it saw
+      1 blocking finding(s) from visual_qa — see oseer report for what it saw
       -> fix round 1 of 3: look sends the work back to implementer
 
 done  ready_for_human   6 vendor call(s), $3.9098 charged
       2 of those reported no price at all, so the $ ceiling did not measure them
       the candidate is ready and nothing has been landed
-      warden report chapter-hearth-4 --text
-      warden approve chapter-hearth-4 --decision <accept|reject>
+      oseer report chapter-hearth-4 --text
+      oseer approve chapter-hearth-4 --decision <accept|reject>
 ```
 
 **stdout does not change** — it is still exactly one JSON object, the one Conductor and any
@@ -348,7 +351,7 @@ which is precisely why it can be turned off without losing anything.
 
 Every vendor here runs through its own CLI on the operator's subscription. The price of a call
 is whatever that CLI chose to report: Grok and Claude print a number, Codex prints nothing.
-Warden does not estimate the difference — it records what arrived and counts how many calls
+Overseer does not estimate the difference — it records what arrived and counts how many calls
 reported nothing.
 
 Hence the honest boundary of `budgets.max_cost_usd`: it is a ceiling for **the part of the run
@@ -365,7 +368,7 @@ happened can be quietly rewritten after the fact. That is right for evidence and
 the question "how did the run go". A separate command joins them:
 
 ```text
-warden report <run-id> --text
+oseer report <run-id> --text
 ```
 
 ```text
@@ -392,8 +395,8 @@ browser  passed  3 screenshot(s)
 otherwise look exactly like a run where nobody sent a cost — and would be believed. The same
 field exists in the JSON as `*_unknown_calls`.
 
-The same report is written automatically to `.warden/runs/<run-id>/report.json` after `do` and
-`run`; `warden ledger` aggregates every run in the project. `--global` reads the home
+The same report is written automatically to `.oseer/runs/<run-id>/report.json` after `do` and
+`run`; `oseer ledger` aggregates every run in the project. `--global` reads the home
 corpus from outside a repository, filtered by project identity; omitting that filter
 reports imported measurements whose identity is unknown. `--import` copies selected
 local runs and archives.
@@ -404,7 +407,7 @@ The order of stages is a declaration, not code. It lives in the same file as the
 vendors, so "who runs", "in what order" and "under what condition" are read in one place:
 
 ```yaml
-# ~/.warden/policy.yaml
+# ~/.oseer/policy.yaml
 roles:
   implementer: { profiles: [codex-implement], strategy: first }
   reviewer:    { profiles: [grok-review, claude-review], strategy: rotate,
@@ -430,23 +433,23 @@ than `max_fix_attempts` times, and re-runs every earlier stage marked `recheck_a
 otherwise fixing one check can break one already passed. `sees:` binds the role with eyes to a
 specific browser stage: you cannot look at pixels nobody photographed. `evidence: agent`
 instead lets that role take its own pictures through the MCP servers its profile names —
-a game engine, a desktop window, a page the harness cannot drive — and Warden verifies the
+a game engine, a desktop window, a page the harness cannot drive — and Overseer verifies the
 files it lists exist inside the run's evidence before believing the verdict.
 
 What is **not** configurable: what a failure is called (`gates_not_satisfied` is not renamed
 along with your stage), the budget boundary, and the fact that the last word is a human's. The
-block is optional: without it, exactly the chain above runs. `warden doctor` shows the
+block is optional: without it, exactly the chain above runs. `oseer doctor` shows the
 effective chain under `workflow`; `task-run.json` shows the one actually taken, in `workflow`
 and `skipped_stages`.
 
 ## When a vendor's subscription runs out
 
-An exhausted quota is the one failure another vendor can fix. Warden classifies it apart from
+An exhausted quota is the one failure another vendor can fix. Overseer classifies it apart from
 an ordinary error, and apart from a transient rate limit, and can hand the role to another
 vendor, but **asks first by default**:
 
 ```yaml
-# ~/.warden/policy.yaml
+# ~/.oseer/policy.yaml
 failover:
   on_quota_exhausted: confirm   # confirm (default) | auto | stop
   on_vendor_failure: stop       # stop (default) | confirm | auto
@@ -498,8 +501,8 @@ the implementer (codex), so independence is preserved
 Permission is a recorded decision, not a flag:
 
 ```text
-warden approve <run-id> --decision switch
-warden run <task> --run-id <new> --continue <run-id>
+oseer approve <run-id> --decision switch
+oseer run <task> --run-id <new> --continue <run-id>
 ```
 
 `--continue` reads that run's decision and permits **exactly one** substitution: the named
@@ -507,7 +510,7 @@ role onto the named profile. A flag would permit anyone, and a stored "codex ran
 stale the moment the quota window reopened. The same flag also accepts a **rejected** run —
 but there it permits nothing, and only carries the rejection's reason to the implementer.
 Under `auto` the substitution happens immediately, but the `role_failover` event with both
-vendors and an `authorized_by` field still lands in the evidence and in `warden report`.
+vendors and an `authorized_by` field still lands in the evidence and in `oseer report`.
 
 ## Configuring vendors
 
@@ -516,12 +519,12 @@ is the date this profile's own probe was executed and passed. Swapping the vendo
 role is therefore a config edit and one command, not a ceremony.
 
 ```text
-warden profiles                              what loads, what is eligible, and why not
-warden profiles --verify codex-implement     run this profile's probe; stamp it if it passes
+oseer profiles                              what loads, what is eligible, and why not
+oseer profiles --verify codex-implement     run this profile's probe; stamp it if it passes
 ```
 
 `--verify` runs the profile's `verification.probe`, saves the transcript under
-`~/.warden/verification/`, prints `what_to_check`, and stamps the date when the probe passes.
+`~/.oseer/verification/`, prints `what_to_check`, and stamps the date when the probe passes.
 
 Read the transcript anyway. `what_to_check` is where you learn which envelope key carries the
 answer, whether the vendor prompts for approval, and whether it reports a cost at all — every
@@ -545,8 +548,8 @@ resolver refuses these rather than pretending.
 | Config model, strict YAML/JSON subsets, schema validation | ✅ | ✅ | Offline, no dependencies |
 | Git merge-base, content fingerprint (renames and untracked files) | ✅ | ✅ | |
 | Bounded process supervisor, preflight and machine gates | ✅ | ✅ | |
-| Evidence ledger, `warden ledger`, `warden report` | ✅ | ✅ | Per-attempt vendor cost, tokens, model as reported |
-| Contract integrity (`contract_mutated`) | ✅ | ✅ | The whole `.warden` tree except `runs/` |
+| Evidence ledger, `oseer ledger`, `oseer report` | ✅ | ✅ | Per-attempt vendor cost, tokens, model as reported |
+| Contract integrity (`contract_mutated`) | ✅ | ✅ | The whole `.oseer` tree except `runs/` |
 | Role resolver: verification, rotation, independent vendor | ✅ | ✅ | |
 | Direct CLI adapter | ✅ | ✅ | Live with Codex, Grok and Claude |
 | Quota detection and failover | ✅ | ✅ | Against a genuinely exhausted Codex account |
@@ -557,12 +560,12 @@ resolver refuses these rather than pretending.
 | Writer provenance, assurance labels, `same_vendor_peer`, escalation ladder | ✅ | ❌ | Suite-covered; the reader preflight stops before the writer is paid |
 | Second planner (`plan_reviewer`), reservation re-measured against the contract | ✅ | ❌ | The shipped `agy-plan-review` profile's probe has not been run |
 | Gate TTL, strict money cap, bounded rate-limit retry, failover `retry` | ✅ | ❌ | Suite-covered with test clocks and sleepers |
-| `warden ledger --compare`, `warden roster`, dashboard run timeline | ✅ | ❌ | Offline against the corpus and the configuration files |
+| `oseer ledger --compare`, `oseer roster`, dashboard run timeline | ✅ | ❌ | Offline against the corpus and the configuration files |
 | Human gate: durable, cross-process-locked decisions | ✅ | ✅ | `accept` / `reject` / `switch` / `retry` |
 | Carrying a rejection or a verdict into the next run | ✅ | ✅ | `--continue` |
-| `warden do`: Orca worktree isolation, task draft | ✅ | ✅ | Cut from the branch the operator is actually on |
+| `oseer do`: Orca worktree isolation, task draft | ✅ | ✅ | Cut from the branch the operator is actually on |
 | Greenfield: `--init-repo`, contract with no invented check | ✅ | ✅ | |
-| `warden land`: commit, push, open a request | ✅ | — | Merges nothing; the forge is never guessed |
+| `oseer land`: commit, push, open a request | ✅ | — | Merges nothing; the forge is never guessed |
 | Orca adapter as a role runner (`runner: orca`) | ✅ | ✅ | Claude Opus 5 appeared in Agent Dashboard, ran a project gate, returned `worker_done`, and was acknowledged and released; see the 2026-09-04 row in [`docs/SMOKE.md`](docs/SMOKE.md) |
 | Local runner (`runner: local`) | ✅ | ❌ | Reaches a model already serving here over the OpenAI chat-completion shape, and holds it to the same artifact, schema, token and read-only evidence as a CLI vendor. No dated smoke row yet |
 | Per-vendor tool allowlists | ❌ | ❌ | A profile's args are whatever you wrote — see [`SECURITY.md`](SECURITY.md) |
@@ -579,12 +582,12 @@ Grok and Claude on the operator's own subscriptions.
 | Document | What it is |
 |---|---|
 | [`spec/SPEC.md`](spec/SPEC.md) | The full specification: every file, every command, every invariant |
-| [`docs/adr/0001-layer-split.md`](docs/adr/0001-layer-split.md) | Why Warden is a policy/evidence engine, Orca is the cockpit, and Conductor stays optional |
+| [`docs/adr/0001-layer-split.md`](docs/adr/0001-layer-split.md) | Why Overseer is a policy/evidence engine, Orca is the cockpit, and Conductor stays optional |
 | [`docs/HYPOTHESIS.md`](docs/HYPOTHESIS.md) | The deterministic-workflow hypothesis: what counts as evidence, the A/B protocol, the decision rule, Conductor evaluated, and the plugin exit if it fails |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Per-block status, and what each failure is allowed to do |
 | [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md) | A guided tour on stub vendors — nothing spent |
 | [`docs/LIVE-CYCLE.md`](docs/LIVE-CYCLE.md) | Transcripts of real runs, including what they broke |
-| [`docs/METRICS.md`](docs/METRICS.md) | What `warden ledger` measures about the loop, and why a value nobody reported never becomes a zero |
+| [`docs/METRICS.md`](docs/METRICS.md) | What `oseer ledger` measures about the loop, and why a value nobody reported never becomes a zero |
 | [`docs/SETUP.md`](docs/SETUP.md) | The repeatable install and per-project connection procedure |
 | [`docs/SMOKE.md`](docs/SMOKE.md) | The reproducible red/green cross-project smoke |
 | [`examples/demo/`](examples/demo/README.md) | The offline demo and a committed sample evidence ledger |
@@ -598,8 +601,8 @@ Russian versions: [`README.ru.md`](README.ru.md) and [`spec/ru/SPEC.md`](spec/ru
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to build, what a good change looks like, and the
   one rule (no dependencies) that shapes the rest.
-- [`SECURITY.md`](SECURITY.md) — the threat model, the boundaries Warden actually enforces,
-  and the ones it does not. Read this before pointing Warden at a repository you care about.
+- [`SECURITY.md`](SECURITY.md) — the threat model, the boundaries Overseer actually enforces,
+  and the ones it does not. Read this before pointing Overseer at a repository you care about.
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, per release.
 - Licensed under the [Apache License 2.0](LICENSE).
 

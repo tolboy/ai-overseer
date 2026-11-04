@@ -19,6 +19,6 @@ json_schema: schemas/visual-qa.json
 artifact:
   required_fields: [role, task_id, status, verdict, summary, findings]
 verification:
-  probe: 'warden probe orca --agent codex --model {{model}} --effort {{effort}} --image --worktree {{worktree}} --wait-minutes 4'
+  probe: 'oseer probe orca --agent codex --model {{model}} --effort {{effort}} --image --worktree {{worktree}} --wait-minutes 4'
   expect: "probe-answer: matched"
   what_to_check: ["The worker opens the random nonce image and settles with its exact word."]

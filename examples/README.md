@@ -2,7 +2,7 @@
 
 Examples illustrate a contract or adapter. They are not recommended personal settings,
 service availability promises, or a current model catalog. Install normal resources with
-`warden setup`, choose your own connection/model, and perform the channel's native checks
+`oseer setup`, choose your own connection/model, and perform the channel's native checks
 before assigning a profile. Copying YAML never grants a role or a capability receipt.
 
 | Example | Intended use |
@@ -17,13 +17,13 @@ before assigning a profile. Copying YAML never grants a role or a capability rec
 
 `examples/evals/four-vendor` is not present in this checkout. Its older Git snapshots
 (such as `94f0c34`) record an experiment, not a personal configuration baseline. Do not
-restore those profiles wholesale into `~/.warden` or treat their models, flags, account
+restore those profiles wholesale into `~/.oseer` or treat their models, flags, account
 names, prices or verification state as current defaults.
 
 That experiment's `deepseek-review` used the Codex client with an OpenRouter-backed
 configuration (`model_provider = "openrouter"`). It did not establish a separate
 DeepSeek CLI service. Authentication service, model developer and execution client
-remain distinct in current Warden settings. Use a connection-backed profile for current
+remain distinct in current AI Overseer settings. Use a connection-backed profile for current
 API integration rather than reviving that test arrangement by its old label.
 
 Dated transcripts in [SMOKE.md](../docs/SMOKE.md) are also historical evidence. Current

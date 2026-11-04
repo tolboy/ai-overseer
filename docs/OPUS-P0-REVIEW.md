@@ -15,7 +15,7 @@
 ## Что проверено
 
 - Компиляция main и test через `javac --release 21` успешна.
-- Полный `dev.warden.testing.TestMain`: **1218 passed, 0 failed**.
+- Полный `dev.oseer.testing.TestMain`: **1218 passed, 0 failed**.
 - `git diff --check`: без ошибок.
 - Дополнительные пробы вызывают реальные `TaskLoop.run` и существующие test fixtures;
   это не синтетические summary, поданные напрямую форматировщику.
@@ -35,7 +35,7 @@ Git; переносимые regression-тесты нужно добавить в
 ## 1. P1: новый контракт reviewer не проверяется при resume
 
 Точки: `TaskLoop.reusableJudgements`, строки 1501–1613;
-`WardenTree.snapshot/acceptanceDigest`.
+`OverseerTree.snapshot/acceptanceDigest`.
 
 Воспроизведение: implement и review прошли, browser остановился с
 `visual_qa_unavailable`. В отдельном user config меняем reviewer roster с
@@ -45,7 +45,7 @@ Git; переносимые regression-тесты нужно добавить в
 Факт: `ready_for_human`, `role_runs=0`, старые `implement` и `review` переиспользованы.
 Нового обязательного reviewer никто не вызывал.
 
-Причина: оба hash покрывают проектную `.warden`, но не внешний user policy,
+Причина: оба hash покрывают проектную `.oseer`, но не внешний user policy,
 workflow, profile, prompt/schema. Имя stage само по себе не доказывает соответствие
 новым требованиям к этой стадии. В исходном P0 требовался также policy/profile contract.
 
@@ -69,7 +69,7 @@ prompt/schema. Операционные изменения вроде разре
 `candidate_review_passed=false` и `review_coverage` отсутствует.
 
 Причина: ветка reuse переносит step и возвращает null, не восстанавливая coverage.
-`warden report --text` на таком результате утверждает, что кандидат не прошёл review.
+`oseer report --text` на таком результате утверждает, что кандидат не прошёл review.
 
 Нужно: восстанавливать проверенную coverage с origin run, stage, profile и
 candidate identity. Различать `reused` и `executed_now`; reuse не должен начислять
@@ -141,5 +141,5 @@ review результата, а не только повтор machine-gates, т
    история blockers и измерение прогресса между попытками.
 5. Затем P2 planner и P3 назначения ролей/эскалация с учётом авторства правок.
    Смена implementer/reviewer без writer provenance нарушает независимость.
-   Прогноз лимитов — P4, сверка Warden/Orca — P5. Это отдельные этапы, а не
+   Прогноз лимитов — P4, сверка AI Overseer/Orca — P5. Это отдельные этапы, а не
    подразумеваемые возможности уже выполненного P0.

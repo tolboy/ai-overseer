@@ -7,7 +7,7 @@ transmitted and provider-reported effort. Missing provider confirmation stays un
 See [Stage 4 acceptance](ACCEPTANCE-STAGE4-2026-10-29.md) and the
 [six-task Jev evaluation](NOTE-STAGE4-EFFORT-EVALUATION-2026-10-29.md).
 
-Jev is a decision model, not a coding worker. Warden calls the OpenRouter Decisions API with typed
+Jev is a decision model, not a coding worker. AI Overseer calls the OpenRouter Decisions API with typed
 questions and receives choices and probabilities. It does not ask Jev to generate JSON through chat,
 and does not delegate worker/model switching to the separate Jev Router.
 Sources: [Jev guide](https://openrouter.ai/docs/guides/community/jev),
@@ -16,9 +16,9 @@ Sources: [Jev guide](https://openrouter.ai/docs/guides/community/jev),
 
 ## Configure and check
 
-Use `warden settings` for connections, worker/classifier profiles and routing. Classifiers live under
-`~/.warden/classifiers/NAME.yaml` in the same `WARDEN_CONFIG_HOME`. They are separate from worker roles:
-classification cannot grant coding tools or independent review. `warden profiles` includes a separate
+Use `oseer settings` for connections, worker/classifier profiles and routing. Classifiers live under
+`~/.oseer/classifiers/NAME.yaml` in the same `OSEER_CONFIG_HOME`. They are separate from worker roles:
+classification cannot grant coding tools or independent review. `oseer profiles` includes a separate
 `classifier_profiles` list. The panel creates/edits Jev profiles with an explicit returned-model snapshot.
 Workers cannot shadow classifier names.
 
@@ -38,9 +38,9 @@ The adapter selects `/api/alpha/decisions` on that origin. The pinned snapshot a
 on 2026-10-28; an arbitrary same-family model or silently newer version is rejected.
 
 ```text
-warden check --profile jev-classifier
-warden classify my-task --dry-run
-warden classify my-task
+oseer check --profile jev-classifier
+oseer classify my-task --dry-run
+oseer classify my-task
 ```
 
 The check asks a Choice question about a fresh random marker. Only the correct choice from the pinned
@@ -50,7 +50,7 @@ infer. Both actions can use API tokens independently of worker call limits.
 
 ## Confirm a new Jev version (Stage 6)
 
-An explicit Jev version or dated snapshot can be configured without a Warden release.
+An explicit Jev version or dated snapshot can be configured without an Overseer release.
 Saving it does not authorize routing. Except for the original built-in compatibility
 pairs, normal checks and classification refuse it with `classifier_compatibility_required`
 until an explicit compatibility challenge succeeds. Catalog refresh never grants this
@@ -60,7 +60,7 @@ After reviewing and saving the intended exact returned identity, use the classif
 confirmation button in settings, or:
 
 ```text
-warden profiles --verify jev-classifier --confirm --reported-model typesafe/jev-1.14-20261014
+oseer profiles --verify jev-classifier --confirm --reported-model typesafe/jev-1.14-20261014
 ```
 
 Substitute the exact pin saved in that profile. This sends one bounded, typed Decisions
@@ -77,7 +77,7 @@ an explicit refusal. See [Stage 6 validation](NOTE-STAGE6-CATALOGS-2026-10-29.md
 
 ## Automatic routing
 
-The shared `~/.warden/settings.yaml` enables classification for actual `run`/`do` execution and decision
+The shared `~/.oseer/settings.yaml` enables classification for actual `run`/`do` execution and decision
 continuations. Editing ping settings preserves routing, and editing routing preserves ping.
 
 ```yaml
@@ -92,10 +92,10 @@ routing:
   min_confidence: 0.6
 ```
 
-After static preflight and before model readiness/worker dispatch, Warden sends a bounded description
+After static preflight and before model readiness/worker dispatch, Overseer sends a bounded description
 of the task, risk and active stages, without repository source. Jev classifies task kind, recommends
 planning/review/visual roles, and proposes effort per supported stage. `min_confidence` is a minimum
-probability that the task needs the selected effort or a higher level. Warden uses the highest level
+probability that the task needs the selected effort or a higher level. Overseer uses the highest level
 supported by that cumulative probability, provided enough mass lies in one adjacent pair. Thus an
 almost even xhigh/max split can select xhigh instead of falling back to medium; broadly scattered
 advice retains configured effort. The API's separate `confidence` concentration value is recorded.
@@ -110,7 +110,7 @@ universal top level shared by all model families.
 
 Trusting Jev includes trusting its top level, so a strong choice is applied, not capped. When the
 applied level is the model's highest supported level, or is above the profile's configured effort,
-Warden warns before the loop starts: a `warn  Jev chose effort <level> for stage <stage> (<profile>):
+Overseer warns before the loop starts: a `warn  Jev chose effort <level> for stage <stage> (<profile>):
 the highest level <model> supports, above the configured <effort>; this may be slow or expensive.`
 line is printed right before the run header, and the same entries are recorded as `effort_warnings`
 in `task_routing`, in the readiness report (`model_check`) and at the top of the run summary. A level
@@ -124,7 +124,7 @@ effective effort. High-risk tasks have a high effort floor for classifier recomm
 task/CLI/handover overrides win, and fixes inherit the resolved writer effort.
 
 Role recommendations are recorded. They cannot remove mandatory stages, add undeclared workers,
-approve actions or switch to paid backups. Workflow selection and escalation remain Warden policy.
+approve actions or switch to paid backups. Workflow selection and escalation remain Overseer policy.
 Preparation keeps its planner settings; this phase adapts execution stages. Per-turn reclassification,
 larger outcome-based calibration and automatic workflow changes are later work.
 
@@ -133,7 +133,7 @@ returned model preserve configured workflow/efforts and record a fallback. No lo
 impersonates Jev. Strict monetary tasks skip unreserved classifier calls. Time, call and output limits
 remain enforced, and model availability is still checked.
 
-Receipts are under `~/.warden/routing/`; runs retain `task-routing.json` and `task_routing` in their
+Receipts are under `~/.oseer/routing/`; runs retain `task-routing.json` and `task_routing` in their
 summary. They distinguish suggested, applied, transmitted, provider-reported and effective efforts, retain typed role advice and
 numeric usage, and omit credentials and raw task text.
 
@@ -157,7 +157,7 @@ routing:
   min_confidence: 0.6
 ```
 
-Before selection, Warden applies ordinary roster, verification, executable/credential,
+Before selection, Overseer applies ordinary roster, verification, executable/credential,
 stage tool/vision/context and explicit effort/host constraints. With availability checks
 enabled it checks each distinct candidate configuration and excludes failed candidates.
 When checks are disabled by the user, service availability remains unchecked; admission
@@ -190,7 +190,7 @@ distributions, policy and candidate snapshot hashes; `suggested_profiles`, `appl
 and `effective_profiles` separate advice and actual choices. A snapshot includes profiles,
 connections, policy, settings, rubric, catalogs and prompt/schema/MCP resources. Safe portable
 measurements retain typed evidence without prompts, task text or generated rationale.
-`warden classify TASK` uses the same local admission and role roster for a recommendation;
+`oseer classify TASK` uses the same local admission and role roster for a recommendation;
 it dispatches no role and does not perform availability pings.
 
 See [Stage 5 acceptance and live results](NOTE-STAGE5-MODEL-SELECTION-2026-10-29.md).
@@ -198,8 +198,8 @@ See [Stage 5 acceptance and live results](NOTE-STAGE5-MODEL-SELECTION-2026-10-29
 ## Editable Jev questions and probability policy
 
 The exact questions and answer descriptions are configuration, in
-`~/.warden/jev-routing-policy.yaml` (under `WARDEN_CONFIG_HOME`). With no file,
-Warden uses the built-in default rubric. A partial YAML file overrides only the
+`~/.oseer/jev-routing-policy.yaml` (under `OSEER_CONFIG_HOME`). With no file,
+Overseer uses the built-in default rubric. A partial YAML file overrides only the
 listed wording; the remaining descriptions retain those defaults. The settings
 panel can display the full effective YAML and save it to this file.
 
@@ -232,10 +232,10 @@ not support block scalars (`|` or `>`).
 
 These are instructions for producing probabilities, not manually assigned
 probabilities. The Decisions API returns the distribution over the supplied
-Choice alternatives. Warden validates the complete set of alternatives, numeric
+Choice alternatives. Overseer validates the complete set of alternatives, numeric
 values in [0,1], and a sum approximately equal to 1. No temperature-based chat
 sampling or request to generate JSON is used. The separate `confidence` field
-is recorded, while `routing.min_confidence` in `settings.yaml` controls Warden's
+is recorded, while `routing.min_confidence` in `settings.yaml` controls Overseer's
 cumulative probability rule described above. Editing that threshold does not
 change the returned distribution.
 

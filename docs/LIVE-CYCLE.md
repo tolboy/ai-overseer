@@ -12,16 +12,16 @@ private codebase. Every number, verdict and quoted vendor sentence is as recorde
 
 ---
 
-## 1. The operator's entry point: `warden do` creates the isolation itself
+## 1. The operator's entry point: `oseer do` creates the isolation itself
 
 ```text
-warden do --project <project> --scope code --dry-run \
-          --task-id warden-e2e-probe "Probe run: confirm the Create button stays visible"
+oseer do --project <project> --scope code --dry-run \
+          --task-id oseer-e2e-probe "Probe run: confirm the Create button stays visible"
 ```
 
 ```json
 {"ok":true,"code":"dry_run",
- "worktree":"<orca-workspaces>/w-warden-e2e-probe",
+ "worktree":"<orca-workspaces>/w-oseer-e2e-probe",
  "isolated":true,"isolation":"created","worktree_start_ref":"main",
  "steps":[{"step":"implementer",...},{"step":"gates",...},
           {"step":"reviewer",...},{"step":"visual_qa",...}]}
@@ -29,7 +29,7 @@ warden do --project <project> --scope code --dry-run \
 
 Proved by this run:
 
-* Orca created the worktree at Warden's request; Warden ran neither `git branch` nor
+* Orca created the worktree at AI Overseer's request; Overseer ran neither `git branch` nor
   `git worktree add`;
 * `worktree_start_ref: main` — `HEAD` resolves to the **actual current branch** rather than
   being substituted with a constant. On `master`, `develop` or a feature branch the worktree
@@ -62,8 +62,8 @@ workflow:
 ```
 
 ```text
-warden run fix-the-create-button-so-it-works-again --run-id lh-verify-1
-warden report lh-verify-1 --text
+oseer run fix-the-create-button-so-it-works-again --run-id lh-verify-1
+oseer report lh-verify-1 --text
 ```
 
 ```text
@@ -91,7 +91,7 @@ browser  passed  5 screenshot(s)
 
 changed  1 source file(s) since 5c42b7bcbdb…
   src/routes/layout.css
-         plus 3 Warden contract file(s), unchanged since the run snapshot
+         plus 3 Overseer contract file(s), unchanged since the run snapshot
 
 totals   1 vendor call(s), 0 fix round(s), $0.0835 of $6.0000 budget
 ```
@@ -101,7 +101,7 @@ What that proves, layer by layer:
 | Layer | By what exactly |
 |---|---|
 | Machine gates | `npm run check` and `npm run build` passed in the worktree; no path outside `src`/`scripts` |
-| Configuration integrity | the whole `.warden` tree was snapshotted before the first stage and compared after each one; no difference |
+| Configuration integrity | the whole `.oseer` tree was snapshotted before the first stage and compared after each one; no difference |
 | Independent reviewer | Grok 4.6, `verdict: pass`, 0 findings, 104,042 / 13,006 tokens, $0.0835, 337 s |
 | Browser | six scenarios across three viewports, including a **click** and the transition into the editing mode |
 | Human gate | `decision.json` in state `pending`, options `accept` / `reject` |
@@ -124,7 +124,7 @@ button is not merely visible, it works.
 trusted, and it stays with a person:
 
 ```text
-warden approve lh-verify-1 --decision accept --expected-updated-at 2026-08-28T11:53:39.586362700Z
+oseer approve lh-verify-1 --decision accept --expected-updated-at 2026-08-28T11:53:39.586362700Z
 ```
 
 `accept` is refused if the worktree fingerprint moved since it was shown. `reject`, `abort`
@@ -135,7 +135,7 @@ and `retry` are always available — they permit nothing.
 ## 3. A full cycle with an implementer: stopped by a spent subscription
 
 ```text
-warden run create-button-testid --run-id e2e-1
+oseer run create-button-testid --run-id e2e-1
 ```
 
 ```text
@@ -147,7 +147,7 @@ implementer           0  NO  codex/gpt-5.6-terra             ?         ?/?      
 ```
 
 The vendor's message is kept verbatim: "You've hit your usage limit… or try again at
-10:55 AM". Warden does not parse a time out of it: the wording carries neither a date nor a
+10:55 AM". Overseer does not parse a time out of it: the wording carries neither a date nor a
 time zone.
 
 This is not a defect in the run; it is the exact path for which quota is separated from an
@@ -164,11 +164,11 @@ ordinary error:
 The task and the worktree stayed ready for a retry once the quota window reopened:
 
 ```text
-cd <orca-workspaces>/w-warden-e2e-probe
-warden run create-button-testid --run-id e2e-2
+cd <orca-workspaces>/w-oseer-e2e-probe
+oseer run create-button-testid --run-id e2e-2
 ```
 
-To clean up instead: `orca worktree remove --worktree name:w-warden-e2e-probe`.
+To clean up instead: `orca worktree remove --worktree name:w-oseer-e2e-probe`.
 
 ---
 
@@ -179,7 +179,7 @@ conductor run conductor\do.yaml --skip-gates --no-interactive
     -i task=fix-the-create-button-so-it-works-again
     -i project_dir=<worktree>
     -i run_id=lh-conductor-1
-    -i actor=warden-integration-test
+    -i actor=oseer-integration-test
 ```
 
 ```text
@@ -191,8 +191,8 @@ conductor run conductor\do.yaml --skip-gates --no-interactive
 Auto-selecting: Reject (--skip-gates)
 
 ┌─ Agent: record_reject [iter 1]
-  Script: … dev.warden.Main approve lh-conductor-1 --decision reject
-          --expected-updated-at 2026-08-28T12:10:59.410123200Z --actor warden-integration-test
+  Script: … dev.oseer.Main approve lh-conductor-1 --decision reject
+          --expected-updated-at 2026-08-28T12:10:59.410123200Z --actor oseer-integration-test
 └─ ✓ record_reject  (0.19s)
 
 Workflow terminated at 'rejected': Human rejected the candidate. No changes were landed.
@@ -201,8 +201,8 @@ Workflow terminated at 'rejected': Human rejected the candidate. No changes were
 Conductor 0.1.33. Verified:
 
 * routing on `run_task.output.exit_code` worked;
-* the optimistic-lock token `decision_updated_at` travelled from Warden's output into the
-  arguments of `warden approve` through a Conductor template — the one place where these two
+* the optimistic-lock token `decision_updated_at` travelled from Overseer's output into the
+  arguments of `oseer approve` through a Conductor template — the one place where these two
   programs are obliged to agree;
 * the decision was recorded durably: `state: resolved`, `decision: reject`, `actor` as passed;
 * a second decision on the same run was refused (`duplicate_decision`);
@@ -218,7 +218,7 @@ call. What was being tested was the bridge, not a model's opinion.
 ## 5. A project from nothing
 
 ```text
-warden do --project <empty directory> --in-place --init-repo --dry-run \
+oseer do --project <empty directory> --in-place --init-repo --dry-run \
           "Build a landing page with a Create button"
 ```
 
@@ -276,12 +276,12 @@ radius. The check now runs before the first dispatch, and `preflight_outside_sco
 `base_ref_unresolvable` and `contract_mutated` are terminal for the same reason
 `visual_qa_unavailable` already was.
 
-**The candidate's fingerprint included Warden's own evidence.** A run that was green at every
+**The candidate's fingerprint included Overseer's own evidence.** A run that was green at every
 stage refused acceptance with `candidate_changed` — because of its own log file sitting inside
-`.warden/`. The rule was right and the file set was wrong: a human accepts a change to sources.
-Two questions were separated — "did a read-only role touch anything" still includes `.warden`,
+`.oseer/`. The rule was right and the file set was wrong: a human accepts a change to sources.
+Two questions were separated — "did a read-only role touch anything" still includes `.oseer`,
 "is this the same candidate" no longer does. Contract integrity is not weakened: any change
-inside `.warden` during a run already yields `contract_mutated` against the snapshot.
+inside `.oseer` during a run already yields `contract_mutated` against the snapshot.
 
 **A turn ceiling is not a failure at the work.** Reviewing a 126-line diff consumed all 16
 permitted turns on reading and exited 1 with no artifact; the run recorded
@@ -415,7 +415,7 @@ the second look the role returned `pass`: the walker approaches two stones on op
 fourteen seconds later a hearth burns there with smoke. `stale_judgements` in `task-run.json`
 is empty — no stage judged a tree that no longer exists.
 
-What this run cost the tool: four Warden defects, found along the way and fixed in Warden
+What this run cost the tool: four Overseer defects, found along the way and fixed in Overseer
 itself — the harness's blindness to an interface running on its own clock; a
 `text=chapter visible` in a draft contract produced from a word that merely sat before
 "button"; an implementer that was never shown the browser scenarios; and a readiness probe
@@ -477,7 +477,7 @@ vendors, at their own stages, on the same candidate fingerprint.
 **The two reviewers disagreed, which is what two of them are for.** Opus passed the candidate
 twice. Astra failed it twice, with a P1 that was not about the file at all — the file was
 byte-exact — but about the acceptance command being a substring match that would also pass
-`prefix hello from warden suffix` plus extra lines. That is a real defect in the task contract
+`prefix hello from oseer suffix` plus extra lines. That is a real defect in the task contract
 written for this smoke, found by the second reader and by nothing else.
 
 **What the run also measured, and what it costs.** The repair round produced no candidate
@@ -492,14 +492,14 @@ in the evidence, and absence of candidate delta* — and it is measured rather t
 Totals across both runs: five vendor calls, $1.4898 charged, `unpriced_calls: 2` and
 `cost_ceiling_binding: false`, because codex reported no price. Nothing was landed.
 
-## 8b. Second reviewers see Warden's own bookkeeping
+## 8b. Second reviewers see Overseer's own bookkeeping
 
-Astra's P2 on the same run objected that the delta included `.warden/tasks/greeting.yaml` and
-untracked files under `.warden/runs/`. Both observations are true, and neither is the
+Astra's P2 on the same run objected that the delta included `.oseer/tasks/greeting.yaml` and
+untracked files under `.oseer/runs/`. Both observations are true, and neither is the
 implementer's to fix: the first is the ceiling the operator deliberately raised to continue the
-run, and the second is the evidence Warden is writing while it runs.
+run, and the second is the evidence Overseer is writing while it runs.
 
-The prompt's `{{changed_files}}` already filters `.warden`, so this is not that list. A
+The prompt's `{{changed_files}}` already filters `.oseer`, so this is not that list. A
 reviewer with its own `git diff` grant finds them anyway and has not been told that the
 directory is the controller's bookkeeping rather than part of the candidate. Recorded here as
 an observation about how the candidate is presented to a reviewer, not fixed in this pass.
@@ -531,7 +531,7 @@ left unchanged."* That is what the repair package asks for in as many words, and
 behaviour that used to cost a round of theatre.
 
 **The identity survived the round, and the reviewer carried it.** Opus supplied no ids, so
-Warden derived `f-4e6ecbc93dd4` from the path and message. The recheck package handed that id
+Overseer derived `f-4e6ecbc93dd4` from the path and message. The recheck package handed that id
 back with grok's account and the fact the candidate had not moved. On the second reading Opus
 reused it — `id_source` went from `derived` to `vendor` — even though it reworded the message
 to *"Still open, unchanged."* Nothing but the package could have told it that id.
@@ -542,9 +542,9 @@ that round would have bought another grok call and another Opus reading, at roug
 the first pair cost, to reach the same place.
 
 **What it also exposed.** Every finding came back `category_source: defaulted_absent` — Opus
-supplied no category, so Warden defaulted all of them to `product_defect`, when the P1 is
+supplied no category, so Overseer defaulted all of them to `product_defect`, when the P1 is
 plainly a `contract_gap`. The vocabulary existed and was validated; the shipped reviewer prompt
-simply never asked for one. Fixed by naming the categories in that prompt. `warden setup` never
+simply never asked for one. Fixed by naming the categories in that prompt. `oseer setup` never
 overwrites an existing prompt, so operators already running keep theirs until they choose to
 adopt it — the category is optional and a reviewer that supplies none still validates.
 
@@ -552,7 +552,7 @@ adopt it — the category is optional and a reviewer that supplies none still va
 
 Run date: 2026-09-08. Two runs in a purpose-built fixture, `p1-closure-smoke`, whose seeded
 converter is correct on the path its acceptance gate checks and wrong on two paths it does
-not. Both worktrees were made by Orca through `warden do --isolation orca --draft-only`; the
+not. Both worktrees were made by Orca through `oseer do --isolation orca --draft-only`; the
 roster is the one from section 8b, Grok writing and Opus then Astra reading.
 
 Run `p1-closure-live-1` asked for a `--list` mode. Both reviewers passed it, so it reached the
@@ -596,7 +596,7 @@ blocker rather than buying more rounds.
 **The reviewer supplied the new fields itself.** Every finding arrived with a vendor `id`, a
 vendor `category`, `evidence_refs` and `scope_relation` — `id_source` and `category_source`
 both `vendor`, where the run in section 9 had to derive them. That required adopting the
-shipped `~/.warden/prompts/reviewer.md` and `schemas/reviewer.json`, which `warden setup` will
+shipped `~/.oseer/prompts/reviewer.md` and `schemas/reviewer.json`, which `oseer setup` will
 not overwrite; the operator's previous pair is kept beside each as `.before-p1-closure`.
 
 Both runs wrote their state to the Orca worktree card — status, cost, the approve command and
@@ -610,7 +610,7 @@ declared converter scope. Neither decision landed code.
   created worktrees here through the separate `OrcaIsolation` path. A later live smoke with
   Claude Opus 5, Agent Dashboard, `worker_done`, acknowledgement and release is recorded in
   [`SMOKE.md`](SMOKE.md) under 2026-09-04.
-* `warden do --conductor` (Conductor launched by Warden itself) has not been run: what was
+* `oseer do --conductor` (Conductor launched by Overseer itself) has not been run: what was
   tested is the same workflow launched directly from Conductor's own CLI.
 * Failover confirmed by a human decision (`--continue`) is covered by tests but has not been
   run against a genuinely exhausted quota: on the second attempt all three quotas were open.

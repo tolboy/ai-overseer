@@ -34,7 +34,7 @@ Validation of this follow-up: `test.cmd` built production and tests with release
 The full invocation recorded **1426 passed** and two suite-level access errors:
 `dashboard` and `status-command` could not read their temporary directories inside
 the execution sandbox. Repeating only those suites with
-`java -cp out/test-classes dev.warden.testing.TestMain dashboard status-command`
+`java -cp out/test-classes dev.oseer.testing.TestMain dashboard status-command`
 outside that sandbox passed **92/0**, exit 0. Thus all **1518 checks** passed across
 the full invocation and the targeted rerun, not in a single uninterrupted green run.
 `git diff --check` passed. Logs are local ignored artifacts at
@@ -101,7 +101,7 @@ is not `product_defect` still blocks acceptance, but it does not buy another imp
 A pre-P1 reviewer artifact that never named `evidence_refs` is not a hard protocol failure
 when it raises a fresh P1 after a closure; the round records that the invariant could not be
 checked. Reopening a known id still needs new evidence.
-The code change overwrote no ~/.warden configuration. Running the live smoke later adopted the
+The code change overwrote no ~/.oseer configuration. Running the live smoke later adopted the
 shipped reviewer prompt and schema there, with backups; see the smoke section below.
 
 ## Validation
@@ -112,7 +112,7 @@ machine gate of the accepting run, twice, and reproduced from a clean `test.cmd`
 evidence fix was 1491/0, before the cross-stage recheck fix 1481/0, and before the handoff
 that fix completes 1450/0.
 Production build: `build.cmd`, release 21, exit 0. The acceptance command is `test.cmd`,
-which builds both trees with `javac --release 21` and runs `dev.warden.testing.TestMain`.
+which builds both trees with `javac --release 21` and runs `dev.oseer.testing.TestMain`.
 An earlier full run before the continuation addition passed 1378 checks with zero failures;
 the previous fingerprint of this candidate was 1436/0. `git diff --check` passed.
 FindingsTest covers cumulative closure, same-ID reopening, renamed reopening with
@@ -131,13 +131,13 @@ the inherited registry and repair receipt, that reviewer re-raising a closed id 
 the original evidence being refused as `finding_protocol_failure`, and a fifth reading
 that re-files A on a receipt already used before an earlier closure of A, which must
 stop as `finding_protocol_failure` before another repair. These use local
-StubVendor processes, not paid providers. Git Bash `./bin/warden --help` exits successfully.
+StubVendor processes, not paid providers. Git Bash `./bin/oseer --help` exits successfully.
 
 The contract gap found by the failing live smoke was reproduced in a fresh child worktree of
 the smoke fixture, which is a separate repository. Its corrected
 `tools/Check.java` ran 13 positive and negative cases, and a seven-mutation harness showed
 the old gate accepted every regression while the corrected gate rejected all seven. The
-fixture's Warden contract passed dry-run with no vendor dispatch and no paid calls.
+fixture's AI Overseer contract passed dry-run with no vendor dispatch and no paid calls.
 
 ## Live smoke, 2026-09-08
 
@@ -161,10 +161,10 @@ reviewer tried to reopen a closure or raise a fresh blocker without evidence; th
 carried across `--continue`; and the registry on a second independent reviewer, which was not
 reached in the failing run.
 
-Running the smoke required adopting the shipped reviewer prompt and schema into `~/.warden`,
-because `warden setup` never overwrites an existing one and the operator's pair predated the
+Running the smoke required adopting the shipped reviewer prompt and schema into `~/.oseer`,
+because `oseer setup` never overwrites an existing one and the operator's pair predated the
 evidence and category contract. Backups: `prompts/reviewer.md.before-p1-closure` and
-`schemas/reviewer.json.before-p1-closure`. Nothing else in `~/.warden` was touched.
+`schemas/reviewer.json.before-p1-closure`. Nothing else in `~/.oseer` was touched.
 
 ## Approval and P2 boundary
 

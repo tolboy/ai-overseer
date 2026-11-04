@@ -1,11 +1,11 @@
-# Выбор интерфейса для Warden: Orca и альтернативы
+# Выбор интерфейса для AI Overseer: Orca и альтернативы
 
 Проверено 2026-10-21 по официальным репозиториям, документации, исходникам и доступному
 локальному Orca CLI. Это проверка соответствия требованиям; альтернативы не
 устанавливались и не проходили сравнительный live benchmark.
 
 Решение: продолжать интеграцию desktop Orca. Явно более подходящей готовой замены для
-текущего Warden не выявлено. Paseo — полноценный запасной кандидат, а не отвергнутый
+текущего Overseer не выявлено. Paseo — полноценный запасной кандидат, а не отвергнутый
 из-за отсутствия Windows или Grok. Переход имеет смысл пересмотреть, если нужный
 сценарий окажется невозможен через поддерживаемый контракт Orca.
 
@@ -13,15 +13,15 @@
 
 | Вариант | Подтверждённые возможности | Вывод для текущего проекта |
 | --- | --- | --- |
-| [Orca](https://github.com/stablyai/orca) | Windows/macOS/Linux, worktrees, терминалы, CLI, мобильный клиент; управляемое освобождение workers | Уже есть Warden adapter и live receipts. Доработать автоматическое наблюдение и жизненный цикл принадлежащих Warden вкладок |
-| [Microsoft Conductor](https://github.com/microsoft/conductor) | Встроенный web DAG, поток событий агентов, human gates, фоновый запуск; Fleet TUI | Веб-интерфейс уже существует. Текущий Warden вызывается одним script-шагом, поэтому внутренним ролям всё равно нужен отдельный adapter |
+| [Orca](https://github.com/stablyai/orca) | Windows/macOS/Linux, worktrees, терминалы, CLI, мобильный клиент; управляемое освобождение workers | Уже есть Overseer adapter и live receipts. Доработать автоматическое наблюдение и жизненный цикл принадлежащих Overseer вкладок |
+| [Microsoft Conductor](https://github.com/microsoft/conductor) | Встроенный web DAG, поток событий агентов, human gates, фоновый запуск; Fleet TUI | Веб-интерфейс уже существует. Текущий Overseer вызывается одним script-шагом, поэтому внутренним ролям всё равно нужен отдельный adapter |
 | [Paseo](https://github.com/getpaseo/paseo) | Windows desktop, Android, web, SDK, плагины UI/provider; AGY и Grok ACP | Серьёзная альтернатива. Готового adapter для нашего журнала, gates и cleanup не проверено; миграция сейчас добавляет новую интеграцию |
 | [Superset](https://github.com/superset-sh/superset) | CLI agents, worktrees, терминалы, diff/browser | В текущем README Windows помечен как ещё недоступный. Для основной Windows-среды сейчас не подходит |
 | [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | Канбан, workspaces, coding agents, diff/browser | Проект объявил sunsetting с продолжением community maintenance. Для новой основной зависимости менее привлекателен |
 
 Отсутствие проверенного adapter не доказывает, что его невозможно сделать. Эта
 таблица не устанавливает превосходство Orca по скорости, потреблению памяти или
-стабильности. Выбор основан на требованиях и уже проверенной интеграции Warden.
+стабильности. Выбор основан на требованиях и уже проверенной интеграции Overseer.
 
 ## Уточнение по Microsoft Conductor
 
@@ -32,9 +32,9 @@
 Последний опубликованный релиз при проверке — `v0.1.42`; просмотренный main —
 `49af6de0d21e1125faa22bc5a607500e045e29cd`. Возможности main и релиза следует различать.
 
-В нашем [workflow](../conductor/do.yaml) `run_task` запускает Java/Warden целиком.
+В нашем [workflow](../conductor/do.yaml) `run_task` запускает Java/Overseer целиком.
 Даже если shell stdout показывается в UI Conductor, это не превращает внутренние
-Warden attempts в отдельные agent nodes. Понадобится мост событий либо перенос
+Overseer attempts в отдельные agent nodes. Понадобится мост событий либо перенос
 внутреннего workflow. Второй вариант дублирует уже существующие budgets, failover,
 recovery и durable decisions. Для текущего этапа такой перенос не предлагается.
 
@@ -50,7 +50,7 @@ recovery и durable decisions. Для текущего этапа такой п�
 provider adapters и daemon RPC; клиентские расширения доступны и на mobile.
 Это делает Paseo перспективным вариантом, особенно для нового проекта. Однако
 совместимость наших точных model/effort flags, процессного восстановления и
-финального Warden artifact с Paseo в этой сессии не испытывалась.
+финального Overseer artifact с Paseo в этой сессии не испытывалась.
 
 ## Почему Superset и Vibe Kanban сейчас не выбраны
 
@@ -81,18 +81,18 @@ provider adapters и daemon RPC; клиентские расширения до�
 - [Recovery guide](https://github.com/stablyai/orca/blob/c60a9b0a2a8d1aff2da94c2185a6dba238e65755/skill-guides/orchestration/references/recovery-and-cleanup.md): release по принятому settlement, без подмены на `terminal close` при неизвестном результате.
 
 Общее условие «закрыть всё отработанное» должно означать «освободить доказанно
-завершённые ресурсы, которыми Warden всё ещё владеет». Название вкладки и факт
+завершённые ресурсы, которыми Overseer всё ещё владеет». Название вкладки и факт
 её создания в прошлом не доказывают текущее владение. Пользовательские,
 перехваченные пользователем, transferred/external и неопределённые ресурсы сохраняются.
 
 ## Перед реализацией
 
-Ветка Warden при проверке: `codex/next-run-form`, HEAD `08f197f`,
-[draft PR #54](https://github.com/tolboy/warden-agentic-sdlc/pull/54).
-В [CI](https://github.com/tolboy/warden-agentic-sdlc/actions/runs/39617900271)
+Ветка Overseer при проверке: `codex/next-run-form`, HEAD `08f197f`,
+[draft PR #54](https://github.com/tolboy/ai-overseer/pull/54).
+В [CI](https://github.com/tolboy/ai-overseer/actions/runs/39617900271)
 Linux JDK 21/25, demo и hygiene прошли. Оба Windows job: 4935 passed, 1 failed.
 Единственный отказ: `[roster] file path is policy.yaml`,
-[RosterTest.java](../src/test/java/dev/warden/RosterTest.java), проверка сравнивает
+[RosterTest.java](../src/test/java/dev/oseer/RosterTest.java), проверка сравнивает
 строки Windows short path и canonical long path одного файла. После исследования
 пользователь разрешил подготовить PR к слиянию: ожидаемый путь в тесте приведён
 к `policy.toRealPath()`. Production containment, canonicalization, atomic writes

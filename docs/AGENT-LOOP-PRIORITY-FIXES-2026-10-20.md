@@ -12,7 +12,7 @@
 | Область | Изменение |
 |---|---|
 | F10: один контроллер на checkout | OS lock удерживается через workflow, подготовку, отдельную роль и machine gates. Разные run ID и подкаталоги проекта используют общий lock; linked worktrees независимы |
-| Восстановление | До vendor spawn сохраняется launch intent, затем PID и время старта родителя/наблюдаемых потомков. `warden recover` проверяет квитанции под тем же OS lock. Неполные квитанции требуют `--confirm-stopped` после проверки оператором; известный живой процесс нельзя обойти подтверждением |
+| Восстановление | До vendor spawn сохраняется launch intent, затем PID и время старта родителя/наблюдаемых потомков. `oseer recover` проверяет квитанции под тем же OS lock. Неполные квитанции требуют `--confirm-stopped` после проверки оператором; известный живой процесс нельзя обойти подтверждением |
 | Завершение | Shutdown hook останавливает известные vendor-процессы. После жёсткого уничтожения JVM остаётся durable fence. Процессы обычных gates/build daemons не попадают в vendor census |
 | Failover | Vendor adapter завершает известных потомков до возврата. Неподтверждённое завершение/capture получает отдельный код и блокирует retry/failover, сохраняя попытку и расходы. Это также защищает добавленный upstream vendor-failure failover |
 | F02: большой вывод | Raw stdout/stderr сохраняются побайтово; head/tail preview ограничен 256 КиБ. Streaming parser читает весь spool и удерживает итоговый artifact, usage и диагностические quota/403/turn-limit события |
@@ -20,7 +20,7 @@
 | Границы protocol | Один JSON-объект ограничен 4 Ми символов; пропущенные большие объекты явно посчитаны. Следующие корректные события всё равно читаются |
 | Классификация | Вложенный pretty-printed пример ошибки канонизируется как внешний JSON-объект и не становится отдельным quota event. Typed tool events и произвольные JSON-поля стоимости не заменяют provider receipt; JSON, процитированный внутри обычной прозы, не становится quota/telemetry event |
 | F01: backoff | До ожидания проверяются pause и минимальное время следующего вызова. При отказе уже завершённая попытка, её цена и budget settlement остаются в evidence; дополнительный dispatch не резервируется |
-| Действие оператора | `worktree_busy` предлагает ожидание, recovery fence — `warden recover`, проблемы raw capture — просмотр отчёта |
+| Действие оператора | `worktree_busy` предлагает ожидание, recovery fence — `oseer recover`, проблемы raw capture — просмотр отчёта |
 
 Gates/baseline по-прежнему используют собственный `timeout_minutes`. Изменение этого
 договора не входит в исправление deadline backoff. Короткие команды Git не требуют
@@ -63,7 +63,7 @@ vendor descendants, вывод больше 4 МиБ, byte hashes, malformed UTF
 нормализуется до записи attempt: итог роли и journal не расходятся в коде ошибки.
 
 Повтор на локальной машине: `build.cmd`, затем
-`java -cp out/test-classes dev.warden.testing.TestMain`. Машинное резюме этого прогона:
+`java -cp out/test-classes dev.oseer.testing.TestMain`. Машинное резюме этого прогона:
 priority-validation-summary.json (`out/priority-validation-summary.json`).
 
 Не проверены live vendor CLI, фактическая стоимость/лимиты подписок, live Orca,

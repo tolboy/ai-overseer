@@ -1,8 +1,8 @@
-# Следующая сессия: автоматическое наблюдение Warden в desktop Orca
+# Следующая сессия: автоматическое наблюдение AI Overseer в desktop Orca
 
 Реализуй согласованный ниже сценарий до проверяемого результата. Это задача на
 реализацию, а не на ещё один план. Desktop Orca — основной интерфейс; Android
-вторичен. Если Orca отсутствует или недоступна, Warden работает обычным CLI.
+вторичен. Если Orca отсутствует или недоступна, Overseer работает обычным CLI.
 Самостоятельно выполняй необходимые обратимые изменения и проверки в рамках
 этой задачи; не останавливайся на предложении продолжить.
 
@@ -25,27 +25,27 @@
   Paseo поддерживает Windows, Android, AGY и Grok ACP. Явно более подходящей готовой
   замены текущей интеграции не найдено. Не начинай миграцию, новый глобальный
   dashboard или новый оркестратор. Существующие settings/report страницы сохрани
-  как вспомогательные инструменты Warden.
+  как вспомогательные инструменты Overseer.
 
 CI перед слиянием PR #54 полностью прошёл на `e961638`:
-[run 39650511355](https://github.com/tolboy/warden-agentic-sdlc/actions/runs/39650511355).
+[run 39650511355](https://github.com/tolboy/ai-overseer/actions/runs/39650511355).
 Linux JDK 21/25 — 4930 passed / 0 failed; Windows JDK 21/25 — по 4936 passed / 0
 failed; demo и hygiene также зелёные. Ошибка сравнения Windows short-path и
 canonical long-path уже исправлена в `RosterTest` через `policy.toRealPath()`.
 Не повторяй закрытое исправление и не считай старый failed run текущим baseline.
 Перепроверь актуальный main CI; при новом отказе исследуй причину, сохраняя
 containment, atomic writes и проверки backup. Быстрый gate после build:
-`java -cp out/test-classes dev.warden.testing.TestMain roster`.
+`java -cp out/test-classes dev.oseer.testing.TestMain roster`.
 После реализации должен пройти текущий Linux/Windows JDK 21/25 CI.
 
 ## Что пользователь хочет видеть
 
-Обычный `warden do` или `warden run` без `--watch` показывает работу в Orca, если
+Обычный `oseer do` или `oseer run` без `--watch` показывает работу в Orca, если
 Orca доступна. Нет обязательного ручного открытия дополнительного dashboard.
 В одном понятном месте видны текущая стадия, роль, профиль, вендор, model/effort,
 номер попытки, длительность, состояние и причина ожидания, использованный бюджет,
 результаты проверок и работа CLI по мере выполнения. После прогона старые вкладки
-Warden не накапливаются; отчёт и история доступны для повторного открытия.
+Overseer не накапливаются; отчёт и история доступны для повторного открытия.
 Пользовательские вкладки сохраняются.
 
 ## Поведение по умолчанию и fallback
@@ -53,7 +53,7 @@ Warden не накапливаются; отчёт и история досту�
 1. Orca не установлена: существующие terminal progress, JSON, logs и exit codes
    работают как раньше; отсутствие UI не является ошибкой задачи.
 2. Orca установлена и runtime готов: автоматически подключи UI к фактическому
-   проекту/worktree выполнения, а не к каталогу, из которого был вызван `warden do`.
+   проекту/worktree выполнения, а не к каталогу, из которого был вызван `oseer do`.
 3. Orca установлена, но закрыта: для интерактивного desktop-вызова разрешена одна
    ограниченная по времени попытка запуска через поддерживаемую команду Orca.
    При отказе/неготовности показывай понятную причину fallback в обычный CLI.
@@ -87,13 +87,13 @@ external/direct activity. Выбери минимальный поддержив
 для процесса, который Orca не запускала. Если нужен именно отсутствующий контракт
 Orca, покажи точный blocker и минимальное предложение upstream изменения.
 
-## Точки входа Warden и известные причины
+## Точки входа Overseer и известные причины
 
-- `src/main/java/dev/warden/Main.java`: watch сейчас передаётся лишь при флаге.
-- `src/main/java/dev/warden/run/DoCommand.java`, `run/TaskLoop.java`, `run/Preparation.java`:
+- `src/main/java/dev/oseer/Main.java`: watch сейчас передаётся лишь при флаге.
+- `src/main/java/dev/oseer/run/DoCommand.java`, `run/TaskLoop.java`, `run/Preparation.java`:
   фактическое дерево, reservation, подготовка, продолжения, watch и stage events.
-- `src/main/java/dev/warden/run/Workspace.java`: интерфейс наблюдения.
-- `src/main/java/dev/warden/execution/orca/OrcaWorkspace.java`: `stage/ensureRun`
+- `src/main/java/dev/oseer/run/Workspace.java`: интерфейс наблюдения.
+- `src/main/java/dev/oseer/execution/orca/OrcaWorkspace.java`: `stage/ensureRun`
   зависят от watch terminal; без него прямые стадии не публикуются. `show` создаёт
   дополнительные терминалы, а final state в основном переименовывает watch tab.
 - `execution/orca/OrcaLifecycle.java`, `OrcaExecutor.java`, `OrcaRecovery.java`,
@@ -101,8 +101,8 @@ Orca, покажи точный blocker и минимальное предлож
 - `role/RoleRunner.java`, `execution/DirectCliExecutor.java`, `process/ProcessRunner.java`:
   direct attempt events, raw spool, streaming parser, process settlement и quota handling.
 
-UI — проекция Warden evidence. Budgets, transitions, retry/failover и окончательные
-решения остаются в Warden. Не добавляй второй scheduler. Ошибка UI не должна
+UI — проекция Overseer evidence. Budgets, transitions, retry/failover и окончательные
+решения остаются в Overseer. Не добавляй второй scheduler. Ошибка UI не должна
 обрывать оплачиваемую работу; при этом отсутствие подключения/cleanup должно быть
 видно оператору и записано, а не скрыто blanket catch без диагностики.
 
@@ -131,11 +131,11 @@ UI — проекция Warden evidence. Budgets, transitions, retry/failover и
 
 ## Владение и уборка
 
-Веди атомарный durable journal только ресурсов, созданных данным Warden run/chain:
+Веди атомарный durable journal только ресурсов, созданных данным Overseer run/chain:
 тип поверхности, точный handle/ID, host/runtime identity где требуется, назначение,
 owner, lifecycle state и результат cleanup. Титул вкладки не доказывает владение.
 Учитывай user takeover, transferred/external ownership и повторное использование
-терминала. Даже созданная Warden вкладка после перехода пользователю не закрывается.
+терминала. Даже созданная Overseer вкладка после перехода пользователю не закрывается.
 
 Правила завершения:
 
@@ -152,7 +152,7 @@ owner, lifecycle state и результат cleanup. Титул вкладки 
 - При crash/Ctrl+C/timeout cleanup не останавливает неизвестного живого writer.
   Сохрани journal, fence и recovery path. После подтверждённого завершения cleanup
   можно безопасно повторить. UI cleanup и отмена работы — разные операции.
-- При новом запуске можно reconcile доказанно завершённые старые ресурсы Warden,
+- При новом запуске можно reconcile доказанно завершённые старые ресурсы Overseer,
   но нельзя закрывать ещё живую/неопределённую соседнюю цепочку или пользовательские вкладки.
 
 ## Настоящие вендоры и тестовый проект
@@ -166,7 +166,7 @@ Codex `gpt-6.1-sol` medium — review/reserve; AGY `gemini-3.8-flash-high` high 
 
 Пользователь разрешил небольшие live tests в Orca `hello-world-test`. Используй
 отдельное disposable дерево, не меняй существующее приложение пользователя.
-Ранее были `warden-loop-live-20261021` и `warden-recovery-live-20261021`; не считай их
+Ранее были `oseer-loop-live-20261021` и `oseer-recovery-live-20261021`; не считай их
 чистыми fixtures и не удаляй имеющиеся evidence. Платные live calls нужны для
 проверки отображения, а не для повторения всех предыдущих paired evals.
 
@@ -180,13 +180,13 @@ recovery после input_accepted. Свежий probe и полная цепо�
 Сначала meaningful focused tests на auto-detection, managed/unmanaged paths,
 fallback, bounded UI failures, durable ownership/takeover, idempotent cleanup,
 continuations, crash/reconnect и отсутствие повторного dispatch. Используй
-зарегистрированные suite names из `dev.warden.testing.TestMain`, а не display labels.
+зарегистрированные suite names из `dev.oseer.testing.TestMain`, а не display labels.
 
 Desktop acceptance с реальным Orca:
 
-1. Два последовательных коротких Warden прогона без `--watch`: стадия, vendor,
+1. Два последовательных коротких Overseer прогона без `--watch`: стадия, vendor,
    model/effort и хотя бы один реальный CLI tool/output event видны до окончания.
-2. Между прогонами старые завершённые Warden tabs не накапливаются. Заранее
+2. Между прогонами старые завершённые Overseer tabs не накапливаются. Заранее
    созданная оператором вкладка остаётся; отдельно проверен user takeover.
 3. Контролируемый typed vendor failure вызывает одно разрешённое переключение,
    обе попытки видны, первый процесс завершён, цена не выдумана. Injection явно

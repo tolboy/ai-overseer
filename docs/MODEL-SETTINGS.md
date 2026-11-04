@@ -1,6 +1,6 @@
 # Vendor and role settings
 
-`warden settings` uses the same user configuration as the CLI. The main panel has vendor
+`oseer settings` uses the same user configuration as the CLI. The main panel has vendor
 cards and ordered role participants. CLI cards are grouped by the service a profile is bound
 to (`service:`; OpenAI, xAI, Google Antigravity), across profiles and direct/Orca launch
 methods, never by the model developer. API cards
@@ -30,7 +30,7 @@ contracts. There is no second settings database.
   routing is on. That saved level is the fallback when Jev is uncertain, fails, or routing
   is off; a confident choice may apply another supported level for one run. Explicit
   task/run overrides win. Questions and criteria are editable as YAML
-  in the panel and `~/.warden/jev-routing-policy.yaml`. Numeric decision probabilities come
+  in the panel and `~/.oseer/jev-routing-policy.yaml`. Numeric decision probabilities come
   from Jev. The application threshold remains `routing.min_confidence` in settings.yaml.
 
 All inference and catalog access is explicit; opening settings does neither. Role preflight separately checks the selected authorization/channel groups, including
@@ -48,8 +48,8 @@ The design is in `DESIGN-MODEL-ENTITIES-2026-10-28.md`. In short:
 - A CLI profile names `service:` (whose subscription answers) and optionally `account:`
   (which login, when one service has several). The model developer (`vendor:` /
   `model_vendor:`) is used only for review independence. API profiles are shown inside
-  their connection. A CLI profile without a binding Warden can prove is shown on the
-  "needs a binding" card with the reason; Warden does not guess one.
+  their connection. A CLI profile without a binding AI Overseer can prove is shown on the
+  "needs a binding" card with the reason; Overseer does not guess one.
 - Two accounts on one service share a card but keep separate checks and authentication.
 - Card status comes from the per-model receipts in `checks/states.json`: `answered`,
   `partial` (some models failed; the card lists only those) or `failed`. The API-key
@@ -58,9 +58,9 @@ The design is in `DESIGN-MODEL-ENTITIES-2026-10-28.md`. In short:
 - Migration of an existing configuration:
 
   ```
-  warden profiles migrate-services                      # preview; writes nothing
-  warden profiles migrate-services --apply --map NAME=SERVICE[:ACCOUNT] ...
-  warden profiles migrate-services --rollback ID        # restores the backed-up bytes
+  oseer profiles migrate-services                      # preview; writes nothing
+  oseer profiles migrate-services --apply --map NAME=SERVICE[:ACCOUNT] ...
+  oseer profiles migrate-services --rollback ID        # restores the backed-up bytes
   ```
 
   Apply takes a lock, backs the touched files up under

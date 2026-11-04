@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
-const source = readFileSync(new URL('../../main/java/dev/warden/dashboard/ModelSettingsUi.java', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../main/java/dev/oseer/dashboard/ModelSettingsUi.java', import.meta.url), 'utf8');
 const block = source.slice(source.indexOf('/*merge:start*/'), source.indexOf('/*merge:end*/'));
 assert.ok(block.length > 0 && !block.includes('\\'), 'merge block is present and free of escapes the Java text block would rewrite');
 const { mergeFields, mergeRole } = new Function(block + ';return {mergeFields, mergeRole};')();
@@ -80,6 +80,6 @@ check('accounts are listed and unmapped profiles show the migration command', ()
     mapping: [{ profile: 'agy-gpt-oss-review', reason: 'no service', suggested: null }] }]);
   assert.ok(texts(card).some(text => text.includes('openai-work (codex-implement); openai-home (codex-review)')));
   assert.ok(texts(card).some(text => text.startsWith('agy-gpt-oss-review')));
-  assert.ok(texts(card).includes('warden profiles migrate-services --map agy-gpt-oss-review=SERVICE[:ACCOUNT]'));
+  assert.ok(texts(card).includes('oseer profiles migrate-services --map agy-gpt-oss-review=SERVICE[:ACCOUNT]'));
 });
 console.log(`settings page checks: ${passed} passed, 0 failed`);

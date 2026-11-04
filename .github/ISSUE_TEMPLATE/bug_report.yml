@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Warden's failure modes are its interface: every failure resolves to exactly one named
+        Overseer's failure modes are its interface: every failure resolves to exactly one named
         outcome. So the most useful bug report names **what it said** and **what was true**.
 
-        If a vendor was involved, the run directory under `.warden/runs/<run-id>/` already holds
+        If a vendor was involved, the run directory under `.oseer/runs/<run-id>/` already holds
         most of this. Please read it before pasting — it contains the prompt that was sent and
         the vendor's raw output, and both can carry things you did not mean to publish.
 
@@ -25,7 +25,7 @@ body:
     attributes:
       label: What happened instead
       description: >-
-        The outcome code and message, verbatim. `warden report <run-id> --text` is usually the
+        The outcome code and message, verbatim. `oseer report <run-id> --text` is usually the
         clearest single thing to paste.
       render: text
     validations:
@@ -36,7 +36,7 @@ body:
     attributes:
       label: How to get there
       description: >-
-        The command you ran and enough of the contract to see why. A `.warden/task/<id>.yaml`
+        The command you ran and enough of the contract to see why. A `.oseer/task/<id>.yaml`
         with the goal removed is fine — the shape usually matters more than the wording.
     validations:
       required: true
@@ -45,14 +45,14 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `warden --version`, or the commit you built.
+      description: Output of `oseer --version`, or the commit you built.
     validations:
       required: true
 
   - type: textarea
     id: doctor
     attributes:
-      label: warden doctor
+      label: oseer doctor
       description: >-
         Optional, and the fastest way to rule out the environment. It reports the JVM, the
         profiles that load, argument encoding and live Orca readiness.

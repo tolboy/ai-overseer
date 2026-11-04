@@ -1,5 +1,5 @@
 version: 1
-# Install into ~/.warden/classifiers/, not worker profiles/.
+# Install into ~/.oseer/classifiers/, not worker profiles/.
 profile: jev-classifier
 connection: openrouter-personal
 model: typesafe/jev-1.14

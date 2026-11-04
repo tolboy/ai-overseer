@@ -1,0 +1,22 @@
+version: 1
+id: oseer-mvp
+goal: Implement and verify the standalone reusable Overseer JVM MVP
+non_goals:
+  - "No automatic merge, push, branch creation or pull request"
+  - "No behaviour specific to any single target project"
+  - "No unverified vendor permission flags"
+risk: high
+scope: platform
+checks: fast
+authority:
+  workspace_write: true
+  network: false
+  land: false
+visual_qa:
+  required: false
+  scenarios: []
+budgets:
+  max_role_runs: 6
+  max_cost_usd: 20.0
+max_fix_attempts: 2
+timeout_minutes: 10

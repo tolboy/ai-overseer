@@ -1,4 +1,4 @@
-# API-подключения и авторизация моделей в Warden
+# API-подключения и авторизация моделей в AI Overseer
 
 Актуальный план оставшихся работ: [подключения, надёжность API и маршрутизация Jev](PLAN-MODEL-CONNECTIONS-AND-ROUTING-2026-10-28.md). Ниже сохранены исходное исследование и последовательные обновления; исторические ограничения не следует считать текущим статусом без сверки с новым планом.
 
@@ -6,7 +6,7 @@
 
 Этот документ сохраняет исходный проект и ход реализации. Разделы 1–10 ниже —
 историческое предложение; формулировки «планируется», «offline» и «не проверено»
-относятся к соответствующему датированному срезу, а не автоматически к нынешнему Warden.
+относятся к соответствующему датированному срезу, а не автоматически к нынешнему Overseer.
 Текущая эксплуатационная инструкция — [API-CONNECTIONS.md](API-CONNECTIONS.md),
 проверки доступа — [MODEL-CHECKS.md](MODEL-CHECKS.md), маршрутизация —
 [JEV-ROUTING.md](JEV-ROUTING.md).
@@ -28,21 +28,21 @@
 
 ## Историческая исходная база и последовательные обновления
 
-Статус: исследование и поэтапная реализация, 2026-10-26. Исходная архитектура изучена на `7d7b4f4`; предложения ниже описывают полный целевой объём. Сделаны Connections/env references, CLI управления, read-only API transport, native probes и редактор подключений в панели: ссылка на переменную окружения, optimistic revision, запись через тот же сервис, что и CLI. Офлайн-контракт OpenCode разбирает `runner: direct` и `harness: opencode`, но не делает профиль допустимым implementer и не подтверждает GonkaRouter. На Windows ссылка `os-store:warden/<id>` читает и записывает Credential Manager текущего пользователя: env-режим работает без vault, недоступное хранилище не заменяется файлом или другим ключом, форма ввода ключа есть только после успешного probe. Инструкция по уже доступным возможностям — [API-CONNECTIONS.md](API-CONNECTIONS.md). Команда `connections auth-login` выполняет OpenRouter PKCE S256 и пишет выданный ключ только в уже выбранный `os-store:warden/<id>`; файл подключения и policy не меняются. Обмен кода проверен локальной заглушкой, живой браузерный login не выполнялся. Обновляемый каталог, сравнение стоимости, другие harness, пересылка ключа в Orca и живой coding smoke остаются планом. Редактор не переносит CLI login и не включает профиль в policy. Авторизованные внешние запросы и coding smoke не выполнялись.
+Статус: исследование и поэтапная реализация, 2026-10-26. Исходная архитектура изучена на `7d7b4f4`; предложения ниже описывают полный целевой объём. Сделаны Connections/env references, CLI управления, read-only API transport, native probes и редактор подключений в панели: ссылка на переменную окружения, optimistic revision, запись через тот же сервис, что и CLI. Офлайн-контракт OpenCode разбирает `runner: direct` и `harness: opencode`, но не делает профиль допустимым implementer и не подтверждает GonkaRouter. На Windows ссылка `os-store:oseer/<id>` читает и записывает Credential Manager текущего пользователя: env-режим работает без vault, недоступное хранилище не заменяется файлом или другим ключом, форма ввода ключа есть только после успешного probe. Инструкция по уже доступным возможностям — [API-CONNECTIONS.md](API-CONNECTIONS.md). Команда `connections auth-login` выполняет OpenRouter PKCE S256 и пишет выданный ключ только в уже выбранный `os-store:oseer/<id>`; файл подключения и policy не меняются. Обмен кода проверен локальной заглушкой, живой браузерный login не выполнялся. Обновляемый каталог, сравнение стоимости, другие harness, пересылка ключа в Orca и живой coding smoke остаются планом. Редактор не переносит CLI login и не включает профиль в policy. Авторизованные внешние запросы и coding smoke не выполнялись.
 
-Обновление 2026-10-27: добавлен отдельный preset JoinGonka Gateway и явная команда `connections coding-check` для платного ограниченного теста OpenCode 1.19.4 на одноразовом примере. Сервисный ключ остаётся в Warden; локальный посредник проверяет serving model до передачи ответа агенту. Живые результаты хранятся в квитанциях тестового проекта Orca. Эта команда не снимает запрет общего offline OpenCode adapter, не включает роль в policy и не доказывает строгий денежный лимит. Следующая часть этапа 4 — перенести проверенный путь исполнения в общий adapter и связать допуск с capability receipt, fingerprint и версией бинарника. Описание реализованной команды и её границ — в `API-CONNECTIONS.md`.
+Обновление 2026-10-27: добавлен отдельный preset JoinGonka Gateway и явная команда `connections coding-check` для платного ограниченного теста OpenCode 1.19.4 на одноразовом примере. Сервисный ключ остаётся в Overseer; локальный посредник проверяет serving model до передачи ответа агенту. Живые результаты хранятся в квитанциях тестового проекта Orca. Эта команда не снимает запрет общего offline OpenCode adapter, не включает роль в policy и не доказывает строгий денежный лимит. Следующая часть этапа 4 — перенести проверенный путь исполнения в общий adapter и связать допуск с capability receipt, fingerprint и версией бинарника. Описание реализованной команды и её границ — в `API-CONNECTIONS.md`.
 
 Обновление 2026-10-28: проверенный путь включён в общий executor для implementer-профилей с явным `harness_executable`. Допуск требует native-проверки через тот же runtime и квитанции, связанной с fingerprint профиля, подключением, ресурсами и SHA-256 бинарника; ручной даты недостаточно. Отдельный сокращённый deadline задачи сохраняет исходную identity профиля. Обработаны ошибки адаптера без автоматического платного failover, порядок permission rules OpenCode, блокировка незавершённого локального тела и отражение ключа в metadata. Профили других ролей без отдельного доказательства остаются недопустимыми; strict money cap и глобальная маршрутизация API-резерва не включаются автоматически.
 
 ## 1. Исходное рекомендуемое решение
 
-Управление подключениями встроить в настройки Warden. Подключение к конкретному API и запуск агента оформить отдельными адаптерами внутри существующей архитектуры. Самостоятельный сервис авторизации/LLM gateway для первого выпуска не нужен.
+Управление подключениями встроить в настройки Overseer. Подключение к конкретному API и запуск агента оформить отдельными адаптерами внутри существующей архитектуры. Самостоятельный сервис авторизации/LLM gateway для первого выпуска не нужен.
 
-Пользователь добавляет **свои** ключи OpenRouter/GonkaRouter. Warden хранит ссылку на секрет, выбирает профиль, применяет ограничения и получает квитанцию исполнения. Один ключ обслуживает несколько модельных профилей. Общие продуктовые ключи потребовали бы отдельного backend, биллинга пользователей и контроля злоупотреблений; это другой продуктовый объём.
+Пользователь добавляет **свои** ключи OpenRouter/GonkaRouter. Overseer хранит ссылку на секрет, выбирает профиль, применяет ограничения и получает квитанцию исполнения. Один ключ обслуживает несколько модельных профилей. Общие продуктовые ключи потребовали бы отдельного backend, биллинга пользователей и контроля злоупотреблений; это другой продуктовый объём.
 
 CLI-подписки остаются отдельным способом оплаты и авторизации. API дополняет их по выбранным ролям, задачам и правилам переключения. Подключить ключ и направить на него coding-задачу — разные операции: HTTP inference сам по себе не умеет читать репозиторий, менять файлы и запускать команды.
 
-| Вариант | Оценка для Warden |
+| Вариант | Оценка для Overseer |
 |---|---|
 | Ключи и специальные ветки OpenRouter/GonkaRouter прямо в TaskLoop | Смешивает policy, секреты и протоколы; каждый новый сервис затрагивает контроллер |
 | Connections в продукте + provider/harness adapters | Рекомендовано: единые настройки и бюджет, изолированные особенности сервисов |
@@ -54,7 +54,7 @@ CLI-подписки остаются отдельным способом опл
 
 | Область | Факт | Источник |
 |---|---|---|
-| User settings | Профили и policy принадлежат пользователю, каталог `~/.warden`, override `WARDEN_CONFIG_HOME` | `src/main/java/dev/warden/config/UserConfig.java:13`, `:40`, `:48` |
+| User settings | Профили и policy принадлежат пользователю, каталог `~/.oseer`, override `OSEER_CONFIG_HOME` | `src/main/java/dev/oseer/config/UserConfig.java:13`, `:40`, `:48` |
 | HTTP adapter | `runner: local`, полный `endpoint`, `api_key_env`; удалённый HTTPS URL parser тоже допускает | `config/Profile.java:289`, `execution/Executors.java:25` |
 | API auth | Bearer из env читается перед dispatch; отсутствующий ключ приводит к отказу до HTTP-запроса | `execution/LocalHttpExecutor.java:182`, `:211`, `:323` |
 | Redaction | Известный HTTP-токен удаляется из сохраняемого ответа и диагностик | `execution/LocalHttpExecutor.java:87`, `:265` |
@@ -97,7 +97,7 @@ CLI-подписки остаются отдельным способом опл
 | `deepseek/deepseek-v4.1-flash-1017` | $0.15 | $0.60 | Запись в каталоге; указаны tools и structured outputs; pricing также содержит временные overrides |
 | `z-ai/glm-5.3-flash` | $0.15 | $0.50 | Запись в каталоге; указаны tools и structured outputs |
 
-Это снимок каталога, не измерение качества, фактического биллинга или работоспособности Warden. [Источник: публичный каталог](https://openrouter.ai/api/v1/models).
+Это снимок каталога, не измерение качества, фактического биллинга или работоспособности Overseer. [Источник: публичный каталог](https://openrouter.ai/api/v1/models).
 
 GonkaRouter публикует `zai-org/GLM-5.3-Flash` и `deepseek-ai/DeepSeek-V4-Flash-0731`; их IDs отличаются от OpenRouter. В момент чтения каталог показывал $0.0045/1M, pricing — $0.0046/1M input/output. Это динамические рекламируемые цены, не подтверждённая стоимость наших запросов. [Каталог](https://gonkarouter.io/models), [Pricing](https://gonkarouter.io/pricing).
 
@@ -125,16 +125,16 @@ flowchart TD
     AGENT --> RECEIPT
 ```
 
-`ProviderAdapter` нормализует endpoint/protocol, auth, catalog/probe, request options, error taxonomy и usage. Общий OpenAI Chat transport переиспользуется; OpenRouter/GonkaRouter добавляют только свои routing/headers/receipts. `AgentHarnessAdapter` знает запуск конкретного coding CLI, его конфигурацию, terminal events и завершение. Внешний harness сам выполняет HTTP: provider adapter формирует его конфигурацию и нормализует доступные receipts, а не перехватывает его трафик по умолчанию. Оба слоя работают под policy Warden.
+`ProviderAdapter` нормализует endpoint/protocol, auth, catalog/probe, request options, error taxonomy и usage. Общий OpenAI Chat transport переиспользуется; OpenRouter/GonkaRouter добавляют только свои routing/headers/receipts. `AgentHarnessAdapter` знает запуск конкретного coding CLI, его конфигурацию, terminal events и завершение. Внешний harness сам выполняет HTTP: provider adapter формирует его конфигурацию и нормализует доступные receipts, а не перехватывает его трафик по умолчанию. Оба слоя работают под policy Overseer.
 
 Подключение не выбирает роль и не исполняет команды. Профиль не содержит секрета. Policy выбирает допустимый профиль, но не определяет HTTP-заголовки.
 
 ### Проектируемые файлы
 
-- `~/.warden/connections/<id>.yaml`: provider, protocol, base URL, auth reference, enabled, сетевые/routing defaults.
-- `~/.warden/profiles/<name>.yaml`: connection ref, role, model, model_vendor, runner/harness, capabilities, ограничения.
-- `~/.warden/policy.yaml`: порядок профилей, платный fallback, escalation и независимость.
-- `~/.warden/verification/`: квитанции проверки без секретов, effective capabilities и fingerprint конфигурации.
+- `~/.oseer/connections/<id>.yaml`: provider, protocol, base URL, auth reference, enabled, сетевые/routing defaults.
+- `~/.oseer/profiles/<name>.yaml`: connection ref, role, model, model_vendor, runner/harness, capabilities, ограничения.
+- `~/.oseer/policy.yaml`: порядок профилей, платный fallback, escalation и независимость.
+- `~/.oseer/verification/`: квитанции проверки без секретов, effective capabilities и fingerprint конфигурации.
 
 Пример будущего connection schema:
 
@@ -150,7 +150,7 @@ auth:
 enabled: true
 ```
 
-Для desktop `credential_ref` сможет иметь вид `os-store:warden/openrouter-personal`. Это два явных источника; при недоступном OS store приложение не переходит незаметно к plaintext или другому ключу.
+Для desktop `credential_ref` сможет иметь вид `os-store:oseer/openrouter-personal`. Это два явных источника; при недоступном OS store приложение не переходит незаметно к plaintext или другому ключу.
 
 Условный фрагмент будущего coding-профиля:
 
@@ -179,7 +179,7 @@ GLM через два шлюза остаётся одним model vendor; DeepS
 
 | Режим | Поведение |
 |---|---|
-| CLI subscription | Используется собственный login CLI; Warden показывает CLI/account status без извлечения OAuth-токенов |
+| CLI subscription | Используется собственный login CLI; Overseer показывает CLI/account status без извлечения OAuth-токенов |
 | API key из env | Сохраняется имя переменной; значение разрешается перед вызовом; режим подходит headless/CI |
 | API key в OS store | Ввод в settings, запись в vault под текущим пользователем, хранится только reference |
 | OpenRouter login | Позднее PKCE S256; ключ пользователя хранится тем же CredentialStore |
@@ -225,12 +225,12 @@ multi-provider coding harness**, кандидат — OpenCode. Сам spike т�
 
 | Вариант | Роль в плане |
 |---|---|
-| API completion в Warden | Маленький transport; подходит для ограниченной аналитики с подготовленным контекстом; не coding implementer |
-| OpenCode adapter | Первый кандидат coding spike: использовать готовые repo/tools/context loop, добавить Warden prompt/artifact/receipt/cancellation contract |
+| API completion в Overseer | Маленький transport; подходит для ограниченной аналитики с подготовленным контекстом; не coding implementer |
+| OpenCode adapter | Первый кандидат coding spike: использовать готовые repo/tools/context loop, добавить Overseer prompt/artifact/receipt/cancellation contract |
 | Claude Code через совместимый Messages endpoint | Альтернативный spike; есть официальные инструкции [OpenRouter](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration) и [GonkaRouter](https://gonkarouter.io/docs); нужны изоляция auth, проверка routing всех внутренних вызовов и установленной версии |
 | Собственный API-agent | Полный контроль, но нужны tool loop, patch/shell permissions, sandbox, context compaction, MCP, recovery и accounting каждого turn; самостоятельный крупный этап |
 
-При spike проверить prompt delivery через stdin/файл, финальный JSON по Warden schema, read-only enforcement, process/descendant cancellation, реальную serving identity и стоимость внутренних вызовов. JSON event stream или exit 0 без валидного итогового artifact не закрывает роль. Если harness скрывает serving model/cost, показывать unknown и не включать свойства, которые эта интеграция не доказывает.
+При spike проверить prompt delivery через stdin/файл, финальный JSON по Overseer schema, read-only enforcement, process/descendant cancellation, реальную serving identity и стоимость внутренних вызовов. JSON event stream или exit 0 без валидного итогового artifact не закрывает роль. Если harness скрывает serving model/cost, показывать unknown и не включать свойства, которые эта интеграция не доказывает.
 
 Orca runner пока остаётся на существующем проверенном launch contract. Поддержку API через Orca добавить только после появления явной передачи connection/secret binding и подтверждённого lifecycle; generic worker-start сам по себе этого не доказывает.
 
@@ -245,7 +245,7 @@ Orca runner пока остаётся на существующем провер
 | transient rate limit / in-flight budget | Уважать Retry-After в пределах общего deadline и retry budget |
 | model/parameter unsupported | Ошибка профиля, не признак потраченной CLI-подписки |
 | network/timeout/mid-stream failure | Учесть потенциально состоявшийся платный вызов; не считать автоматически бесплатным и не повторять бесконтрольно |
-| artifact/schema/tool failure | Разделить protocol failure и findings; сохранить нормальный Warden gate |
+| artifact/schema/tool failure | Разделить protocol failure и findings; сохранить нормальный Overseer gate |
 
 По умолчанию сохранить текущие failover stop/confirm semantics. Пользователь может заранее разрешить конкретный API-резерв с финансовым пределом; в этом случае отдельного вопроса на каждое переключение не требуется. Сам факт сохранения ключа не включает платный fallback.
 
@@ -263,8 +263,8 @@ Continuation fingerprint включает endpoint/protocol, connection identity
 Статус оставшихся пунктов фиксируется в
 [основном плане](PLAN-MODEL-CONNECTIONS-AND-ROUTING-2026-10-28.md).
 
-Обновление 2026-10-28: единая панель `warden settings` объединяет подключения, CLI/API-профили,
-native-проверку допуска, состав ролей и настройки свежего `warden check` перед прогоном. Проверка
+Обновление 2026-10-28: единая панель `oseer settings` объединяет подключения, CLI/API-профили,
+native-проверку допуска, состав ролей и настройки свежего `oseer check` перед прогоном. Проверка
 ответа не выдаёт coding-допуск и не включает платный fallback. Каталог, подтверждённые денежные
 ограничения и Orca forwarding остаются отдельными этапами. Подробности — `MODEL-CHECKS.md`.
 

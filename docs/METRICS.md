@@ -1,15 +1,15 @@
 # What the loop measures about itself
 
-`warden ledger` reads a project's append-only run evidence and answers two questions. The
+`oseer ledger` reads a project's append-only run evidence and answers two questions. The
 first is which runs happened and how each ended. The second is what the loop cost to get
 there — and that is the `metrics` block this document describes.
 
 ```bash
-./bin/warden ledger
+./bin/oseer ledger
 ```
 
 Nothing here is computed by a model, and nothing is reported that a run did not record. The
-block is derived from `.warden/runs/<id>/evidence.jsonl`, which is append-only: re-reading a
+block is derived from `.oseer/runs/<id>/evidence.jsonl`, which is append-only: re-reading a
 ledger cannot change it, and no metric can be improved by running the aggregation again.
 
 ## The rule that shapes every number
@@ -31,7 +31,7 @@ So each measured quantity is three fields, not one:
 
 `p50` and `p95` follow the same rule: computed over the reported samples only, and `null`
 when there are none. Read `total` next to `unknown_count` or do not read it at all. This is
-the same reason `warden report` renders a missing value as `?` rather than as a zero, and the
+the same reason `oseer report` renders a missing value as `?` rather than as a zero, and the
 reason a run's ceiling report carries `unpriced_calls` and `cost_ceiling_binding`: a run where
 nothing priced itself can spend every allowed call and charge $0.00 against a $40 limit.
 `max_role_runs` is the bound that always holds.
@@ -77,7 +77,7 @@ so a partial journal preserves uncovered calls and a late or repeated journal en
 not charge the same attempt again. A relationship that cannot be proved is marked
 `ambiguous_coverage` / `incomplete`, with exact spend withheld. The local run verdict and
 visible event count retain their historical presentation: an orphan call does not invent
-a completed run. `warden report` still requires a task summary; use the ledger to inspect
+a completed run. `oseer report` still requires a task summary; use the ledger to inspect
 attempt accounting when a crash prevented that summary.
 
 ### `telemetry` — cost, tokens, wall clock
@@ -85,14 +85,14 @@ attempt accounting when a crash prevented that summary.
 `cost_usd`, `tokens.input`, `tokens.output`, `tokens.total` and `duration_millis`, each in the
 three-field shape above; `duration_millis` also carries `p50` and `p95`.
 
-The joined `warden report` vendor rows also preserve coverage independently for input,
+The joined `oseer report` vendor rows also preserve coverage independently for input,
 output and total tokens: `input_tokens_unknown_calls`, `output_tokens_unknown_calls` and
 `total_tokens_unknown_calls`. Each total is `null` when no call reported that field. A
 reported zero remains known; input alone cannot establish output or total. The existing
 `tokens_unknown_calls` field now counts calls missing **any** of these fields, and the
 terminal describes that partial coverage beside the reported sums.
 
-Cost is only ever what a vendor printed. Warden has no price list and does not want one:
+Cost is only ever what a vendor printed. AI Overseer has no price list and does not want one:
 a table of per-model prices in this repository would be wrong within a month, and it would be
 wrong silently.
 
@@ -131,7 +131,7 @@ The last row is the one to watch on a new install. A high `configuration` count 
 `role_runs` count means the loop is refusing before it ever reaches a vendor, and no amount of
 prompt tuning will change it.
 
-### `human` — the gate Warden never crosses
+### `human` — the gate Overseer never crosses
 
 `decisions`, `by_decision` (`accept` / `reject` / `retry` / `abort` / `switch`), `wait_events`,
 and `wait_millis` with `p50` and `p95`. Wait time is measured from the timestamps the decision
@@ -191,8 +191,8 @@ from the role with eyes.
 - **Unpriced cost.** See above. `unknown_count` is the answer, not an estimate.
 - **Time a person spent thinking.** `wait_millis` measures how long a decision sat pending,
   which is not the same thing and is not offered as if it were.
-- **Anything across projects, unless you ask.** Plain `warden ledger` still reads one
-  project's `.warden/runs` and prints the same fields it always has. `warden ledger --global`
+- **Anything across projects, unless you ask.** Plain `oseer ledger` still reads one
+  project's `.oseer/runs` and prints the same fields it always has. `oseer ledger --global`
   reads `<UserConfig.home>/ledger/` from outside a repository, filtered by the recorded
   project identity (`--project-id`, or the identity already recorded for the current
   project). Omitting both, from outside a project, reports measurements whose project
@@ -240,13 +240,13 @@ describe an operator and a vendor account.
 
 ## `--global`, `--import`, and incomplete reports
 
-`warden ledger --global` does not load profiles, does not mint a project identity, and
+`oseer ledger --global` does not load profiles, does not mint a project identity, and
 does not replay recovery. Physical run instances (`run_instance_id`) stay distinct from
 a lineage merged across `--continue`. Known and unknown counts survive into the output.
 Imported rows that never had a `project_id` are the `--global` report from outside a
 project without `--project-id`; a named `--project-id` does not absorb them.
 
-`warden ledger --import PATH` is the one explicit import of selected local runs and
+`oseer ledger --import PATH` is the one explicit import of selected local runs and
 archives. It uses the same allowlist projector as the write path. Records that already
 carry an `event_id` are keyed by it. Records that do not — the committed demo evidence
 is this shape — get a deterministic provenance key: SHA-256 of a fixed material string
@@ -279,20 +279,20 @@ one being summarised. An incomplete corpus does not print an unconditional succe
 rate or an exact total spend: `telemetry.cost_usd.total` is `null` even when some
 priced rows were readable.
 
-## Comparing runs: `warden ledger --compare`
+## Comparing runs: `oseer ledger --compare`
 
-Plain `warden ledger` still prints one aggregate over a project. After several
+Plain `oseer ledger` still prints one aggregate over a project. After several
 comparable tasks the question is different: did the prepared, gated loop pay for
 itself against an operator's ordinary agent workflow, under the same conditions.
 
 ```bash
-./bin/warden ledger --compare
-./bin/warden ledger --compare --baseline-file PATH [--text]
+./bin/oseer ledger --compare
+./bin/oseer ledger --compare --baseline-file PATH [--text]
 ```
 
-`--compare` reads every `.warden/runs/<run-id>/task-run.json` in the local project
+`--compare` reads every `.oseer/runs/<run-id>/task-run.json` in the local project
 tree, plus `decision.json` beside it. It does not read the home corpus, does not
-consult a model, and does not change the default `warden ledger` output. Combined
+consult a model, and does not change the default `oseer ledger` output. Combined
 with `--import` it is refused, naming `--import`. `--global` is untouched.
 
 Dry runs (`dry_run: true`, or `reason: dry_run`) and preview rows are ignored. A
@@ -303,10 +303,10 @@ output.
 
 ### Grouping
 
-Comparison output uses `schema_version: 2`. Warden freezes `comparison_conditions`
+Comparison output uses `schema_version: 2`. Overseer freezes `comparison_conditions`
 before workflow dispatch, including stages a stopped run never reaches. It records
 requested models and effort, runners, ordered rosters, routing, overrides, grants,
-limits, retry/failover/escalation settings, prompt/schema/MCP digests and Warden
+limits, retry/failover/escalation settings, prompt/schema/MCP digests and Overseer
 version, executable build digest and Java/OS/architecture. The build digest comes
 from the loaded code source (class tree or archive), independently of the task's
 Git checkout; unavailable build identity blocks comparability. Policy role defaults
@@ -361,14 +361,14 @@ only. A missing number stays `null`. It never becomes a zero.
 `sample_size` is `units`; `sample_size_sufficient` means at least three units.
 Unpaired groups always have `comparable: false`. Three unrelated tasks establish
 neither matching difficulty nor a valid comparator. Explicit comparisons live under
-`paired_evaluation`. Warden `operator_minutes` comes only from operator annotations;
+`paired_evaluation`. Overseer `operator_minutes` comes only from operator annotations;
 gate wait and elapsed time cannot stand in for operator work.
 
 ### Baseline file
 
 `--baseline-file PATH` accepts `rows`, `runs` and `experiments` arrays; all default
 to empty. Existing `{"rows":[...]}` files remain valid. Each baseline row is one
-manually observed task done **without** Warden:
+manually observed task done **without** Overseer:
 
 ```json
 {"label":"hermes+grok","task_kind":"fix","risk":"medium","completed":true,
@@ -378,7 +378,7 @@ manually observed task done **without** Warden:
 Unknown keys are refused. `completed` must be a boolean. Numbers must be
 non-negative finite numbers or `null`; a missing number is unknown, not zero. Rows form their own
 groups with `source: "manual_baseline"`, keyed by `label`, `task_kind` and
-`risk`, plus experiment/variant when supplied. `elapsed_minutes` is converted to seconds so it sits beside Warden's
+`risk`, plus experiment/variant when supplied. `elapsed_minutes` is converted to seconds so it sits beside Overseer's
 `elapsed_seconds`. The `note` is accepted as input and is not copied to the
 report.
 
@@ -396,13 +396,13 @@ is the reference. Attach `experiment_id`, `task_pair_id`, `variant` and a positi
 integer `repeat` to both a manual row and a `runs` annotation. Annotate the **final**
 run of a continued chain. Each run may have only one annotation. `operator_minutes`
 may be supplied even without pairing fields, and remains unknown when omitted.
-Baseline rows additionally declare `base_commit`; Warden takes it from the recorded
+Baseline rows additionally declare `base_commit`; Overseer takes it from the recorded
 `diff_base_commit`. Base and risk must agree inside each pair. Task equivalence,
 manual outcomes, base and effort are operator declarations, not independently verified.
 
 ```sh
-warden ledger --compare --baseline-file examples/evals/paired-baseline.json
-warden ledger --compare --baseline-file examples/evals/paired-baseline.json --text
+oseer ledger --compare --baseline-file examples/evals/paired-baseline.json
+oseer ledger --compare --baseline-file examples/evals/paired-baseline.json --text
 ```
 
 The join key is `(experiment_id, task_pair_id, repeat)`. Every declared variant must
@@ -413,7 +413,7 @@ Unknown keys, malformed metadata and duplicate run annotations are refused.
 
 At least three complete pairs, no incomplete pairs/input issues, and a stable
 `condition_id` within each variant are required for experiment `comparable: true`.
-Manual `label` declares its frozen condition. A model/effort change within a Warden
+Manual `label` declares its frozen condition. A model/effort change within an Overseer
 variant is condition drift and blocks pooled comparison. Every pair and unpaired
 unit count remains visible; interrupted and rejected tasks remain in the denominator.
 

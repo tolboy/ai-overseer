@@ -12,7 +12,7 @@
 # the definitions below; adding a pattern in one place adds it to both.
 #
 # Both scans are `git`-only, so they see tracked content only — a maintainer's local run
-# directories under .warden/runs/ can neither fail nor pass this job by accident.
+# directories under .oseer/runs/ can neither fail nor pass this job by accident.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -33,14 +33,14 @@ cd "$(dirname "$0")/.."
 # a pattern is scanned by that pattern, so a literal spelling here would fail the gate on
 # itself. The bracket is the whole trick; the character class matches one literal `P`.
 paths_pattern='(C:[\\/]+Users[\\/]+[A-Za-z0-9][A-Za-z0-9._-]*|/home/[a-z][a-z0-9._-]*|/Users/[a-z][a-z0-9._-]*|Idea[P]rojects)'
-paths_message='an absolute personal path is committed; use <warden> / <project> placeholders'
+paths_message='an absolute personal path is committed; use <ai-overseer> / <project> placeholders'
 
 uuids_pattern='\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
 uuids_message='a UUID is committed in documentation; describe the id, do not print it'
 
 # Runs the git command in "$@" against the check's file list. The list lives here once, so the
 # tip scan and the range scan cannot come to disagree about which files are in scope.
-# examples/demo/sample-evidence carries a deliberately sanitised `C:\Temp\warden-demo` prefix
+# examples/demo/sample-evidence carries a deliberately sanitised `C:\Temp\oseer-demo` prefix
 # (documented in examples/demo/README.md); it is in scope and does not match — the patterns
 # ask for a home directory, not for any absolute path.
 hygiene_paths_of() {

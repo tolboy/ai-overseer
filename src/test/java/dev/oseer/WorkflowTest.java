@@ -1,0 +1,527 @@
+package dev.oseer;
+
+import dev.oseer.config.Policy;
+import dev.oseer.config.Profile;
+import dev.oseer.config.UserConfig;
+import dev.oseer.config.Workflow;
+import dev.oseer.role.RoleContract;
+import dev.oseer.testing.Check;
+import dev.oseer.testing.Suite;
+
+import java.util.List;
+import java.util.Map;
+import java.nio.file.Path;
+
+/**
+ * The declared chain of stages.
+ *
+ * The value of moving the chain into configuration is entirely in what the parser refuses.
+ * A workflow file decides which vendor is dispatched with write access and in what order, so
+ * every one of these checks is a way that file could otherwise mean something its author did
+ * not write.
+ */
+public final class WorkflowTest implements Suite {
+
+    @Override public String name() { return "workflow"; }
+
+    private static final String ROLES = """
+            version: 1
+            roles:
+              implementer: { profiles: [a], strategy: first }
+              reviewer: { profiles: [b], strategy: first }
+              visual_qa: { profiles: [c], strategy: first }
+            """;
+
+    @Override public void run(Check check) {
+        repairPreviewChecks(check);
+        reuseAfterAFailureThatWasNotAboutTheWork(check);
+        apiFallbackPolicyChecks(check);
+        apiFallbackContractChecks(check);
+        Policy silent = Policy.parse(ROLES, "policy.yaml");
+        check.that("a policy that declares no workflow is not treated as declaring one",
+                !silent.workflowDeclared());
+        check.eq("and gets the documented chain", Workflow.builtIn().toList(),
+                silent.workflow().toList());
+        check.eq("a policy that says nothing about a missing artifact stops",
+                "stop", silent.vendorFailureMode());
+        check.eq("and one substitution is the bound", 1, silent.maxVendorFailovers());
+        check.eq("a role that says nothing inherits", null,
+                silent.roles().get("reviewer").vendorFailureMode());
+        check.eq("so the effective mode is the policy default", "stop",
+                silent.vendorFailureModeFor("reviewer"));
+
+        Policy opted = Policy.parse("""
+                version: 1
+                failover: { on_vendor_failure: auto, max_per_stage: 2 }
+                roles:
+                  implementer: { profiles: [a], strategy: first, on_vendor_failure: confirm }
+                  reviewer: { profiles: [b], strategy: first }
+                """, "policy.yaml");
+        check.eq("on_vendor_failure is read", "auto", opted.vendorFailureMode());
+        check.eq("max_per_stage is read", 2, opted.maxVendorFailovers());
+        check.eq("a role may override it", "confirm", opted.vendorFailureModeFor("implementer"));
+        check.eq("and a role that does not still inherits", "auto",
+                opted.vendorFailureModeFor("reviewer"));
+        check.rejects("an unknown vendor-failure mode is refused", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { on_vendor_failure: maybe }
+                        roles:
+                          implementer: { profiles: [a], strategy: first }
+                        """, "policy.yaml"));
+        check.rejects("max_per_stage above 8 is refused", "must be between",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { max_per_stage: 9 }
+                        roles:
+                          implementer: { profiles: [a], strategy: first }
+                        """, "policy.yaml"));
+        check.rejects("an unknown role key is still refused", "unsupported key",
+                () -> Policy.parse("""
+                        version: 1
+                        roles:
+                          implementer: { profiles: [a], strategy: first, on_a_whim: true }
+                        """, "policy.yaml"));
+
+        List<Workflow.Stage> builtIn = Workflow.builtIn().stages();
+        check.eq("the built-in chain runs five stages", 5, builtIn.size());
+        check.eq("gates recheck after any later fix round", true,
+                builtIn.stream().filter(stage -> stage.name().equals("gates")).findFirst()
+                        .orElseThrow().recheckAfterFix());
+        // The reviewer is in this list on purpose. A fix round for the browser or the
+        // visual role edits code after the review passed, and without re-running it the
+        // candidate a human accepts holds a diff no independent vendor ever read.
+        check.eq("every judging stage before the last one is re-run after a fix",
+                List.of("gates", "review", "browser"),
+                Workflow.builtIn().recheckBefore(4).stream().map(Workflow.Stage::name).toList());
+
+        // Failure names are what an operator greps for. They follow the stage's job, not the
+        // name an operator happened to give it, so renaming a stage cannot rename its reason.
+        Policy renamed = Policy.parse(ROLES + """
+                workflow:
+                  stages:
+                    - { stage: build-it, run: role, role: implementer, on_fail: stop }
+                    - { stage: prove-it, run: machine_gates, on_fail: fix }
+                """, "policy.yaml");
+        check.that("a declared workflow is reported as declared", renamed.workflowDeclared());
+        check.eq("a renamed gate still stops for the same reason", "gates_not_satisfied",
+                renamed.workflow().stages().get(1).failureReason());
+        check.eq("and still writes the same fix-context file", "gates",
+                renamed.workflow().stages().get(1).contextKind());
+        check.eq("a renamed implementer stage keeps its reason", "implementer_failed",
+                renamed.workflow().stages().get(0).failureReason());
+
+        // Order is the whole point of declaring the chain, so it is preserved verbatim.
+        Policy reordered = Policy.parse(ROLES + """
+                workflow:
+                  stages:
+                    - { stage: review, run: role, role: reviewer, on_fail: stop, on_findings: fix }
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: gates, run: machine_gates, on_fail: fix }
+                """, "policy.yaml");
+        check.eq("stages keep the order they were written in",
+                List.of("review", "implement", "gates"),
+                reordered.workflow().stages().stream().map(Workflow.Stage::name).toList());
+
+        // Conditions are a closed set. An unknown one must not silently evaluate to false,
+        // because false is the permissive answer here: it skips a check nobody asked to skip.
+        check.rejects("an unknown condition is refused, not ignored", "unknown condition",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: gates, run: machine_gates, on_fail: fix, when: [on_tuesdays] }
+                        """, "policy.yaml"));
+        check.rejects("an unknown stage kind is refused", "must declare run",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: guess, run: vibes, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("an unknown response is refused", "on_fail must be one of",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: gates, run: machine_gates, on_fail: land }
+                        """, "policy.yaml"));
+        check.rejects("a role stage must name its role", "must name it",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: someone, run: role, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("an unknown role is refused", "unknown role",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: someone, run: role, role: janitor, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("two stages cannot share a name", "declared twice",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: gates, run: machine_gates, on_fail: fix }
+                            - { stage: gates, run: machine_gates, on_fail: fix }
+                        """, "policy.yaml"));
+        check.rejects("an empty workflow is refused rather than silently doing nothing",
+                "at least one stage",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages: []
+                        """, "policy.yaml"));
+        check.rejects("a machine stage cannot claim to produce findings", "remove on_findings",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: gates, run: machine_gates, on_fail: fix, on_findings: fix }
+                        """, "policy.yaml"));
+        check.rejects("an unsupported key in a stage is a typo, not a feature", "unsupported key",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: gates, run: machine_gates, on_fail: fix, retries: 9 }
+                        """, "policy.yaml"));
+
+        // The one role with eyes cannot be dispatched over pixels nobody took. Binding it to
+        // a named harness stage is what stops "we ran visual QA" from meaning "we paid a
+        // model to read a report about screenshots that were never captured".
+        check.rejects("a visual_qa role with no harness before it is refused",
+                "no visual_harness stage precedes it",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: look, run: role, role: visual_qa, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("and it cannot look at a harness that runs later", "must name an earlier",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: look, run: role, role: visual_qa, sees: browser, on_fail: stop }
+                            - { stage: browser, run: visual_harness, on_fail: fix }
+                        """, "policy.yaml"));
+
+        Policy bound = Policy.parse(ROLES + """
+                workflow:
+                  stages:
+                    - { stage: shots, run: visual_harness, on_fail: fix }
+                    - { stage: look, run: role, role: visual_qa, on_fail: stop, on_findings: fix }
+                """, "policy.yaml");
+        check.eq("a visual_qa role binds to the harness before it without being told",
+                "shots", bound.workflow().stages().get(1).sees());
+        check.eq("and keeps its own stop reason", "visual_qa_role_failed",
+                bound.workflow().stages().get(1).failureReason());
+        check.eq("and its own findings reason", "visual_findings_remain",
+                bound.workflow().stages().get(1).findingsReason());
+        check.eq("and says its pictures come from the harness", "harness",
+                bound.workflow().stages().get(1).toMap().get("evidence"));
+
+        // A role that takes its own pictures needs no harness: a browser cannot drive a game
+        // engine or a desktop window, and the tools that can are the role's own. The stage
+        // says so, and cannot also claim to see a harness it does not have.
+        Policy acquiring = Policy.parse(ROLES + """
+                workflow:
+                  stages:
+                    - { stage: look, run: role, role: visual_qa, evidence: agent, on_fail: stop, on_findings: fix }
+                """, "policy.yaml");
+        Workflow.Stage camera = acquiring.workflow().stages().get(0);
+        check.that("a visual_qa role with evidence: agent needs no harness", camera.acquiresEvidence());
+        check.eq("and sees none", null, camera.sees());
+        check.eq("and says so when written out", "agent", camera.toMap().get("evidence"));
+        check.that("a stage fed by the harness does not take its own",
+                !bound.workflow().stages().get(1).acquiresEvidence());
+        check.rejects("it cannot also see a harness", "cannot also see a harness",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: shots, run: visual_harness, on_fail: fix }
+                            - { stage: look, run: role, role: visual_qa, evidence: agent, sees: shots, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("evidence names one of the two sources", "evidence must be one of",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: look, run: role, role: visual_qa, evidence: telepathy, on_fail: stop }
+                        """, "policy.yaml"));
+        check.rejects("and only a visual_qa stage has one", "does not run the visual_qa role",
+                () -> Policy.parse(ROLES + """
+                        workflow:
+                          stages:
+                            - { stage: review, run: role, role: reviewer, evidence: agent, on_fail: stop }
+                        """, "policy.yaml"));
+
+        // Two stages, one role: the shape `rotate` exists for, and the shape that used to be
+        // at the mercy of a counter shared by every run in the project. A run that died before
+        // its reviewer, a fix round, or a bare `oseer role` all advanced it, so the operator
+        // who wrote "the deep reader goes first" got whichever profile the arithmetic landed
+        // on. Measured live: two failed runs left the third run's first review with the
+        // profile that policy.yaml puts second.
+        Policy paired = Policy.parse(ROLES + """
+                workflow:
+                  stages:
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: review, run: role, role: reviewer, on_fail: stop }
+                    - { stage: review-second, run: role, role: reviewer, on_fail: stop }
+                """, "policy.yaml");
+        List<Workflow.Stage> reviewStages = paired.workflow().stagesFor("reviewer");
+        check.eq("both stages of a role are found, in declaration order", 2, reviewStages.size());
+        check.eq("the first review takes the first profile", 0,
+                paired.workflow().rotationPositionOf(reviewStages.get(0)));
+        check.eq("and the last review takes the second, on every run", 1,
+                paired.workflow().rotationPositionOf(reviewStages.get(1)));
+        check.eq("a role with one stage keeps rotating across runs from persisted state", -1,
+                paired.workflow().rotationPositionOf(paired.workflow().stagesFor("implementer").get(0)));
+        check.eq("and so does every role in the built-in chain, which pairs nothing", -1,
+                Workflow.builtIn().rotationPositionOf(Workflow.builtIn().stagesFor("reviewer").get(0)));
+
+        // Evidence directories are derived from the same names, so an operator-chosen stage
+        // name has to survive being one.
+        check.eq("a stage name becomes a directory-safe slug", "review-second",
+                Workflow.slug("Review Second"));
+        check.eq("and a name made entirely of punctuation still names something", "stage",
+                Workflow.slug("///"));
+
+        // The shipped policy template must actually be one this parser accepts. A commented
+        // example that does not parse is worse than none: it is discovered by an operator.
+        Policy shipped = Policy.parse(dev.oseer.config.UserSetup.policyTemplate(), "policy.yaml");
+        check.that("the policy `oseer setup` writes declares a workflow", shipped.workflowDeclared());
+        check.eq("and it is exactly the built-in chain, written out",
+                Workflow.builtIn().toList(), shipped.workflow().toList());
+        check.eq("and vendor-failure failover stays stopped", "stop", shipped.vendorFailureMode());
+        check.eq("with one substitution available when a role opts in",
+                1, shipped.maxVendorFailovers());
+    }
+
+    private void apiFallbackPolicyChecks(Check check) {
+        Policy silent = Policy.parse(ROLES, "policy.yaml");
+        check.eq("legacy policies authorize no API fallback profiles", List.of(),
+                silent.roles().get("reviewer").apiFallbackProfiles());
+        Policy ordered = Policy.parse("""
+                version: 1
+                roles:
+                  reviewer:
+                    profiles: [a, b, c]
+                    strategy: rotate
+                    on_vendor_failure: auto
+                    api_fallback_profiles: [c, b]
+                """, "policy.yaml");
+        check.eq("API fallback order is the declared order rather than roster order", List.of("c", "b"),
+                ordered.roles().get("reviewer").apiFallbackProfiles());
+        check.eq("API fallback leaves normal role rotation declared", "rotate",
+                ordered.roles().get("reviewer").strategy());
+        Policy stopped = Policy.parse("""
+                version: 1
+                roles:
+                  reviewer: { profiles: [a, b], api_fallback_profiles: [b] }
+                """, "policy.yaml");
+        check.eq("a list alone retains the default stop policy", "stop",
+                stopped.vendorFailureModeFor("reviewer"));
+        check.rejects("API fallback cannot grant a profile outside the role roster", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        roles:
+                          reviewer: { profiles: [a], api_fallback_profiles: [b] }
+                        """, "policy.yaml"));
+        check.rejects("API fallback cannot repeat a profile", "contains duplicate",
+                () -> Policy.parse("""
+                        version: 1
+                        roles:
+                          reviewer: { profiles: [a, b], api_fallback_profiles: [b, b] }
+                        """, "policy.yaml"));
+        check.rejects("API fallback must be a list", "must be a list of strings",
+                () -> Policy.parse("""
+                        version: 1
+                        roles:
+                          reviewer: { profiles: [a, b], api_fallback_profiles: b }
+                        """, "policy.yaml"));
+        check.rejects("API fallback profile names cannot be empty", "must be a non-empty string",
+                () -> Policy.parse("""
+                        version: 1
+                        roles:
+                          reviewer: { profiles: [a, b], api_fallback_profiles: [""] }
+                        """, "policy.yaml"));
+        check.eq("the old full RoleSpec constructor keeps API fallback disabled", List.of(),
+                new Policy.RoleSpec("reviewer", List.of("a"), "first", true, null, "auto")
+                        .apiFallbackProfiles());
+        check.eq("the old peer RoleSpec constructor keeps API fallback disabled", List.of(),
+                new Policy.RoleSpec("reviewer", List.of("a"), "first", true, null)
+                        .apiFallbackProfiles());
+        check.eq("the old minimal RoleSpec constructor keeps API fallback disabled", List.of(),
+                new Policy.RoleSpec("reviewer", List.of("a"), "first", true)
+                        .apiFallbackProfiles());
+    }
+    private void apiFallbackContractChecks(Check check) {
+        Profile reader = Profile.parse("""
+                version: 1
+                profile: a
+                role: reviewer
+                vendor: openai
+                model: test-model
+                command: synthetic-vendor
+                read_only: true
+                verification:
+                  verified_on: "2026-10-29"
+                """, "a.yaml");
+        Workflow.Stage stage = Workflow.builtIn().stages().stream()
+                .filter(candidate -> "review".equals(candidate.name())).findFirst().orElseThrow();
+        UserConfig legacy = fallbackContractUser(reader, "");
+        Map<String, Object> recorded = RoleContract.of(stage.name(), stage.role(),
+                legacy.policy().roles().get(stage.role()), reader, legacy);
+        recorded.putAll(RoleContract.routingOf(stage));
+        check.that("legacy role contracts retain no API fallback field",
+                !recorded.containsKey("api_fallback_profiles"));
+        check.eq("legacy absent API fallback remains reusable", null,
+                RoleContract.differenceFrom(recorded, stage, legacy));
+        check.eq("an explicit empty list is equivalent to the legacy default", null,
+                RoleContract.differenceFrom(recorded, stage,
+                        fallbackContractUser(reader, ", api_fallback_profiles: []")));
+        UserConfig ordered = fallbackContractUser(reader, ", api_fallback_profiles: [c, b]");
+        check.contains("adding API fallback changes the continuation contract",
+                RoleContract.differenceFrom(recorded, stage, ordered), "api_fallback_profiles changed");
+        Map<String, Object> withFallback = RoleContract.of(stage.name(), stage.role(),
+                ordered.policy().roles().get(stage.role()), reader, ordered);
+        withFallback.putAll(RoleContract.routingOf(stage));
+        check.eq("an unchanged declared API fallback remains reusable", null,
+                RoleContract.differenceFrom(withFallback, stage, ordered));
+        check.contains("reordering API fallback invalidates continuation reuse",
+                RoleContract.differenceFrom(withFallback, stage,
+                        fallbackContractUser(reader, ", api_fallback_profiles: [b, c]")),
+                "api_fallback_profiles changed");
+        check.contains("removing API fallback invalidates continuation reuse",
+                RoleContract.differenceFrom(withFallback, stage, legacy), "api_fallback_profiles changed");
+    }
+
+    private UserConfig fallbackContractUser(Profile reader, String fallback) {
+        Policy policy = Policy.parse("""
+                version: 1
+                roles:
+                  reviewer: { profiles: [a, b, c], strategy: first%s }
+                """.formatted(fallback), "policy.yaml");
+        return new UserConfig(Path.of("."), policy, Map.of(reader.name(), reader), Map.of(), true);
+    }
+
+    private void repairPreviewChecks(Check check) {
+        var plan = new dev.oseer.run.CallPlan(Workflow.builtIn(), stage -> false);
+        // implement, review(fail), repair, review(pass), visual QA: five paid calls.
+        check.eq("a five-call cap can finish one review repair and visual QA", true,
+                branch(plan, 5, "full", "review").get("reachable_under_cap"));
+        check.eq("four calls cannot finish that same branch", false,
+                branch(plan, 4, "full", "review").get("reachable_under_cap"));
+        check.eq("full mode refuses the four-call repair branch", false,
+                branch(plan, 4, "full", "review").get("repair_allowed_under_cap"));
+        check.eq("partial mode can fund repair and review with four calls", true,
+                branch(plan, 4, "partial", "review").get("repair_allowed_under_cap"));
+        check.eq("partial permission does not claim the entire branch can finish", false,
+                branch(plan, 4, "partial", "review").get("reachable_under_cap"));
+        // implement, failing free gate, repair, first review: three paid calls.
+        check.eq("partial gate repair includes reaching the first reviewer", true,
+                branch(plan, 3, "partial", "gates").get("repair_allowed_under_cap"));
+        check.eq("two calls cannot fund a gate repair and its first review", false,
+                branch(plan, 2, "partial", "gates").get("repair_allowed_under_cap"));
+    }
+
+    private static java.util.Map<?, ?> branch(dev.oseer.run.CallPlan plan, long cap,
+                                              String mode, String name) {
+        return ((List<?>) plan.toMap(cap, mode).get("recovery_branches")).stream()
+                .map(value -> (java.util.Map<?, ?>) value)
+                .filter(value -> name.equals(value.get("stage"))).findFirst().orElseThrow();
+    }
+
+    /**
+     * Which stop reasons a continuation is allowed to carry verdicts through. Paying an
+     * implementer and two readers again to recover a measurement is the one cost this
+     * repository promises not to charge, so the corpus refusal belongs on this side.
+     */
+    private void reuseAfterAFailureThatWasNotAboutTheWork(Check check) {
+        check.eq("a corpus that could not be written is not a verdict on the diff",
+                false, dev.oseer.run.TaskLoop.isAboutTheWork("ledger_unavailable"));
+        check.eq("nor is a ceiling the operator chose",
+                false, dev.oseer.run.TaskLoop.isAboutTheWork("budget_exhausted"));
+        check.eq("nor a vendor stopped by its own turn limit",
+                false, dev.oseer.run.TaskLoop.isAboutTheWork("turn_ceiling_reached"));
+        check.eq("a reviewer that found blockers is",
+                true, dev.oseer.run.TaskLoop.isAboutTheWork("blocking_findings_remain"));
+        check.eq("and so is a repair that went nowhere",
+                true, dev.oseer.run.TaskLoop.isAboutTheWork("repair_made_no_progress"));
+        // Every stop a vendor endpoint caused. The first of these was the one the operator was
+        // told to wait out and continue — and the continuation then threw every verdict away.
+        for (String reason : List.of("quota_exhausted", "rate_limited",
+                "failover_requires_confirmation", "role_timed_out", "vendor_call_failed",
+                "vendor_unavailable", "vendor_protocol_failed", "prompt_undeliverable",
+                "orca_worker_not_started")) {
+            check.eq(reason + " is not a verdict on the work",
+                    false, dev.oseer.run.TaskLoop.isAboutTheWork(reason));
+        }
+        // A role that failed for a reason nobody classified keeps the conservative answer.
+        check.eq("an unclassified role failure still is",
+                true, dev.oseer.run.TaskLoop.isAboutTheWork("reviewer_failed"));
+        check.eq("and so is a contract whose acceptance passed before the change",
+                true, dev.oseer.run.TaskLoop.isAboutTheWork("reproduction_passed_before_change"));
+        for (String code : List.of("role_timeout", "role_command_failed",
+                "role_vendor_unavailable",
+                "role_artifact_unparseable", "role_artifact_incomplete",
+                "role_artifact_schema_violation", "role_prompt_undeliverable",
+                "role_rate_limited", "role_quota_exhausted", "role_turns_exhausted",
+                "role_local_endpoint_unreachable", "role_local_http_error")) {
+            check.eq(code + " is an infrastructure failure", true,
+                    dev.oseer.run.TaskLoop.isInfrastructureFailure(code));
+        }
+        // An Orca worker that never took its first turn read nothing. Measured 2026-09-22: a
+        // Claude reviewer stuck on Claude Code's trust question became `reviewer_failed`, and
+        // the continuation paid the implementer and the first reader again.
+        for (String code : List.of("role_orca_start_failed", "role_orca_no_coordinator",
+                "role_orca_unavailable", "role_orca_no_worktree", "role_orca_worker_active")) {
+            check.eq(code + " is an Orca worker that never started", true,
+                    dev.oseer.run.TaskLoop.isInfrastructureFailure(code));
+        }
+        check.that("an Orca wall clock is infrastructure too",
+                dev.oseer.run.TaskLoop.isInfrastructureFailure("role_orca_timeout"));
+        // Orca 1.4.209 can fail to see a worker's first turn; Overseer then waits the role's wall
+        // clock. If that runs out with no turn ever seen, the advice is the agent's screen,
+        // not a longer wall clock.
+        check.eq("an Orca wall clock spent on a turn never seen is a worker that never started",
+                "orca_worker_not_started", dev.oseer.run.TaskLoop.reasonFor(new dev.oseer.role.RoleRunner.Outcome(
+                        false, "role_orca_timeout", "reviewer", "orca-review", "claude", java.util.Map.of(),
+                        null, java.util.Map.of("worker_turn", "unobserved")), "reviewer_failed"));
+        check.eq("one spent after the turn was seen is a timeout", "role_timed_out",
+                dev.oseer.run.TaskLoop.reasonFor(new dev.oseer.role.RoleRunner.Outcome(
+                        false, "role_orca_timeout", "reviewer", "orca-review", "claude", java.util.Map.of(),
+                        null, java.util.Map.of("worker_turn", "observed")), "reviewer_failed"));
+        // The run that found it was written before the code was classified; its continuation
+        // reads the failed step's code rather than the generic reason on disk.
+        java.util.Map<String, Object> recorded = java.util.Map.of(
+                "reason", "reviewer_failed",
+                "steps", List.of(
+                        java.util.Map.of("step", "implementer", "ok", true, "code", "ok"),
+                        java.util.Map.of("step", "reviewer", "stage", "review-second", "ok", false,
+                                "code", "role_orca_start_failed")));
+        check.eq("a recorded reviewer_failed whose step never started is read as that",
+                "orca_worker_not_started", dev.oseer.run.TaskLoop.reasonForContinuation(recorded));
+        java.util.Map<String, Object> objected = java.util.Map.of(
+                "reason", "reviewer_failed",
+                "steps", List.of(java.util.Map.of("step", "reviewer", "ok", false,
+                        "code", "role_reported_blocked")));
+        check.eq("a role that reported itself blocked keeps its reason", "reviewer_failed",
+                dev.oseer.run.TaskLoop.reasonForContinuation(objected));
+        check.eq("and a specific reason is never re-read", "blocking_findings_remain",
+                dev.oseer.run.TaskLoop.reasonForContinuation(java.util.Map.of(
+                        "reason", "blocking_findings_remain", "steps", List.of())));
+        // An Orca worker that reported failure or escalated gave its own account of the work.
+        check.that("an Orca worker's own failure report stops for a person",
+                dev.oseer.run.TaskLoop.roleFailureRequiresOperator("role_orca_reported_failure"));
+        java.util.Map<String, Object> capped = java.util.Map.of(
+                "wall_clock_capped_by", "max_elapsed_minutes", "wall_clock_minutes", 1L);
+        check.that("a direct call cut short by the chain deadline is the deadline",
+                dev.oseer.run.TaskLoop.timedOutUnderDeadline("role_timeout", capped));
+        check.that("and so is an Orca call",
+                dev.oseer.run.TaskLoop.timedOutUnderDeadline("role_orca_timeout", capped));
+        check.that("but not a timeout on the profile's own wall clock",
+                !dev.oseer.run.TaskLoop.timedOutUnderDeadline("role_orca_timeout",
+                        java.util.Map.of("wall_clock_minutes", 45L)));
+        check.that("nor a lowered call that failed for another reason",
+                !dev.oseer.run.TaskLoop.timedOutUnderDeadline("role_command_failed", capped));
+        for (String code : List.of("role_reported_blocked", "role_violated_read_only",
+                "role_unresolved", "role_orca_reported_failure", "ok")) {
+            check.eq(code + " is not classified as infrastructure", false,
+                    dev.oseer.run.TaskLoop.isInfrastructureFailure(code));
+        }
+    }
+}

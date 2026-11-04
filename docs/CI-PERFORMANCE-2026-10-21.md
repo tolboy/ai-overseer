@@ -1,6 +1,6 @@
 # Windows CI: measured cost and bounded improvements
 
-The completed [main baseline](https://github.com/tolboy/warden-agentic-sdlc/actions/runs/39658036676)
+The completed [main baseline](https://github.com/tolboy/ai-overseer/actions/runs/39658036676)
 on `99e1dc7` took 30m13s / 32m51s for Windows JDK 25 / 21, versus
 5m18s / 4m54s for Linux. Those are whole-job durations, not per-suite timings.
 The previous registry printed its result only at the end, making a long running
