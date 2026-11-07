@@ -3,6 +3,8 @@ out/
 .idea/
 *.iml
 conductor-*.log
+/debug.log
+/output/
 
 # The planning documents used to be ignored here. They are tracked now, on 2026-09-11:
 # development follows them, so they are the same account as the commit messages, one level
