@@ -203,8 +203,12 @@ final class RunLauncherUi {
             const tail=g('launch-tail');const atEnd=tail.scrollTop+tail.clientHeight>=tail.scrollHeight-8;tail.textContent=(v.narration||[]).join('\\n');if(atEnd)tail.scrollTop=tail.scrollHeight;
             const d=v.decision;g('launch-decision').hidden=!d;if(d){g('launch-decision-reason').textContent=(d.kind??'')+' · '+(d.reason??'');const c=g('launch-choice');const keep=c.value;c.replaceChildren();for(const o of d.options||[])c.append(new Option(o,o));if((d.options||[]).includes(keep))c.value=keep}waitingLink();
             g('launch-land').hidden=!(v.run_id&&v.state!=='running'&&!d&&t&&t.ok===true)}
-            function waitingLink(){const f=g('launch-decision'),b=g('launch-waiting');if(f.hidden||g('launch-job').hidden){b.hidden=true;return}const box=f.getBoundingClientRect();b.hidden=box.top<innerHeight&&box.bottom>0}
-            addEventListener('scroll',waitingLink,{passive:true});g('launch-waiting').addEventListener('click',()=>{g('launch-decision').scrollIntoView({block:'start',behavior:'smooth'});g('launch-choice').focus({preventScroll:true})});
+            // The page scrolls inside its tab panel, not the window, so a scroll listener on the
+            // window never fires: an observer on the decision itself follows any scroll container.
+            let decisionInView=false;
+            function waitingLink(){const f=g('launch-decision'),b=g('launch-waiting');b.hidden=f.hidden||g('launch-job').hidden||decisionInView}
+            if('IntersectionObserver'in window)new IntersectionObserver(es=>{for(const e of es)decisionInView=e.isIntersecting;waitingLink()}).observe(g('launch-decision'));
+            document.addEventListener('scroll',()=>{if(!('IntersectionObserver'in window)){const box=g('launch-decision').getBoundingClientRect();decisionInView=box.top<innerHeight&&box.bottom>0;waitingLink()}},{capture:true,passive:true});g('launch-waiting').addEventListener('click',()=>{g('launch-decision').scrollIntoView({block:'start',behavior:'smooth'});g('launch-choice').focus({preventScroll:true})});
             g('launch-attach').addEventListener('click',async()=>{const s=g('launch-attach-status');s.className='';try{const j=await api('attach',{project:g('launch-project').value,run_id:g('launch-attach-run').value.trim()});s.textContent='';openJob(j.id)}catch(e){s.className='bad';s.textContent=e.message}});
                         g('launch-cancel').addEventListener('click',async()=>{if(!job)return;try{await api('cancel',{job});pollJob()}catch(e){g('launch-job-status').textContent=e.message}});
             g('launch-open-run').addEventListener('click',()=>{if(jobView&&jobView.run_id)window.overseerOpenRun(jobView.run_id,job)});

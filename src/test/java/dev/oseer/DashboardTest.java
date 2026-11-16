@@ -124,6 +124,7 @@ public final class DashboardTest implements Suite {
                     launchPage.indexOf("id=\"launch-decision\"") < launchPage.indexOf("id=\"launch-now\"")
                             && launchPage.indexOf("id=\"launch-job-title\"") < launchPage.indexOf("id=\"launch-decision\""));
             check.contains("a waiting decision has a link that follows the reader", launchPage, "id=\"launch-waiting\" hidden");
+            check.contains("the link follows any scroll container, from the first render", launchPage, "new IntersectionObserver(");
             check.contains("the empty-jobs note starts hidden instead of flashing", launchPage, "id=\"launch-jobs-empty\" class=\"muted\" hidden");
             check.that("the empty-jobs note stays hidden while a job is open", launchPage.contains("length>0||!!job"));
             check.that("no cost is printed raw or with its own rounding",
