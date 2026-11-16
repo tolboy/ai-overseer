@@ -46,7 +46,7 @@ public final class ConnectionSettingsUi {
             <div class="connection-toolbar"><button id="connection-add" type="button">Добавить подключение</button><button id="connection-reload" type="button">Перечитать подключения</button></div>
             <p id="connection-feedback" class="connection-feedback muted" role="status" aria-live="polite"></p>
             <p id="connection-problems" class="connection-problems bad" hidden></p>
-            <div class="scroll"><table><thead><tr><th>Подключение · сервис</th><th>Адрес</th><th>Источник ключа</th><th>Состояние</th><th>Включено</th><th>Действия</th></tr></thead><tbody id="connection-editor-rows"></tbody></table><div id="connection-editor-empty" class="empty" hidden>Подключений пока нет. Добавьте сервис и укажите имя переменной окружения с его ключом.</div></div>
+            <div class="scroll" tabindex="0"><table><thead><tr><th>Подключение · сервис</th><th>Адрес</th><th>Источник ключа</th><th>Состояние</th><th>Включено</th><th>Действия</th></tr></thead><tbody id="connection-editor-rows"></tbody></table><div id="connection-editor-empty" class="empty" hidden>Подключений пока нет. Добавьте сервис и укажите имя переменной окружения с его ключом.</div></div>
             <form id="connection-editor-form" hidden>
             <fieldset id="connection-editor-fields">
             <h3 id="connection-form-title">Новое подключение</h3>
