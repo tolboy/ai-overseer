@@ -56,6 +56,7 @@ public final class TestMain {
                 new dev.oseer.OrcaIsolationTest(),
                 new dev.oseer.LaunchSettingsTest(),
                 new dev.oseer.DashboardTest(),
+                new dev.oseer.RunTimelineTest(),
                 new dev.oseer.ConfigViewTest(),
                 new dev.oseer.NextRunTest(),
                 new dev.oseer.SettingsEditorTest(),

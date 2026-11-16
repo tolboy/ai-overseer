@@ -109,6 +109,7 @@ public final class Dashboard implements AutoCloseable {
             int status = 200;
             String contentType = "application/json; charset=utf-8";
             String body;
+            byte[] binary = null;
             String location = null;
             if (!authority.equals(host) || (origin != null && !origin.equals("http://" + authority))) {
                 status = 403; body = "{}";
@@ -234,6 +235,30 @@ public final class Dashboard implements AutoCloseable {
                 } catch (Exception failed) {
                     status = 503; body = Json.write(Map.of("error", "Settings unavailable; inspect Overseer configuration"));
                 }
+            } else if ("/favicon.ico".equals(path)) {
+                status = 204; body = "";
+            } else if (path.startsWith("/api/runs/")) {
+                try { body = Json.write(RunTimeline.read(project, path.substring("/api/runs/".length()))); }
+                catch (RunTimeline.NotFound missing) { status = 404; body = Json.write(Map.of("error", "run_not_found")); }
+                catch (Exception unavailable) { status = 503; body = Json.write(Map.of("error", "Run unavailable")); }
+            } else if (path.startsWith("/evidence/")) {
+                // Evidence is opened by a link this page rendered, carrying the page token, so a
+                // page on another origin cannot even embed a screenshot of this project's runs.
+                Map<String, String> query = form(exchange.getRequestURI().getRawQuery() == null
+                        ? "" : exchange.getRequestURI().getRawQuery());
+                String[] parts = path.substring("/evidence/".length()).split("/", 3);
+                if (!MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),
+                        query.getOrDefault("t", "").getBytes(StandardCharsets.UTF_8))) {
+                    status = 403; body = "{}";
+                } else if (parts.length != 3) {
+                    status = 404; body = "{}";
+                } else {
+                    try {
+                        RunTimeline.Evidence evidence = RunTimeline.evidence(project, parts[0], parts[1], parts[2]);
+                        contentType = evidence.contentType(); binary = evidence.bytes(); body = "";
+                    } catch (RunTimeline.NotFound missing) { status = 404; body = "{}"; }
+                    catch (Exception unavailable) { status = 503; body = "{}"; }
+                }
             } else if ("/api/state".equals(path)) {
                 try { body = Json.write(snapshot(project, UserConfig.load(home))); }
                 catch (Exception failed) { status = 503; body = Json.write(Map.of("error", "State unavailable; inspect Overseer configuration")); }
@@ -264,8 +289,8 @@ public final class Dashboard implements AutoCloseable {
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
             exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
             exchange.getResponseHeaders().set("Content-Security-Policy",
-                    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'");
+            byte[] bytes = binary != null ? binary : body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
             try (var output = exchange.getResponseBody()) { output.write(bytes); }
         });
@@ -310,6 +335,7 @@ public final class Dashboard implements AutoCloseable {
                 row.put("strategy", role.strategy()); row.put("when", stage.when());
                 row.put("position", user.policy().workflow().rotationPositionOf(stage));
                 if (profile != null) {
+                    row.put("vendor", profile.vendor());
                     row.put("model", profile.model()); row.put("effort", profile.effort());
                     row.put("runner", profile.runner()); row.put("verified", profile.verified());
                     row.put("read_only", profile.readOnly());
@@ -320,6 +346,7 @@ public final class Dashboard implements AutoCloseable {
         state.put("plan", plan);
         List<Map<String, Object>> attempts = new ArrayList<>();
         List<Map<String, Object>> runRows = new ArrayList<>();
+        List<Map<String, Object>> openRuns = new ArrayList<>();
         long dryRunsHidden = 0L;
         Path runs = project.toAbsolutePath().normalize().resolve(".oseer/runs");
         // Never follow project-controlled links out of the evidence directory.
@@ -330,6 +357,24 @@ public final class Dashboard implements AutoCloseable {
                 for (Path directory : directories.filter(p -> Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
                     if (!directory.toRealPath().startsWith(runsRoot)) continue;
                     Path summaryFile = directory.resolve("task-run.json");
+                    String directoryName = directory.getFileName().toString();
+                    if (!Files.exists(summaryFile, LinkOption.NOFOLLOW_LINKS) && !directoryName.contains("--")
+                            && Files.isRegularFile(directory.resolve("run.json"), LinkOption.NOFOLLOW_LINKS)) {
+                        // Reserved and not summarised: still going, or stopped before it wrote
+                        // a result. The timeline tells which from its live role views.
+                        try {
+                            Path reservation = directory.resolve("run.json");
+                            if (Files.size(reservation) <= 64 * 1024 && reservation.toRealPath().startsWith(runsRoot)) {
+                                Map<String, Object> reserved = Json.parseObject(Files.readString(reservation));
+                                Map<String, Object> open = new LinkedHashMap<>();
+                                open.put("run_id", directoryName);
+                                copyScalar(open, reserved, "task_id");
+                                copyScalar(open, reserved, "reserved_at");
+                                open.put("updated_at", Files.getLastModifiedTime(directory).toInstant().toString());
+                                openRuns.add(open);
+                            }
+                        } catch (RuntimeException | IOException invalid) { /* an unreadable reservation is not a run */ }
+                    }
                     if (Files.isRegularFile(summaryFile, LinkOption.NOFOLLOW_LINKS)) {
                         try {
                             if (Files.size(summaryFile) <= 2L * 1024 * 1024
@@ -375,6 +420,8 @@ public final class Dashboard implements AutoCloseable {
         }
         pendingDecisions.sort(Comparator.comparing(row -> String.valueOf(row.get("created_at"))));
         state.put("pending_decisions", pendingDecisions);
+        openRuns.sort(Comparator.comparing(row -> String.valueOf(row.get("reserved_at")), Comparator.reverseOrder()));
+        state.put("open_runs", openRuns.stream().limit(20).toList());
         state.put("dry_runs_hidden", dryRunsHidden);
         state.put("attempts", attempts.stream().limit(200).toList());
         return state;
@@ -597,14 +644,24 @@ public final class Dashboard implements AutoCloseable {
             .cards{display:flex;flex-wrap:wrap;gap:12px}.card{background:#19232c;border:1px solid #30404d;border-radius:8px;padding:12px;flex:1;min-width:140px;overflow-wrap:anywhere}.card strong{display:block;font-size:21px}
             nav{display:flex;flex-wrap:wrap;gap:16px;margin:20px 0}a{color:#9ee9c6}.editor details{margin:12px 0}.editor summary{cursor:pointer}
             @media(max-width:700px){.next-fields{grid-template-columns:1fr}#next-run{padding:10px}#next-run fieldset{padding:8px}}
-            </style><h1>Overseer <span class="muted">/ Agents</span></h1>
+            {{SHELL_CSS}}</style>
             <meta name="oseer-token" content="{{TOKEN}}"><meta name="oseer-actions" content="{{ACTIONS}}">
             <meta name="oseer-settings-token" content="{{SETTINGS_TOKEN}}">
-            <div id="connection" role="status">Подключение…</div><p id="path" class="muted"></p>
-            <nav aria-label="Разделы панели"><a href="#next-run">Задача и бюджеты</a><a href="#personal-settings">Личные настройки</a><a href="#analytics">Аналитика</a><a href="#runs">Запуски</a></nav>
+            {{SHELL_HEADER}}
+            <main>
+            <div class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">{{SHELL_OVERVIEW}}
             <h2>Ждут вашего решения</h2><p class="muted">Кнопка открывает страницу решения или возвращает к уже открытой. Если процесс, задавший вопрос, перестал ждать, панель поднимает страницу заново и продолжает работу после ответа.</p>
             <div class="scroll"><table><thead><tr><th>Run / задача</th><th>Вопрос</th><th>Варианты</th><th>Задан</th><th>Страница</th><th></th></tr></thead><tbody id="pending"></tbody></table><div id="pending-empty" class="empty" hidden>Открытых решений нет.</div></div>
-            <p class="muted">Workflow и роли задаёт Overseer. Orca подтверждает параметры запуска. Эти данные не подтверждают фактическую модель inference и не заменяют результат проверок.</p>
+            </div>
+            <div class="panel" id="panel-runs" role="tabpanel" aria-labelledby="tab-runs">{{SHELL_RUN_DETAIL}}
+            <h2>Запуски</h2><p class="muted">Каждый запуск со своей хронологией этапов, вердиктами, стоимостью и решением. Dry-run в этот список не входят.</p>
+            <p id="dry-hidden" class="muted"></p>
+            <div class="scroll"><table><thead><tr><th>Run / задача</th><th>Исход</th><th>Review</th><th>Блокеры</th><th>Вызовы</th><th>Стоимость</th><th>Фикс</th><th>Решение</th><th>Gate</th><th>Хронология</th></tr></thead><tbody id="runs"></tbody></table><div id="runs-empty" class="empty" hidden>Запусков пока нет.</div></div>
+            <h2>Попытки исполнения</h2><input id="filter" aria-label="Фильтр запусков" placeholder="Поиск по run, роли или профилю">
+            <p class="muted">Обновление каждые 2 секунды. После остановки контроллера работа агента может продолжаться; статус становится неизвестным.</p>
+            <div class="scroll"><table><thead><tr><th>Run / этап</th><th>Роль / профиль</th><th>Runner</th><th>Запрошено</th><th>Подтверждено Orca</th><th>Состояние / dispatch</th></tr></thead><tbody id="attempts"></tbody></table><div id="empty" class="empty" hidden>Попыток пока нет. Запуск агентов из этой панели не выполняется.</div></div>
+            </div>
+            <div class="panel" id="panel-next" role="tabpanel" aria-labelledby="tab-next">
             <section id="next-run" aria-labelledby="next-title">
             <h2 id="next-title">Следующий запуск</h2>
             <p class="muted">Выберите задачу и параметры запуска. Сохранённый task use: заполнен в форме. Модель и runner выбираются через объявленный профиль; effort можно задать отдельно. Пустое поле убирает соответствующее закрепление задачи и наследует policy или профиль. Обязательные стадии определяет контракт.</p>
@@ -628,20 +685,22 @@ public final class Dashboard implements AutoCloseable {
             <label>Task use: (объединён с настройками задачи)<textarea id="next-yaml" readonly></textarea></label>
             <button type="button" data-next-copy="next-yaml">Скопировать use:</button>
             </div></section>
-            {{SETTINGS_HTML}}
+            <p class="muted">Workflow и роли задаёт Overseer. Orca подтверждает параметры запуска. Эти данные не подтверждают фактическую модель inference и не заменяют результат проверок.</p>
+            <h2>Задачи</h2><div class="scroll"><table><thead><tr><th>Задача</th><th>Риск</th><th>Вызовы</th><th>Деньги</th><th>Время</th><th>Фиксы</th><th>Visual QA</th><th>Запустится</th><th>Overlay</th></tr></thead><tbody id="tasks"></tbody></table><div id="tasks-empty" class="empty" hidden>Задач нет.</div></div>
+            </div>
+            <div class="panel" id="panel-roles" role="tabpanel" aria-labelledby="tab-roles">
             {{MODEL_SETTINGS}}
-            <details id="api-auth-settings"><summary>Ключи и адреса API</summary>{{CONNECTION_SETTINGS}}</details>
+            {{PERSONAL_HTML}}
             <h2>Состав по стадиям</h2><p class="muted">По политике, до настроек конкретной задачи: её <code>use:</code> может закрепить другой профиль, а <code>review_assurance</code> — допустить пару того же вендора. Что запустится для задачи, показывает столбец «Запустится» в таблице задач. Кто заполнит каждую стадию и почему остальные кандидаты не подходят — это ответы самого резолвера. Ридеры проверены против писателя, которого выбрал бы запуск. Источник: личное — ~/.oseer, проект — .oseer/project.yaml, задача — файл задачи, по умолчанию — встроенное значение Overseer.</p>
             <p><button id="reload-config" type="button">Перечитать настройки</button> <span id="config-status" class="muted"></span></p>
             <div class="scroll"><table><thead><tr><th>Кандидат · вендор</th><th>Модель · усилие · канал</th><th>Допуск подтверждён</th><th>Допуск</th><th>Стоимость</th></tr></thead><tbody id="stages"></tbody></table></div>
             <h2>Ограничения</h2><div class="scroll"><table><thead><tr><th>Параметр</th><th>Значение</th><th>Источник</th></tr></thead><tbody id="limits"></tbody></table></div>
-            <h2>Задачи</h2><div class="scroll"><table><thead><tr><th>Задача</th><th>Риск</th><th>Вызовы</th><th>Деньги</th><th>Время</th><th>Фиксы</th><th>Visual QA</th><th>Запустится</th><th>Overlay</th></tr></thead><tbody id="tasks"></tbody></table><div id="tasks-empty" class="empty" hidden>Задач нет.</div></div>
-            <h2>Запуски</h2><p class="muted">Каждый запуск со своей хронологией этапов, вердиктами, стоимостью и решением. Dry-run в этот список не входят.</p>
-            <p id="dry-hidden" class="muted"></p>
-            <div class="scroll"><table><thead><tr><th>Run / задача</th><th>Исход</th><th>Review</th><th>Блокеры</th><th>Вызовы</th><th>Стоимость</th><th>Фикс</th><th>Решение</th><th>Gate</th><th>Хронология</th></tr></thead><tbody id="runs"></tbody></table><div id="runs-empty" class="empty" hidden>Запусков пока нет.</div></div>
-            <h2>Попытки исполнения</h2><input id="filter" aria-label="Фильтр запусков" placeholder="Поиск по run, роли или профилю">
-            <p class="muted">Обновление каждые 2 секунды. После остановки контроллера работа агента может продолжаться; статус становится неизвестным.</p>
-            <div class="scroll"><table><thead><tr><th>Run / этап</th><th>Роль / профиль</th><th>Runner</th><th>Запрошено</th><th>Подтверждено Orca</th><th>Состояние / dispatch</th></tr></thead><tbody id="attempts"></tbody></table><div id="empty" class="empty" hidden>Попыток пока нет. Запуск агентов из этой панели не выполняется.</div></div>
+            </div>
+            <div class="panel" id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics">{{ANALYTICS_HTML}}</div>
+            <div class="panel" id="panel-connections" role="tabpanel" aria-labelledby="tab-connections">
+            <details id="api-auth-settings"><summary>Ключи и адреса API</summary>{{CONNECTION_SETTINGS}}</details>
+            </div>
+            </main>
             <p id="problems" class="bad"></p>
             <script>
             const $=id=>document.getElementById(id); let data;
@@ -722,17 +781,24 @@ public final class Dashboard implements AutoCloseable {
             let costText=cost==null?'—':String(cost);if(unpriced)costText+=' · '+unpriced+' без цены';
             const outcome=(r.ok===true?'ok':r.ok===false?'нет':'—')+(r.reason?' · '+r.reason:'');
             [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'да':r.candidate_review_passed===false?'нет':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costText,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
-            const td=document.createElement('td');td.append(timeline(r));tr.append(td);body.append(tr)}
+            const td=document.createElement('td');td.append(timeline(r));tr.append(td);const first=tr.firstChild,button=document.createElement('button');button.type='button';button.className='linkish';button.textContent=first.textContent;button.title='Открыть хронологию запуска';button.addEventListener('click',()=>window.overseerOpenRun&&overseerOpenRun(r.run_id));first.replaceChildren(button);body.append(tr)}
             $('runs-empty').hidden=runs.length>0;$('dry-hidden').textContent=data.dry_runs_hidden?('Скрыто dry-run: '+data.dry_runs_hidden):''}
             const states={running:'В работе',completed:'Завершено',failed:'Ошибка',needs_you:'Нужен ответ',dry_run:'Dry run',unknown_controller_stopped:'Контроллер остановлен · агент не проверен'};
-            function draw(){if(!data)return;drawPending();drawRuns();const q=$('filter').value.toLowerCase();const rows=data.attempts.filter(r=>JSON.stringify(r).toLowerCase().includes(q));
+            function draw(){if(!data)return;drawPending();drawRuns();if(window.overseerShellDraw)overseerShellDraw();const q=$('filter').value.toLowerCase();const rows=data.attempts.filter(r=>JSON.stringify(r).toLowerCase().includes(q));
             table('attempts',rows.map(r=>{const l=r.launch,e=l?.effective;return [r.workflow_run_id+' / '+r.stage,r.role+' / '+r.profile,r.runner+(r.runner==='orca'&&!r.cost_known?' · стоимость неизвестна':''),(r.model??(r.model_note==='agent_default'?'модель агента по умолчанию':'по умолчанию'))+' · '+(r.effort_requested??'effort не задан'),l?.status==='matched'?(e?.model??'не задана')+' · '+(e?.effort??'effort неизвестен'):(l?.status??'не подтверждено'),(states[r.view_state]??r.view_state)+' / '+(r.orca_dispatch_id??'—')+(r.agent_blocked_on?' · не стартовал: '+(r.agent_blocked_on==='folder_trust'?'вопрос о доверии к папке':r.agent_blocked_on==='cli_update_prompt'?'предложение обновить CLI':r.agent_blocked_on)+(r.resolution?' — '+r.resolution:''):'')]}));$('empty').hidden=rows.length>0;
             $('path').textContent=data.project+' · '+data.config_home;$('problems').textContent=Object.entries(data.problems).map(([k,v])=>k+': '+v).join('; ')}
             $('filter').addEventListener('input',draw);
             async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error('unavailable');data=await response.json();draw();$('connection').textContent='Данные обновлены · '+new Date(data.observed_at).toLocaleTimeString();$('connection').className=''}catch(e){$('connection').textContent='Нет связи · показаны последние полученные данные';$('connection').className='bad'}finally{setTimeout(refresh,2000)}}refresh();
             {{SETTINGS_SCRIPT}}
+            {{SHELL_SCRIPT}}
             </script></html>
             """.replace("{{BUDGET_HTML}}", DashboardControls.BUDGET_HTML)
-            .replace("{{SETTINGS_HTML}}", DashboardControls.HTML)
-            .replace("{{SETTINGS_SCRIPT}}", DashboardControls.SCRIPT);
+            .replace("{{PERSONAL_HTML}}", DashboardControls.HTML.substring(0, DashboardControls.HTML.indexOf("<section id=\"analytics\"")))
+            .replace("{{ANALYTICS_HTML}}", DashboardControls.HTML.substring(DashboardControls.HTML.indexOf("<section id=\"analytics\"")))
+            .replace("{{SHELL_CSS}}", DashboardShell.CSS)
+            .replace("{{SHELL_HEADER}}", DashboardShell.HEADER)
+            .replace("{{SHELL_OVERVIEW}}", DashboardShell.OVERVIEW)
+            .replace("{{SHELL_RUN_DETAIL}}", DashboardShell.RUN_DETAIL)
+            .replace("{{SETTINGS_SCRIPT}}", DashboardControls.SCRIPT)
+            .replace("{{SHELL_SCRIPT}}", DashboardShell.SCRIPT);
 }
