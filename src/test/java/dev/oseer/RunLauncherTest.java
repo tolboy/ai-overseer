@@ -158,6 +158,23 @@ public final class RunLauncherTest implements Suite {
         check.eq("attaching runs nothing", "finished", attached.get("state"));
         check.rejects("an unknown run cannot be attached", "no such run", () -> launcher.attach(Map.of("project", repo.toString(), "run_id", "run-nope")));
 
+        // A restarted dashboard lists the jobs it had and re-attaches to their runs.
+        for (int i = 0; i < 100 && Files.readString(home.resolve("ui-jobs").resolve(String.valueOf(slow.get("id"))).resolve(RunLauncher.JOB_RECORD)).contains("\"running\""); i++) Thread.sleep(50);
+        RunLauncher restarted = new RunLauncher(home, repo, List.of("sh", script.toString(), log.toString()));
+        check.eq("a restarted dashboard lists the jobs it had", 4, restarted.jobs().size());
+        Map<String, Object> again = restarted.job(job);
+        check.eq("a restored job keeps its state", "finished", again.get("state"));
+        check.eq("a restored job keeps its run", fresh.get("run_id"), again.get("run_id"));
+        check.eq("a restored job reads its result back", true, again.get("result") instanceof Map<?, ?> result ? result.get("ok") : null);
+        check.eq("a restored cancel stays cancelled", "cancelled", restarted.job(String.valueOf(slow.get("id"))).get("state"));
+        check.eq("a restored job's project still serves its timeline", repo.toRealPath(), restarted.projectOf(job));
+        Path record = home.resolve("ui-jobs").resolve(job).resolve(RunLauncher.JOB_RECORD);
+        Files.writeString(record, Files.readString(record).replace("\"finished\"", "\"running\""));
+        Map<String, Object> interrupted = new RunLauncher(home, repo, List.of("sh", script.toString(), log.toString())).job(job);
+        check.eq("a job a dead dashboard left running is shown as stopped", "stopped", interrupted.get("state"));
+        check.contains("and says why", String.valueOf(interrupted.get("note")), "restarted");
+        check.that("the record keeps no argv or goal", !Files.readString(record).contains("--goal-file") && !Files.readString(record).contains("argv"));
+
         // Answers and lands are validated before anything starts.
         check.rejects("an answer needs a pending decision", "no pending decision",
                 () -> launcher.answer(Map.of("project", repo.toString(), "run_id", "run-none", "decision", "abort")));

@@ -52,6 +52,7 @@ public final class RunLauncher implements AutoCloseable {
             "(?i)(sk-[A-Za-z0-9_-]{8,}|xai-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|bearer\\s+[A-Za-z0-9._-]{8,}"
                     + "|(api[_-]?key|token|secret|password)\\s*[=:]\\s*\\S+)");
     static final int MAX_JOBS = 50;
+    public static final String JOB_RECORD = "job.json";
     static final int TAIL_LINES = 120;
     static final Duration PREVIEW_TTL = Duration.ofMinutes(15);
     static final Duration PREVIEW_TIMEOUT = Duration.ofMinutes(3);
@@ -79,8 +80,11 @@ public final class RunLauncher implements AutoCloseable {
         volatile String state = "running"; volatile Integer exit; volatile Instant ended;
         volatile boolean cancelled; volatile Map<String, Object> result; volatile String note;
         Job(String id, String kind, String label, Path project, Path dir, List<List<String>> chain, String runId) {
+            this(id, kind, label, project, dir, chain, runId, Instant.now());
+        }
+        Job(String id, String kind, String label, Path project, Path dir, List<List<String>> chain, String runId, Instant started) {
             this.id = id; this.kind = kind; this.label = label; this.project = project; this.dir = dir;
-            this.chain = chain; this.runId = runId; this.started = Instant.now();
+            this.chain = chain; this.runId = runId; this.started = started;
         }
         boolean live() { return "running".equals(state); }
         Map<String, Object> summary() { return summaryOf(this); }
@@ -104,6 +108,76 @@ public final class RunLauncher implements AutoCloseable {
         this.home = home.toAbsolutePath().normalize();
         this.defaultProject = defaultProject == null ? null : defaultProject.toAbsolutePath().normalize();
         this.command = List.copyOf(command);
+        restore();
+    }
+
+    // ---------------------------------------------------------------- persistence
+
+    /**
+     * Each job keeps a small record beside its step files, so a restarted dashboard lists the
+     * jobs it had and re-attaches to their runs. Only identity and outcome are kept: the argv
+     * stays in memory, and the narration and result are read back from the step files.
+     */
+    private void persist(Job job) {
+        Map<String, Object> record = new LinkedHashMap<>();
+        record.put("id", job.id); record.put("kind", job.kind); record.put("label", job.label);
+        record.put("project", job.project.toString()); record.put("steps", (long) job.chain.size());
+        record.put("step", (long) job.step); record.put("run_id", job.runId); record.put("state", job.state);
+        record.put("exit_code", job.exit == null ? null : (long) job.exit);
+        record.put("started_at", job.started.toString());
+        record.put("ended_at", job.ended == null ? null : job.ended.toString());
+        record.put("note", job.note);
+        try {
+            Files.createDirectories(job.dir);
+            dev.oseer.json.JsonFile.writeAtomically(job.dir.resolve(JOB_RECORD), record);
+        } catch (IOException ignored) {
+            // A job that cannot be recorded still runs; it is only absent after a restart.
+        }
+    }
+
+    /** Jobs a previous dashboard recorded. One that was still running is shown as interrupted. */
+    private void restore() {
+        Path root = home.resolve("ui-jobs");
+        if (!Files.isDirectory(root)) return;
+        List<Job> found = new ArrayList<>();
+        try (Stream<Path> dirs = Files.list(root)) {
+            for (Path dir : dirs.toList()) {
+                Path file = dir.resolve(JOB_RECORD);
+                if (!Files.isRegularFile(file)) continue;
+                try {
+                    Map<String, Object> r = Json.parseObject(Files.readString(file, StandardCharsets.UTF_8));
+                    String id = String.valueOf(r.get("id"));
+                    if (!id.equals(dir.getFileName().toString()) || !id.matches("job-[0-9a-f]{10}")) continue;
+                    Path project = Path.of(String.valueOf(r.get("project")));
+                    if (!project.isAbsolute()) continue;
+                    int steps = r.get("steps") instanceof Number n ? Math.max(0, Math.min(16, n.intValue())) : 0;
+                    List<List<String>> chain = new ArrayList<>();
+                    for (int i = 0; i < steps; i++) chain.add(List.of());
+                    String runId = r.get("run_id") instanceof String text && RunTimeline.RUN_ID.matcher(text).matches() ? text : null;
+                    Job job = new Job(id, String.valueOf(r.get("kind")), String.valueOf(r.get("label")), project, dir,
+                            chain, runId, Instant.parse(String.valueOf(r.get("started_at"))));
+                    job.step = r.get("step") instanceof Number n ? Math.max(0, Math.min(steps, n.intValue())) : 0;
+                    job.exit = r.get("exit_code") instanceof Number n ? n.intValue() : null;
+                    job.ended = r.get("ended_at") instanceof String text ? Instant.parse(text) : null;
+                    job.note = r.get("note") instanceof String text ? text : null;
+                    String state = String.valueOf(r.get("state"));
+                    if ("running".equals(state)) {
+                        state = "stopped";
+                        job.note = "the dashboard restarted while this job ran; the run's own state is in its timeline";
+                        if (job.ended == null) job.ended = Instant.ofEpochMilli(Files.getLastModifiedTime(file).toMillis());
+                    }
+                    job.state = Set.of("finished", "failed", "stopped", "cancelled").contains(state) ? state : "stopped";
+                    if (steps > 0) job.result = lastJson(dir.resolve("stdout-" + Math.min(job.step, steps - 1) + ".json"));
+                    found.add(job);
+                } catch (Exception unreadable) {
+                    // A damaged record hides that one job; it never stops the dashboard.
+                }
+            }
+        } catch (IOException ignored) {
+            return;
+        }
+        found.sort(java.util.Comparator.comparing(job -> job.started));
+        for (Job job : found.subList(Math.max(0, found.size() - MAX_JOBS), found.size())) jobs.put(job.id, job);
     }
 
     // ---------------------------------------------------------------- inspect
@@ -353,6 +427,7 @@ public final class RunLauncher implements AutoCloseable {
             job.ended = job.started;
             jobs.put(id, job);
         }
+        persist(job);
         return job.view();
     }
 
@@ -421,6 +496,7 @@ public final class RunLauncher implements AutoCloseable {
                 jobs.remove(oldest);
             }
         }
+        persist(job);
         Job running = job;
         Thread.ofPlatform().daemon(true).name("oseer-ui-" + job.id).start(() -> drive(running));
         return job;
@@ -443,6 +519,7 @@ public final class RunLauncher implements AutoCloseable {
                 builder.environment().put("OSEER_CONFIG_HOME", home.toString());
                 Process process = builder.start();
                 job.process = process;
+                persist(job);
                 int code = process.waitFor();
                 job.exit = code;
                 job.result = lastJson(out);
@@ -459,6 +536,8 @@ public final class RunLauncher implements AutoCloseable {
         } finally {
             job.ended = Instant.now();
             job.process = null;
+            try { viewOf(job); } catch (RuntimeException ignored) { } // learns the run id from the narration
+            persist(job);
         }
     }
 
