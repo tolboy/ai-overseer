@@ -193,6 +193,23 @@ A product defect is never lowered. The vendor artifact is left as filed.
 nothing: `reproduction_check.status` is `enforced_by_oseer_run`, or `not_declared` when
 omitted (acceptance strength is then unchecked).
 
+Optional task `mode: quick|bug|task|refactor` is a preset for the shape of the work. It
+fills only what the task leaves unset and adds the requirement that kind of work needs;
+an explicit value in the task always wins.
+
+| mode | presets | requires |
+|---|---|---|
+| `quick` | risk `low`, `max_fix_attempts: 1`, `max_role_runs: 3` | — |
+| `bug` | — | `reproduce` (a command red on the unchanged code) |
+| `task` | — (the same as no mode) | — |
+| `refactor` | risk `medium` when the project default is `low` | `defaults.baseline_checks`; an explicit `risk: low` is refused |
+
+The run summary records `mode`. `oseer do --mode` writes it into a contract the same
+invocation drafted (after `risk:`), validates the result, and leaves the file as it was
+when the mode does not fit; an existing contract without that mode is refused as
+`task_mode_conflict`, never rewritten. The dashboard saves it through the task settings
+edit (`changes.mode`, `null` removes it).
+
 **A task with no executable acceptance criterion is not accepted.** This is not pedantry:
 every known successful agent deployment works on mechanically checkable work, and the task
 linter is the place where that requirement becomes mandatory rather than aspirational.
@@ -394,6 +411,8 @@ answered `retry` or `switch`, reuses the verdicts that still describe the tree.
 oseer setup                create a starter ~/.oseer; never overwrites
 oseer profiles             which profiles load, which are eligible, and why not
 oseer profiles --verify N  run profile N's own probe; stamps verified_on when it passes
+oseer init --scan          print what init would infer (build, checks, scopes, evidence)
+                            as JSON; writes nothing
 oseer init                 create .oseer/project.yaml, inferring checks from package.json,
                             build.gradle(.kts), pom.xml, Cargo.toml or Makefile
 oseer pilot prepare        write a reviewable offline pilot bundle from an explicit JSON
@@ -404,6 +423,8 @@ oseer do "<goal>"          the whole workflow: isolation (Orca), a task, the loo
                             before a human. --project DIR --scope NAME --in-place --dry-run
                             --init-repo --draft-only --goal-file FILE --quiet
                             --prepare off|auto|always (default off)
+                            --mode quick|bug|task|refactor (written into a drafted
+                            contract only)
 oseer validate <task>      check project.yaml, the task, the profiles and the policy
 oseer gates <task>         preflight and machine gates, no vendors and no cost
 oseer visual-qa <task>     start the preview, screenshot, assert control visibility

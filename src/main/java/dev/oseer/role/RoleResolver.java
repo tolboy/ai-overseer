@@ -188,6 +188,9 @@ public final class RoleResolver {
         if (eligible.isEmpty()) {
             throw new Unresolvable("no eligible profile for role " + role + ": " + rejected, rejected);
         }
+        // Standby fallbacks fill a stage only through failover, or when nothing else is eligible.
+        List<Profile> starters = eligible.stream().filter(p -> !roleSpec.standby(p.name())).toList();
+        if (!starters.isEmpty()) eligible = new ArrayList<>(starters);
         int index = roleSpec.strategy().equals("first") ? 0 : Math.floorMod(rotation, eligible.size());
         Profile chosen = eligible.get(index);
         return new Resolution(chosen, Map.copyOf(rejected), assurances.get(chosen.name()));

@@ -93,6 +93,7 @@ public final class PlannerTest implements Suite {
             failoverThenProtocolKeepsEvidenceNames(check, sandbox, home);
             ledgerCountsPlanner(check, sandbox, home);
             planReviewChecks(check, sandbox, home);
+            preparationHonorsCliCallLimit(check, sandbox, home);
             prewrittenContractStillRedrafts(check, sandbox, home);
             preparationStopReplans(check, sandbox, home);
             redraftDoesNotFreezeFirstDraftVisualQa(check, sandbox, home);
@@ -1624,6 +1625,42 @@ public final class PlannerTest implements Suite {
                 review:
                   required_for_risk: [medium, high]
                 """.formatted(planner, reviewer));
+    }
+
+    private void preparationHonorsCliCallLimit(Check check, Path sandbox, Path home) throws Exception {
+        Path project = sandbox.resolve("limited-plan");
+        scaffoldProject(project);
+        Path reviews = sandbox.resolve("limited-review-count");
+        writeReviewerProfile(home, "limited-review", "plan-review-fail", reviews, 1);
+        writeReviewingPolicy(home, "stub-plan", "limited-review");
+        UserConfig user = UserConfig.load(home);
+
+        DoCommand.Outcome refused = new DoCommand(new ProcessRunner()).run(new DoCommand.Options(
+                project, GOAL, "app", "low", "hello", "one-call-plan", "HEAD", true, false,
+                false, false, false, true, null, "always", null, 1L, null), user);
+        check.eq("the call cap must fit both required preparation roles", "budget_insufficient_to_finish", refused.code());
+        check.that("no planner is paid for a plan that cannot be reviewed",
+                !Files.exists(project.resolve(".oseer/runs/one-call-plan/prompts/planner.md")));
+
+        DoCommand.Outcome capped = new DoCommand(new ProcessRunner()).run(new DoCommand.Options(
+                project, GOAL, "app", "low", "hello", "two-call-plan", "HEAD", true, false,
+                false, false, false, true, null, "always", null, 2L, null), user);
+        check.eq("preparation cannot pay for redraft after using both calls", "budget_exhausted", capped.code());
+        check.eq("the stop counts both paid preparation calls", 2L, capped.report().get("preparation_role_runs"));
+        check.eq("the retained draft carries the actual call cap", 2L,
+                new ConfigLoader().load(project, "hello").resolved().budget().maxRoleRuns());
+        ApprovalStore decisions = new ApprovalStore(project);
+        HumanDecision pending = decisions.read("two-call-plan");
+        HumanDecision replan = decisions.resolve(pending.runId(), pending.updatedAt().toString(), "replan", "test", "review again");
+        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+                (root, gate) -> null, home);
+        Map<String, Object> continued = Main.startAdvance(project, replan, new String[] {"--no-orca-gate"}, env);
+        check.eq("replanning cannot bypass the chain's call cap", "budget_exhausted", continued.get("reason"));
+        Map<String, Object> summary = Json.parseObject(Files.readString(project.resolve(".oseer/runs")
+                .resolve(String.valueOf(continued.get("run_id"))).resolve("task-run.json")));
+        check.eq("a replan refused by the budget pays for no calls", 0L, summary.get("role_runs"));
+        check.eq("the preparation stop retains its original chain", pending.runId(), summary.get("continued_from"));
+        writePolicy(home, "stub-plan");
     }
 
     private void writeReviewerProfile(Path home, String name, String stubMode, Path counter,

@@ -101,6 +101,10 @@ public final class Yaml {
     }
 
     /** Remove a `#` comment, but only when the `#` is outside quotes. */
+    public static String withoutLineComment(String line) {
+        return stripComment(line, 1);
+    }
+
     private static String stripComment(String line, int number) {
         boolean inSingle = false;
         boolean inDouble = false;

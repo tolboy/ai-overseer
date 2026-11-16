@@ -22,19 +22,7 @@ public final class ProjectInitializer {
         if (Files.exists(projectFile)) throw new IOException(projectFile + " already exists; init never overwrites it");
 
         Detection detection = detect(root);
-        List<String> scopes = new ArrayList<>();
-        for (String candidate : List.of("src", "test", "tests", "app", "lib", "docs", "scripts")) {
-            if (Files.exists(root.resolve(candidate))) scopes.add(candidate);
-        }
-        if (scopes.isEmpty()) {
-            if (Files.isRegularFile(root.resolve("Makefile"))) scopes.add("Makefile");
-            // A project from scratch has no directory to protect: whatever the agent creates
-            // is new, and a blast radius of `src` would refuse the package.json it has to
-            // write. This is the one case where the whole repository is the honest boundary,
-            // and it is written into the contract rather than assumed.
-            else if (detection.greenfield()) scopes.add(RepoPath.WHOLE_REPOSITORY);
-            else scopes.add("src");
-        }
+        List<String> scopes = scopes(root, detection);
 
         Files.createDirectories(oseer.resolve("tasks"));
         Files.createDirectories(oseer.resolve("runs"));
@@ -122,6 +110,47 @@ public final class ProjectInitializer {
         return new Result(projectFile, task, detection.name(), detection.checks());
     }
 
+    /** What {@code init} would write, without writing anything: the first-run scan. */
+    public record Scan(String detectedBuild, List<String> checks, List<String> scopes, boolean greenfield,
+                       List<String> evidence) {}
+
+    public Scan scan(Path root) throws IOException {
+        root = root.toAbsolutePath().normalize();
+        Detection detection = detect(root);
+        return new Scan(detection.name(), detection.checks(), scopes(root, detection), detection.greenfield(),
+                detection.evidence());
+    }
+
+    private static List<String> scopes(Path root, Detection detection) throws IOException {
+        List<String> scopes = new ArrayList<>();
+        for (String candidate : List.of("src", "test", "tests", "app", "lib", "docs", "scripts", "cmd", "internal", "pkg")) {
+            if (Files.exists(root.resolve(candidate))) scopes.add(candidate);
+        }
+        boolean python = detection.name().startsWith("python");
+        boolean go = detection.name().equals("go");
+        if (python || go) {
+            try (var entries = Files.list(root)) {
+                for (Path entry : entries.sorted().toList()) {
+                    String name = entry.getFileName().toString();
+                    if (name.startsWith(".") || scopes.contains(name)) continue;
+                    if (python && Files.isRegularFile(entry.resolve("__init__.py"))) scopes.add(name);
+                    else if (Files.isRegularFile(entry) && name.endsWith(python ? ".py" : ".go")) scopes.add(name);
+                }
+            }
+        }
+        if (scopes.isEmpty()) {
+            if (go) scopes.add("go.mod");
+            else if (Files.isRegularFile(root.resolve("Makefile"))) scopes.add("Makefile");
+            // A project from scratch has no directory to protect: whatever the agent creates
+            // is new, and a blast radius of `src` would refuse the package.json it has to
+            // write. This is the one case where the whole repository is the honest boundary,
+            // and it is written into the contract rather than assumed.
+            else if (detection.greenfield()) scopes.add(RepoPath.WHOLE_REPOSITORY);
+            else scopes.add("src");
+        }
+        return scopes;
+    }
+
     private static void writeRunsIgnore(Path oseer) throws IOException {
         Files.writeString(oseer.resolve("runs/.gitignore"), """
                 *
@@ -145,20 +174,27 @@ public final class ProjectInitializer {
                 if (scripts.get(name) instanceof String) commands.add("npm run " + name);
             }
             if (commands.isEmpty()) throw new IOException("package.json has no test/check/build script to gate");
-            return new Detection("npm", commands);
+            return new Detection("npm", commands, "package.json");
         }
         boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
         if (Files.isRegularFile(root.resolve(windows ? "gradlew.bat" : "gradlew"))) {
             String wrapper = windows ? ".\\gradlew.bat" : "./gradlew";
-            return new Detection("gradle-wrapper", List.of(wrapper + " test", wrapper + " build"));
+            return new Detection("gradle-wrapper", List.of(wrapper + " test", wrapper + " build"),
+                    windows ? "gradlew.bat" : "gradlew");
         }
         if (Files.isRegularFile(root.resolve("pom.xml"))) {
             String wrapper = Files.isRegularFile(root.resolve(windows ? "mvnw.cmd" : "mvnw"))
                     ? (windows ? ".\\mvnw.cmd" : "./mvnw") : "mvn";
-            return new Detection("maven", List.of(wrapper + " test", wrapper + " package"));
+            List<String> evidence = wrapper.equals("mvn") ? List.of("pom.xml")
+                    : List.of("pom.xml", windows ? "mvnw.cmd" : "mvnw");
+            return new Detection("maven", List.of(wrapper + " test", wrapper + " package"), false, evidence);
         }
-        if (Files.isRegularFile(root.resolve("Cargo.toml"))) return new Detection("cargo", List.of("cargo test"));
-        if (Files.isRegularFile(root.resolve("Makefile"))) return new Detection("make", List.of("make test"));
+        if (Files.isRegularFile(root.resolve("Cargo.toml"))) return new Detection("cargo", List.of("cargo test"), "Cargo.toml");
+        if (Files.isRegularFile(root.resolve("go.mod")))
+            return new Detection("go", List.of("go vet ./...", "go test ./..."), "go.mod");
+        Detection python = python(root, windows ? "python" : "python3");
+        if (python != null) return python;
+        if (Files.isRegularFile(root.resolve("Makefile"))) return new Detection("make", List.of("make test"), "Makefile");
         // No build marker AND no files: a project that does not exist yet, which is a
         // different thing from one whose build system is unrecognised. Guessing a check for
         // the second produces a gate that fails for reasons unrelated to the task, so it is
@@ -219,7 +255,67 @@ public final class ProjectInitializer {
             #   this project has a shape.
             """;
 
-    private record Detection(String name, List<String> checks, boolean greenfield) {
-        Detection(String name, List<String> checks) { this(name, checks, false); }
+    private record Detection(String name, List<String> checks, boolean greenfield, List<String> evidence) {
+        Detection(String name, List<String> checks, String evidence) { this(name, checks, false, List.of(evidence)); }
+        Detection(String name, List<String> checks, boolean greenfield) { this(name, checks, greenfield, List.of()); }
+    }
+
+    /**
+     * A Python project is recognised by a marker that names its test runner, or by test files
+     * the standard library runner finds. pytest is chosen only when the project says so
+     * (pytest.ini, conftest.py, a [tool.pytest] or [pytest] section); otherwise unittest, which
+     * needs nothing installed. A Python project with no tests at all has no check to infer and
+     * is refused like any other unrecognised build.
+     */
+    private static Detection python(Path root, String command) throws IOException {
+        List<String> markers = new ArrayList<>();
+        for (String name : List.of("pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini", "conftest.py")) {
+            if (Files.isRegularFile(root.resolve(name))) markers.add(name);
+        }
+        boolean pytest = markers.contains("pytest.ini") || markers.contains("conftest.py")
+                || mentions(root.resolve("pyproject.toml"), "[tool.pytest") || mentions(root.resolve("tox.ini"), "[pytest]")
+                || mentions(root.resolve("setup.cfg"), "[tool:pytest]");
+        List<String> tests = new ArrayList<>();
+        List<String> checks = new ArrayList<>();
+        boolean discoversFromRoot = false;
+        for (Path directory : List.of(root, root.resolve("tests"), root.resolve("test"))) {
+            if (!Files.isDirectory(directory)) continue;
+            boolean hasTests = false;
+            try (var entries = Files.list(directory)) {
+                for (Path entry : entries.sorted().toList()) {
+                    String name = entry.getFileName().toString();
+                    if (!name.endsWith(".py") || !Files.isRegularFile(entry)) continue;
+                    boolean testName = pytest ? name.startsWith("test_") || name.endsWith("_test.py")
+                            : name.startsWith("test") && name.substring(0, name.length() - 3).matches("[a-zA-Z_]\\w*");
+                    if (testName) {
+                        tests.add(root.relativize(entry).toString().replace('\\', '/'));
+                        hasTests = true;
+                    }
+                }
+            }
+            if (hasTests && !pytest) {
+                if (directory.equals(root) || Files.isRegularFile(directory.resolve("__init__.py"))) {
+                    discoversFromRoot = true;
+                } else {
+                    checks.add(command + " -m unittest discover -q -s " + directory.getFileName());
+                }
+            }
+        }
+        if (pytest) {
+            List<String> evidence = new ArrayList<>(markers); evidence.addAll(tests);
+            return new Detection("python-pytest", List.of(command + " -m pytest -q"), false, List.copyOf(evidence));
+        }
+        if (tests.isEmpty()) return null;
+        if (discoversFromRoot) checks.addFirst(command + " -m unittest discover -q");
+        List<String> evidence = new ArrayList<>(markers); evidence.addAll(tests);
+        return new Detection("python-unittest", List.copyOf(checks), false, List.copyOf(evidence));
+    }
+
+    private static boolean mentions(Path file, String text) {
+        try {
+            return Files.isRegularFile(file) && Files.size(file) < 512 * 1024 && Files.readString(file).contains(text);
+        } catch (IOException | RuntimeException unreadable) {
+            return false;
+        }
     }
 }

@@ -21,8 +21,10 @@ public final class RoleRosterEditor {
             try (var channel=FileChannel.open(home.resolve(".model-settings.lock"),StandardOpenOption.CREATE,StandardOpenOption.WRITE);
                  var lock=channel.tryLock()) {
                 if(lock==null)return refused(409,"settings_busy");
-                return save(payload);
+                return "fallbacks".equals(payload==null?null:payload.get("action"))?saveFallbacks(payload):save(payload);
             }
+        } catch(NotIndependent shared) {
+            return new Outcome(400,Map.of("ok",false,"code","reviewer_not_independent","role",shared.role,"writer_vendor",shared.vendor));
         } catch(Changed conflict) { return refused(409,"settings_changed_reload"); }
         catch(Unbound unavailable) { return refused(400,"cli_model_binding_required"); }
         catch(dev.oseer.execution.EffortCapabilities.Unsupported unsupported) { return refused(400,"effort_unsupported"); }
@@ -39,6 +41,7 @@ public final class RoleRosterEditor {
         if(user.policy()==null || !user.policy().roles().containsKey(role) || !Set.of("first","rotate").contains(strategy))throw new Invalid();
         if(!(payload.get("slots") instanceof List<?> slots) || slots.isEmpty() || slots.size()>64)throw new Invalid();
         var names=new ArrayList<String>();var pending=new ArrayList<String>();
+        var effective=new LinkedHashMap<String,Profile>();
         var updates=new LinkedHashMap<Path,String>();
         var oldBytes=new LinkedHashMap<Path,byte[]>();
         var expected=new LinkedHashMap<Path,String>();expected.put(policyFile,text(payload,"revision"));
@@ -96,22 +99,38 @@ public final class RoleRosterEditor {
             if(effortChanged || modelChanged)capabilities.require(old,model,finalEffort,effortChanged);
             if(!Objects.equals(probe,old.verificationProbe()))yaml=replace(yaml,List.of("verification","probe"),Json.write(probe));
             boolean edited=!yaml.equals(original);
+            Profile next=old;
             if(edited) {
                 if(yaml.lines().anyMatch(line->line.startsWith("verification:"))) {
                     yaml=replace(yaml,List.of("verification","verified_on"),null);
                     yaml=replace(yaml,List.of("verification","connection_fingerprint"),null);
                 } else yaml+="\nverification:\n  status: unverified\n";
-                var next=Profile.parse(yaml,file.toString());
+                next=Profile.parse(yaml,file.toString());
                 if(next.connectionRef()!=null)next=next.withConnection(user.connections().get(next.connectionRef()),home);
                 if(next.verified())throw new Invalid();
                 updates.put(file,yaml);
             }
+            effective.put(name,next);
             if(edited || !old.verified())pending.add(name);
         }
         String policy=Files.readString(policyFile);
         policy=replace(policy,List.of("roles",role,"profiles"),Json.write(names));
         policy=replace(policy,List.of("roles",role,"strategy"),Json.write(strategy));
-        Policy.parse(policy,policyFile.toString());updates.put(policyFile,policy);
+        // A fallback the roster no longer lists cannot stay a fallback; the rest keep their order.
+        var spec=user.policy().roles().get(role);
+        if(!spec.apiFallbackProfiles().isEmpty()) {
+            var kept=spec.apiFallbackProfiles().stream().filter(names::contains).toList();
+            if(spec.fallbackStandby() && names.stream().allMatch(kept::contains))
+                return refused(400,"fallback_needs_primary");
+            if(!kept.equals(spec.apiFallbackProfiles())) {
+                policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),kept.isEmpty()?null:Json.write(kept));
+                if(kept.isEmpty())policy=replace(policy,List.of("roles",role,"fallback_standby"),null);
+            }
+        }
+        Policy updatedPolicy=Policy.parse(policy,policyFile.toString());
+        var profiles=new LinkedHashMap<>(user.profiles());profiles.putAll(effective);
+        requireIndependence(updatedPolicy,role,profiles);
+        updates.put(policyFile,policy);
         // Recheck every revision immediately before the first write. No partial validation edits.
         for(var entry:expected.entrySet())expect(entry.getKey(),entry.getValue());
         for(Path file:updates.keySet())oldBytes.put(file,Files.readAllBytes(file));
@@ -127,11 +146,95 @@ public final class RoleRosterEditor {
         return new Outcome(200,Map.of("ok",true,"code","role_composition_saved","role",role,"pending_verification",pending,
                 "profiles",names,"revisions",revisions,"policy_revision",ModelSettingsService.revision(policyFile)));
     }
+    /**
+     * The fallbacks of one role and what a vendor failure does there, saved on their own so a
+     * roster draft in another card is never written with them. A fallback the role does not
+     * list yet is appended to its profiles; every fallback is held in standby
+     * ({@code fallback_standby: true}), so it runs only when a call fails. A judging role that
+     * must be independent refuses a fallback from the writer's vendor: it could never run.
+     * Admission is unchanged: an unverified fallback is saved and reported, and the run's
+     * resolver still checks verification, independence and budget before a switch.
+     */
+    private Outcome saveFallbacks(Map<String,Object> payload)throws Exception {
+        keys(payload,Set.of("action","revision","role","fallbacks","on_vendor_failure"));
+        Path policyFile=home.resolve("policy.yaml");expect(policyFile,text(payload,"revision"));
+        var user=UserConfig.load(home);String role=text(payload,"role");
+        if(user.policy()==null || !user.policy().roles().containsKey(role))throw new Invalid();
+        String mode=text(payload,"on_vendor_failure");
+        if(!Set.of("inherit","auto","confirm","stop").contains(mode))throw new Invalid();
+        var spec=user.policy().roles().get(role);
+        if(!(payload.get("fallbacks") instanceof List<?> raw)
+                || raw.size()>Math.max(4,spec.apiFallbackProfiles().size()))throw new Invalid();
+        var fallbacks=new ArrayList<String>();
+        for(Object item:raw){
+            if(!(item instanceof String name) || fallbacks.contains(name))throw new Invalid();
+            Profile profile=user.profiles().get(name);
+            if(profile==null || !role.equals(profile.role()))throw new Invalid();
+            fallbacks.add(name);
+        }
+        var profiles=new ArrayList<String>(spec.profiles());
+        // A standby fallback the operator drops leaves the roster too; otherwise it would
+        // silently join the rotation as a primary once fallback_standby no longer hides it.
+        if(spec.fallbackStandby())
+            for(String old:spec.apiFallbackProfiles())if(!fallbacks.contains(old))profiles.remove(old);
+        for(String name:fallbacks)if(!profiles.contains(name))profiles.add(name);
+        if(!fallbacks.isEmpty() && profiles.stream().allMatch(fallbacks::contains))
+            return refused(400,"fallback_needs_primary");
+        if(spec.requireIndependentVendor() && !"implementer".equals(role)) {
+            String writerVendor=firstConfiguredWriterVendor(user.policy(),user.profiles());
+            for(String name:fallbacks)
+                if(writerVendor!=null && writerVendor.equals(user.profiles().get(name).independenceVendor()))
+                    return new Outcome(400,Map.of("ok",false,"code","fallback_not_independent","role",role,"profile",name,"writer_vendor",writerVendor));
+        }
+        String policy=Files.readString(policyFile);
+        policy=replace(policy,List.of("roles",role,"profiles"),Json.write(profiles));
+        policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),fallbacks.isEmpty()?null:Json.write(fallbacks));
+        policy=replace(policy,List.of("roles",role,"fallback_standby"),fallbacks.isEmpty()?null:"true");
+        policy=replace(policy,List.of("roles",role,"on_vendor_failure"),"inherit".equals(mode)?null:Json.write(mode));
+        requireIndependence(Policy.parse(policy,policyFile.toString()),role,user.profiles());
+        expect(policyFile,text(payload,"revision"));
+        ModelCheck.atomicWrite(policyFile,policy);
+        var pending=fallbacks.stream().filter(name->!user.profiles().get(name).verified()).toList();
+        return new Outcome(200,Map.of("ok",true,"code","fallbacks_saved","role",role,"fallbacks",fallbacks,
+                "profiles",profiles,"pending_verification",pending,"policy_revision",ModelSettingsService.revision(policyFile)));
+    }
+
+    /**
+     * A judging role that must be independent of the writer keeps at least one candidate from
+     * another vendor than the implementer the next run starts with. The resolver refuses a
+     * same-vendor reader at run time anyway; refusing the save says so where the choice is
+     * made instead of as `independent_review_unavailable` after the writer was paid.
+     * Only the roles this save changes are judged, so an unrelated edit is never blocked by
+     * an existing configuration.
+     */
+    private static void requireIndependence(Policy policy,String role,Map<String,Profile> profiles){
+        String writer=firstConfiguredWriterVendor(policy,profiles);
+        if(writer==null)return;
+        for(var spec:policy.roles().values()){
+            if(spec.role().equals("implementer") || !spec.requireIndependentVendor())continue;
+            if(!role.equals("implementer") && !role.equals(spec.role()))continue;
+            boolean independent=spec.profiles().stream().map(profiles::get).filter(Objects::nonNull)
+                    .anyMatch(p->spec.role().equals(p.role()) && p.readOnly() && !writer.equals(p.independenceVendor()));
+            if(!independent)throw new NotIndependent(spec.role(),writer);
+        }
+    }
+
+    static String firstConfiguredWriterVendor(Policy policy,Map<String,Profile> profiles){
+        var writers=policy.roles().get("implementer");
+        if(writers==null)return null;
+        return writers.profiles().stream().filter(name->!writers.standby(name))
+                .map(profiles::get).filter(Objects::nonNull).filter(p->"implementer".equals(p.role()))
+                .map(Profile::independenceVendor).findFirst().orElse(null);
+    }
     private static String replace(String yaml,List<String> path,String value){return ModelSettingsService.replaceValue(yaml,path,value);}
     private static void keys(Map<String,Object> map,Set<String> allowed){if(map==null || !allowed.containsAll(map.keySet()))throw new Invalid();}
     private static String text(Map<String,Object> map,String key){if(!(map.get(key) instanceof String value) || value.isBlank() || value.length()>512 || value.chars().anyMatch(c->c<32))throw new Invalid();return value;}
     private static void expect(Path file,String revision)throws Exception{if(!ModelSettingsService.revision(file).equals(revision))throw new Changed();}
     private static Outcome refused(int status,String code){return new Outcome(status,Map.of("ok",false,"code",code));}
+    static final class NotIndependent extends RuntimeException {
+        final String role,vendor;
+        NotIndependent(String role,String vendor){super(null,null,false,false);this.role=role;this.vendor=vendor;}
+    }
     private static final class Invalid extends RuntimeException {}
     private static final class Changed extends RuntimeException {}
     private static final class Unbound extends RuntimeException {}

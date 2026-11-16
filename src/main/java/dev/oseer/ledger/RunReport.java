@@ -632,7 +632,7 @@ public final class RunReport {
             if (!(item instanceof Map<?, ?> raw)) continue;
             Map<String, Object> stage = cast(raw);
             String who = "role".equals(stage.get("kind"))
-                    ? text(stage.getOrDefault("vendor", "?")) + "/" + text(stage.getOrDefault("model", "?"))
+                    ? dev.oseer.config.Profile.modelLabel(text(stage.getOrDefault("vendor", "?")), text(stage.getOrDefault("model", "?")))
                     : "-";
             Map<String, Object> tokens = stage.get("tokens") instanceof Map<?, ?> map
                     ? cast(map) : Map.of();
@@ -655,7 +655,7 @@ public final class RunReport {
                 if (!(item instanceof Map<?, ?> raw)) continue;
                 Map<String, Object> row = cast(raw);
                 out.append(String.format(Locale.ROOT, "%-32s %5s %5s  %-8s  %-18s %8s%n",
-                        clip(text(row.get("vendor")) + "/" + text(row.get("model")), 32),
+                        clip(dev.oseer.config.Profile.modelLabel(text(row.get("vendor")), text(row.get("model"))), 32),
                         text(row.get("calls")), text(row.get("failed_calls")),
                         money(row.get("cost_usd")),
                         text(row.get("input_tokens")) + "/" + text(row.get("output_tokens")),

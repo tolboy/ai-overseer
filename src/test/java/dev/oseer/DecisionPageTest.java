@@ -311,7 +311,7 @@ public final class DecisionPageTest implements Suite {
     }
 
     private HttpResponse<String> postForm(String url, String body, String origin) throws Exception {
-        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).header("Accept-Language", "ru")
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (origin != null) request.header("Origin", origin);
@@ -460,7 +460,7 @@ public final class DecisionPageTest implements Suite {
             check.contains("with what the reader said", body, "moves the toggle button up 30px");
             check.contains("and what it suggested", body, "Reserve the greeting");
             check.contains("the candidate can be tried", body, "Открыть кандидата в браузере Orca");
-            HttpResponse<String> tried = http.send(HttpRequest.newBuilder(URI.create(page.url() + "try"))
+            HttpResponse<String> tried = http.send(HttpRequest.newBuilder(URI.create(page.url() + "try")).header("Accept-Language", "ru")
                     .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
             check.eq("the try button asks the previewer", "yes", opened[0]);
             check.contains("and says where the candidate is", tried.body(), "http://127.0.0.1:4173/");
@@ -620,7 +620,7 @@ public final class DecisionPageTest implements Suite {
             check.contains("and this run's screenshot", shown.body(), "1280x720.png");
             check.that("but not another run's with a longer id", !shown.body().contains("other.png"));
 
-            HttpResponse<byte[]> image = http.send(HttpRequest.newBuilder(URI.create(page.url() + "shot/0")).build(),
+            HttpResponse<byte[]> image = http.send(HttpRequest.newBuilder(URI.create(page.url() + "shot/0")).header("Accept-Language", "ru").build(),
                     HttpResponse.BodyHandlers.ofByteArray());
             check.eq("the screenshot is served", 200, image.statusCode());
             check.that("byte for byte", java.util.Arrays.equals(Files.readAllBytes(shot), image.body()));
@@ -628,7 +628,7 @@ public final class DecisionPageTest implements Suite {
             check.eq("nor is anything without the token", 404,
                     get(page.url().replaceAll("/[^/]+/$", "/guess/")).statusCode());
 
-            HttpResponse<String> foreign = http.send(HttpRequest.newBuilder(URI.create(page.url() + "decide"))
+            HttpResponse<String> foreign = http.send(HttpRequest.newBuilder(URI.create(page.url() + "decide")).header("Accept-Language", "ru")
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .header("Origin", "http://127.0.0.1:1")
                     .POST(HttpRequest.BodyPublishers.ofString("choice=accept&expected=" + pending.updatedAt()))
@@ -756,6 +756,9 @@ public final class DecisionPageTest implements Suite {
             check.eq("and says the waiter will", true, watched.get("waiter"));
             check.that("and does not print a command that would start a second run",
                     !watched.containsKey("command"));
+            Map<String, Object> launcher = Main.startAdvance(root, pending,
+                    new String[] {"--start-unless-waiting"}, null);
+            check.eq("the browser also leaves a live supervisor to start the next run", true, launcher.get("waiter"));
         }
     }
 
@@ -1284,14 +1287,14 @@ public final class DecisionPageTest implements Suite {
     }
 
     private HttpResponse<String> get(String url) throws Exception {
-        return http.send(HttpRequest.newBuilder(URI.create(url)).build(), HttpResponse.BodyHandlers.ofString());
+        return http.send(HttpRequest.newBuilder(URI.create(url)).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> post(String pageUrl, String choice, String note, String expected)
             throws Exception {
         String body = "choice=" + choice + "&note=" + java.net.URLEncoder.encode(note, StandardCharsets.UTF_8)
                 + "&expected=" + java.net.URLEncoder.encode(expected, StandardCharsets.UTF_8);
-        return http.send(HttpRequest.newBuilder(URI.create(pageUrl + "decide"))
+        return http.send(HttpRequest.newBuilder(URI.create(pageUrl + "decide")).header("Accept-Language", "ru")
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }
@@ -1302,7 +1305,7 @@ public final class DecisionPageTest implements Suite {
                 + "&note=" + java.net.URLEncoder.encode(note, StandardCharsets.UTF_8)
                 + "&expected=" + java.net.URLEncoder.encode(expected, StandardCharsets.UTF_8)
                 + "&finding=" + java.net.URLEncoder.encode(finding, StandardCharsets.UTF_8);
-        return http.send(HttpRequest.newBuilder(URI.create(pageUrl + "decide"))
+        return http.send(HttpRequest.newBuilder(URI.create(pageUrl + "decide")).header("Accept-Language", "ru")
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }

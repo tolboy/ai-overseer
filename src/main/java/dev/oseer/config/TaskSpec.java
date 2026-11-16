@@ -32,7 +32,33 @@ public record TaskSpec(
         String reviewAssurance,
         RunOverride use,
         List<String> manualVerification,
-        List<String> priorWriters) {
+        List<String> priorWriters,
+        String mode) {
+
+    /**
+     * Task modes: named presets for the shape of a piece of work, borrowed from the way people
+     * already describe it. A mode fills only what the task leaves unset and adds a requirement
+     * where the kind of work needs one; an explicit value in the task always wins.
+     *
+     *   quick     risk low (so the policy's review_required usually skips paid reviewers),
+     *             one fix round, three role calls
+     *   bug       requires `reproduce`: a command that fails on the unchanged code, so the
+     *             fix is proven against a red check before any vendor is paid
+     *   task      no preset; the same as omitting `mode`
+     *   refactor  behaviour must not change: requires `defaults.baseline_checks` in
+     *             project.yaml, and the risk is at least medium so the change is reviewed
+     */
+    public static final Set<String> MODES = Set.of("quick", "bug", "task", "refactor");
+
+    public TaskSpec(String id, String goal, List<String> nonGoals, String risk,
+                    Values.Selector scope, Values.Selector checks, List<String> acceptance,
+                    List<String> reproduce, Authority authority, VisualQa visualQa, Budget budget,
+                    Long maxFixAttempts, Long timeoutMinutes, String reviewAssurance,
+                    RunOverride use, List<String> manualVerification, List<String> priorWriters) {
+        this(id, goal, nonGoals, risk, scope, checks, acceptance, reproduce, authority, visualQa,
+                budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use, manualVerification,
+                priorWriters, null);
+    }
 
     public TaskSpec {
         if (use == null) use = RunOverride.NONE;
@@ -47,7 +73,7 @@ public record TaskSpec(
                     RunOverride use, List<String> manualVerification) {
         this(id, goal, nonGoals, risk, scope, checks, acceptance, reproduce, authority, visualQa,
                 budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use, manualVerification,
-                List.of());
+                List.of(), null);
     }
 
     /**
@@ -113,7 +139,7 @@ public record TaskSpec(
     private static final Set<String> TOP_LEVEL = Set.of(
             "version", "id", "goal", "non_goals", "risk", "scope", "checks", "acceptance", "reproduce",
             "authority", "visual_qa", "budgets", "max_fix_attempts", "timeout_minutes",
-            "review_assurance", "use", "manual_verification", "prior_writers");
+            "review_assurance", "use", "manual_verification", "prior_writers", "mode");
     private static final Set<String> AUTHORITY_KEYS = Set.of("workspace_write", "network", "land");
     private static final Set<String> VISUAL_KEYS =
             Set.of("required", "scenarios", "start", "url", "evidence");
@@ -132,6 +158,10 @@ public record TaskSpec(
         String goal = root.requireString("goal");
         List<String> nonGoals = root.optStringList("non_goals", List.of());
         String risk = root.requireEnum("risk", ProjectConfig.RISK_LEVELS, null);
+        String mode = root.requireEnum("mode", MODES, null);
+        if ("refactor".equals(mode) && "low".equals(risk)) {
+            root.collector().add("mode: refactor is reviewed work; risk must be medium or high, got low");
+        }
 
         Values.Selector scope = root.selector("scope");
         if (scope.isEmpty()) {
@@ -175,7 +205,7 @@ public record TaskSpec(
 
         Values budgetNode = root.optMap("budgets").rejectUnknownKeys(BUDGET_KEYS);
         Budget budget = new Budget(
-                budgetNode.optInt("max_role_runs", 6, 1, 50),
+                budgetNode.optInt("max_role_runs", "quick".equals(mode) ? 3 : 6, 1, 50),
                 budgetNode.optDouble("max_cost_usd", 20.0, 0.0, 10000.0),
                 budgetNode.has("max_elapsed_minutes")
                         ? budgetNode.optInt("max_elapsed_minutes", 60, 1, 1440) : null,
@@ -187,7 +217,12 @@ public record TaskSpec(
                 budgetNode.requireEnum("cost_cap", COST_CAPS, budgetNode.has("max_cost_usd") ? "threshold" : "off"));
 
         Long maxFixAttempts = root.has("max_fix_attempts")
-                ? root.optInt("max_fix_attempts", 2, 0, 10) : null;
+                ? Long.valueOf(root.optInt("max_fix_attempts", 2, 0, 10)) : null;
+        if (maxFixAttempts == null && "quick".equals(mode)) maxFixAttempts = 1L;
+        if ("bug".equals(mode) && (reproduce == null || reproduce.isEmpty())) {
+            root.collector().add("mode: bug needs reproduce: a command that fails on the unchanged code "
+                    + "and passes once the bug is fixed (it must also be an acceptance command)");
+        }
         Long timeoutMinutes = root.has("timeout_minutes")
                 ? root.optInt("timeout_minutes", 30, 1, 240) : null;
         String reviewAssurance = root.requireEnum("review_assurance", REVIEW_ASSURANCES, "independent");
@@ -210,9 +245,10 @@ public record TaskSpec(
         }
 
         root.throwIfAny();
+        if (risk == null && "quick".equals(mode)) risk = "low";
         return new TaskSpec(id, goal, List.copyOf(nonGoals), risk, scope, checks, acceptance, reproduce,
                 authority, visualQa, budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use,
-                manualVerification, List.copyOf(priorWriters));
+                manualVerification, List.copyOf(priorWriters), mode);
     }
 
     /**
@@ -267,6 +303,10 @@ public record TaskSpec(
             commands = new ArrayList<>(allCommands);
         }
 
+        if ("refactor".equals(mode) && baselineCommands.isEmpty()) {
+            collector.add("mode: refactor needs defaults.baseline_checks in project.yaml, so the behaviour "
+                    + "the change must keep is checked before the first vendor and again at the gate");
+        }
         List<String> reproduceCommands = resolveCommands(reproduce, false, project, collector);
         for (String command : reproduceCommands) {
             if (!commands.contains(command)) {
@@ -302,7 +342,9 @@ public record TaskSpec(
                 id,
                 goal,
                 nonGoals,
-                risk != null ? risk : project.defaultRisk(),
+                risk != null ? risk
+                        : "refactor".equals(mode) && "low".equals(project.defaultRisk()) ? "medium"
+                        : project.defaultRisk(),
                 project.baseRef(),
                 List.copyOf(paths),
                 List.copyOf(baselineCommands),

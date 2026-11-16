@@ -3,6 +3,7 @@ package dev.oseer.config;
 import dev.oseer.execution.ModelCheck;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.yaml.Yaml;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -77,11 +78,19 @@ public final class ModelSettingsService {
             row.put("configuration",connection==null?"unbound":classifier.fingerprint(connection));profiles.add(row);
         }
         List<Map<String, Object>> routes = new ArrayList<>();
-        if (user.policy() != null) for (var role : user.policy().roles().values())
-            routes.add(Map.of("role", role.role(), "profiles", role.profiles(), "strategy", role.strategy()));
+        if (user.policy() != null) for (var role : user.policy().roles().values()) {
+            Map<String, Object> route = new LinkedHashMap<>();
+            route.put("role", role.role()); route.put("profiles", role.profiles()); route.put("strategy", role.strategy());
+            route.put("fallbacks", role.apiFallbackProfiles()); route.put("fallback_standby", role.fallbackStandby());
+            route.put("on_vendor_failure", role.vendorFailureMode() == null ? "inherit" : role.vendorFailureMode());
+            route.put("require_independent_vendor", role.requireIndependentVendor());
+            route.put("not_independent", notIndependent(user, role));
+            routes.add(route);
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", true); result.put("config_home", home.toString());
         result.put("profiles", profiles); result.put("routes", routes);
+        result.put("on_vendor_failure_default", user.policy() == null ? "stop" : user.policy().vendorFailureMode());
         result.put("policy_revision", revision(home.resolve("policy.yaml")));
         result.put("settings_revision", revision(CheckSettings.file(home)));
         result.put("check", CheckSettings.load(home).toMap()); result.put("checking", checking.get());
@@ -109,6 +118,11 @@ public final class ModelSettingsService {
                 if(!checking.compareAndSet(false,true))return refused(409,"check_already_running");
                 try{return new Outcome(200,"refresh-vendors".equals(action)?vendors.refresh(ids):vendors.check(ids));}
                 finally{checking.set(false);}
+            }
+            if("save-fallbacks".equals(action)){
+                var body=new LinkedHashMap<String,Object>(payload);body.put("action","fallbacks");
+                var saved=new RoleRosterEditor(home).apply(body);
+                return new Outcome(saved.status(),saved.report());
             }
             if("save-composition".equals(action)){
                 var saved=new RoleRosterEditor(home).apply(payload);
@@ -352,6 +366,19 @@ public final class ModelSettingsService {
                 lines.add(end, " ".repeat(indent) + key + ": " + value);
                 return String.join("\n", lines) + "\n";
             }
+            if (part < path.size() - 1) {
+                String line = lines.get(found);
+                String withoutComment = Yaml.withoutLineComment(line);
+                int colon = indent + key.length();
+                if (withoutComment.substring(colon + 1).stripLeading().startsWith("{")) {
+                    Map<String, Object> entry = Yaml.parseMapping(withoutComment);
+                    if (!replaceInlineValue(entry, path.subList(part, path.size()), value)) return yaml;
+                    String comment = line.substring(withoutComment.length());
+                    lines.set(found, line.substring(0, colon + 1) + " " + Json.write(entry.get(key))
+                            + (comment.isEmpty() ? "" : " " + comment));
+                    return String.join(yaml.contains("\r\n") ? "\r\n" : "\n", lines);
+                }
+            }
             int limit = found + 1;
             while (limit < end) {
                 String line = lines.get(limit), stripped = line.stripLeading();
@@ -366,6 +393,22 @@ public final class ModelSettingsService {
             start = found + 1; end = limit; parentIndent = indent;
         }
         throw new Invalid();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean replaceInlineValue(Map<String, Object> entry, List<String> path, String value) {
+        for (String key : path.subList(0, path.size() - 1)) {
+            if (!(entry.get(key) instanceof Map<?, ?> nested)) throw new Invalid();
+            entry = (Map<String, Object>) nested;
+        }
+        String key = path.getLast();
+        if (value == null) {
+            if (!entry.containsKey(key)) return false;
+            entry.remove(key);
+            return true;
+        }
+        Object parsed = Yaml.parseMapping("value: " + value).get("value");
+        return !java.util.Objects.equals(entry.put(key, parsed), parsed);
     }
 
     private Path profileFile(String name) {
@@ -396,4 +439,18 @@ public final class ModelSettingsService {
     private static final class Invalid extends RuntimeException {}
     private static final class Changed extends RuntimeException {}
     private static final class UnboundModel extends RuntimeException {}
+
+    /**
+     * Profiles of a judging role that share the writer's vendor. The fallback editor offers
+     * them disabled: saving one is refused (fallback_not_independent), and a choice the page
+     * already knows it will refuse should not look like a choice.
+     */
+    public static List<String> notIndependent(UserConfig user, dev.oseer.config.Policy.RoleSpec spec) {
+        if (!spec.requireIndependentVendor() || "implementer".equals(spec.role())) return List.of();
+        String writerVendor = RoleRosterEditor.firstConfiguredWriterVendor(user.policy(), user.profiles());
+        if (writerVendor == null) return List.of();
+        return user.profiles().values().stream()
+                .filter(p -> spec.role().equals(p.role()) && writerVendor.equals(p.independenceVendor()))
+                .map(Profile::name).sorted().toList();
+    }
 }

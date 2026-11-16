@@ -7,6 +7,7 @@ import dev.oseer.testing.Suite;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 public final class InitializerTest implements Suite {
     @Override public String name() { return "initializer"; }
@@ -18,6 +19,8 @@ public final class InitializerTest implements Suite {
             Files.writeString(root.resolve("package.json"), """
                     {"name":"fixture","scripts":{"test":"node --test","build":"node build.js"}}
                     """);
+            check.eq("the npm scan identifies the manifest", List.of("package.json"),
+                    new ProjectInitializer().scan(root).evidence());
             ProjectInitializer.Result result = new ProjectInitializer().initialize(root, "origin/trunk");
             check.eq("npm detected", "npm", result.detectedBuild());
             check.that("project written", Files.isRegularFile(result.projectFile()));
@@ -117,6 +120,55 @@ public final class InitializerTest implements Suite {
                 for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
             }
         }
+
+        // The first-run scan: Python and Go are recognised by what names their runner, and the
+        // scan writes nothing.
+        String python = System.getProperty("os.name").startsWith("Windows") ? "python" : "python3";
+        Path flat = Files.createTempDirectory("oseer-init-python-");
+        Files.writeString(flat.resolve("hello.py"), "def greet():\n    return 'hi'\n");
+        Files.writeString(flat.resolve("test_hello.py"), "import unittest\n");
+        var flatScan = new ProjectInitializer().scan(flat);
+        check.eq("flat Python tests use the standard library runner", List.of(python + " -m unittest discover -q"), flatScan.checks());
+        check.eq("flat Python modules are the scope", List.of("hello.py", "test_hello.py"), flatScan.scopes());
+        check.eq("the scan names the files it went by", List.of("test_hello.py"), flatScan.evidence());
+        check.that("the scan writes nothing", !Files.exists(flat.resolve(".oseer")));
+        new ProjectInitializer().initialize(flat, "HEAD");
+        check.eq("init writes what the scan showed", flatScan.checks(),
+                new ConfigLoader().load(flat, "example").resolved().acceptanceCommands());
+
+        Path pytest = Files.createTempDirectory("oseer-init-pytest-");
+        Files.writeString(pytest.resolve("pyproject.toml"), "[project]\nname='x'\n[tool.pytest.ini_options]\n");
+        Files.createDirectories(pytest.resolve("pkg"));
+        Files.writeString(pytest.resolve("pkg/__init__.py"), "");
+        var pytestScan = new ProjectInitializer().scan(pytest);
+        check.eq("pytest only when the project names it", List.of(python + " -m pytest -q"), pytestScan.checks());
+        check.eq("a package directory is the scope", List.of("pkg"), pytestScan.scopes());
+
+        Path nested = Files.createTempDirectory("oseer-init-unittest-dir-");
+        Files.createDirectories(nested.resolve("tests"));
+        Files.writeString(nested.resolve("tests/test_x.py"), "import unittest\n");
+        check.eq("a plain tests directory is discovered without requiring a package",
+                List.of(python + " -m unittest discover -q -s tests"), new ProjectInitializer().scan(nested).checks());
+        Files.writeString(nested.resolve("test_main.py"), "import unittest\n");
+        check.eq("root tests and a plain tests directory are both run",
+                List.of(python + " -m unittest discover -q", python + " -m unittest discover -q -s tests"),
+                new ProjectInitializer().scan(nested).checks());
+
+        Path untested = Files.createTempDirectory("oseer-init-python-untested-");
+        Files.writeString(untested.resolve("app.py"), "print('hi')\n");
+        Files.writeString(untested.resolve("app_test.py"), "import unittest\n");
+        check.rejects("a Python project with no tests is still refused, not guessed at",
+                "no supported build marker", () -> new ProjectInitializer().scan(untested));
+
+        Path go = Files.createTempDirectory("oseer-init-go-");
+        Files.writeString(go.resolve("go.mod"), "module example.com/x\n");
+        Files.createDirectories(go.resolve("internal"));
+        var goScan = new ProjectInitializer().scan(go);
+        check.eq("Go runs vet and test", List.of("go vet ./...", "go test ./..."), goScan.checks());
+        check.eq("Go internal is a scope", List.of("internal"), goScan.scopes());
+        Files.writeString(go.resolve("main.go"), "package main\nfunc main() {}\n");
+        check.eq("root Go source is in the contract's scope", List.of("internal", "main.go"),
+                new ProjectInitializer().scan(go).scopes());
 
         Path makeOnly = Files.createTempDirectory("oseer-init-make-");
         try {

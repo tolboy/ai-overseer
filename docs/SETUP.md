@@ -234,6 +234,93 @@ The form does not execute commands. Model variants come from declared profiles;
 custom effort does not prove model support or receive a verification stamp. The
 versioned `oseer roster` commands remain available for CLI edits.
 
+### Follow a run in the dashboard
+
+The **Runs** tab lists runs; the run id opens its timeline, also reachable as
+`#run/<run-id>` in the address bar. The **Overview** tab links the latest and the still-open
+runs. The timeline polls while a run has no summary yet and stops when it finishes.
+Evidence links serve only files a stage wrote under its own directory, by an allowlist
+(prompts, raw stdout/stderr, artifacts, gate and visual-QA reports, screenshots), with
+the page token, without following symlinks, and with credential-shaped text redacted.
+`/api/state` still carries no raw output.
+
+### Start runs from the browser
+
+`oseer dashboard` binds to 127.0.0.1 and serves a **Launch** tab (turn it off with
+`--no-launcher`). Start the dashboard from the shell or launcher that exports your API
+keys: the runs it starts inherit its environment and its `OSEER_CONFIG_HOME`.
+
+1. **Target project.** An absolute path to the top of a git repository; **Check directory**
+   shows the branch, HEAD, how many tracked files are modified and the task contracts.
+   A subdirectory or a directory outside git is refused.
+2. **What to run.** A goal (`oseer do`: task id, scope, risk, mode, planner preparation,
+   `--max-role-runs`, `--max-cost-usd`, draft-only, in-place) or a task contract
+   (`oseer run`, optionally `--continue` a run). Budgets of an existing contract are edited
+   on the Next run tab.
+3. **Vendors and gates.** Leave each stage on the policy's choice or pin a profile and an
+   effort for this run (`--use`, `--effort`); skip the Orca gate mirror if you want.
+4. **Preview plan and estimate** runs the same command with `--dry-run` and shows its
+   narration with the cast, the call bound and the estimate. A goal preview can create or reuse
+   a worktree and write the initial project and task configuration. When a planner must draft the
+   contract, the preview uses the inputs available before planning. Approve the preview and click
+   **Start**. If HEAD, the policy, a profile or a task file changed since the preview, the dashboard
+   asks for a fresh preview (`preview_stale`). A preview starts once.
+
+The job list and the job view poll every two to three seconds: state, the stage running now
+and its profile and vendor, elapsed time, reported cost, every step with failed attempts
+(HTTP status and code) and failovers, and the redacted narration tail. **Cancel job**
+sends SIGTERM (the engine records the cancel and releases its lease) and kills what is left
+after 20 seconds. One job runs per project; the engine's own lease still refuses a second
+writer. When a run stops for a person the job view shows the decision: pick an answer,
+optionally **switch vendor for a stage** (the continuation runs with `--use stage=profile`),
+and confirm continuing answers, since they can pay vendors. A run started elsewhere opens
+with **Open run** by its id. A ready run can be landed: plan only, commit, or push / pull
+request after a second confirmation.
+
+The mutating endpoints (`/api/launch/inspect|preview|start|answer|land|cancel|attach`)
+require the page token in `X-Overseer-Token`, a JSON body and the page's own origin; the
+browser never sends a command line, only fields that are validated one by one. Goals travel
+in a file, not on the command line. Job logs are under `<config home>/ui-jobs/<job>/`.
+
+### Fallback vendors
+
+**Roles and vendors → Fallback vendors** picks up to two profiles per role and what happens
+when a call fails (inherit the policy, switch automatically, ask, stop). It writes
+`api_fallback_profiles`, `fallback_standby: true` and the role's `on_vendor_failure` to
+`policy.yaml`. Initial selection prefers eligible primary profiles. After an API network
+error, timeout, rate limit, HTTP 5xx or truncated reply, the role can switch to a declared
+fallback if verification, reviewer independence and budget allow. The editor refuses a
+reviewer fallback from the writer's vendor. Startup warns when an unused standby fails its
+model check. A transient check failure can be covered by an answering standby when the role
+allows automatic failover and has room to switch. If the run stops, the Launch tab offers
+the decisions available for that stop.
+
+### Interface language and credential warnings
+
+The header's language switcher sets English or Russian (cookie `oseer_lang`; the first visit
+follows `Accept-Language`). Every string lives in the message bundles
+(`MessagesEn`/`MessagesRu`), and the test suite fails if their keys differ. When the
+dashboard's process cannot resolve a credential reference the roster needs, it warns on
+stderr at start and in a banner; `oseer doctor` reports the same list as
+`credentials_unresolved` (reference, connection, state, profiles — never a value).
+
+### Choose a task mode
+
+The **Следующий запуск** form has a **Режим задачи** select. It saves `mode:` into the
+task file through the same reviewed diff and **Apply** as budgets, and a mode the task
+cannot satisfy is explained in the preview instead. From the command line,
+`oseer do "<goal>" --mode quick|task|refactor` writes the mode into the contract that
+run drafts. For `bug`, supply a task contract with a `reproduce` command among its acceptance
+checks. Existing contracts keep their declared mode.
+See [the specification](../spec/SPEC.md#oseertasksidyaml--a-task) for what each mode sets.
+
+### Scan a new project first
+
+`oseer init --scan` prints what `init` would infer — build system, check commands, scopes
+and the files that led to each — as JSON, and writes nothing. It recognises package.json,
+Gradle, Maven, Cargo, Makefile, Go modules and Python projects (pytest when the project
+names it, otherwise unittest).
+
 ### Read results in the dashboard
 
 **Аналитика результатов** reads local `evidence.jsonl`, task summaries and decisions.

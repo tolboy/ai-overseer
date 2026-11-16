@@ -5,6 +5,9 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const source = readFileSync(new URL('../../main/java/dev/oseer/dashboard/ModelSettingsUi.java', import.meta.url), 'utf8');
+const bundle = readFileSync(new URL('../../main/java/dev/oseer/dashboard/MessagesRu.java', import.meta.url), 'utf8');
+const russian = new Map(bundle.split(/\r?\n/).map(line => line.trim().match(/^([a-z0-9_.-]+) = (.*)$/))
+  .filter(Boolean).map(([, key, value]) => [key, value]));
 const block = source.slice(source.indexOf('/*merge:start*/'), source.indexOf('/*merge:end*/'));
 assert.ok(block.length > 0 && !block.includes('\\'), 'merge block is present and free of escapes the Java text block would rewrite');
 const { mergeFields, mergeRole } = new Function(block + ';return {mergeFields, mergeRole};')();
@@ -52,7 +55,11 @@ check('settings fields merge the same way', () => {
 });
 // --- service cards read per-model receipts, accounts and missing bindings ---------------------
 const cardsStart = source.indexOf('function statusText(');
-const cards = source.slice(cardsStart, source.indexOf('function resetDrafts(', cardsStart));
+const cards = source.slice(cardsStart, source.indexOf('function resetDrafts(', cardsStart))
+  .replace(/\{\{t:([a-z0-9_.-]+)}}/g, (_, key) => {
+    assert.ok(russian.has(key), `missing Russian translation for ${key}`);
+    return russian.get(key);
+  });
 assert.ok(cardsStart > 0 && !cards.includes('\\'), 'card renderer is present and free of escapes');
 const make = (tag, text = '') => ({ tag, text, className: '', children: [], append(...items) { this.children.push(...items); }, replaceChildren() { this.children = []; } });
 const render = vendors => {

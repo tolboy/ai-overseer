@@ -58,14 +58,16 @@ final class YamlSettingsEdit {
         }
         return null;
     }
-    static String diff(String before, String after) {
-        if (before.equals(after)) return "Нет изменений.";
+    static String diff(String before, String after, String language) {
+        if (before.equals(after)) return Messages.t(language, "diff.no_changes");
         List<String> a = List.of(before.split("\r?\n", -1)), b = List.of(after.split("\r?\n", -1));
         int start = 0, tail = 0;
         while (start < a.size() && start < b.size() && a.get(start).equals(b.get(start))) start++;
         while (tail < a.size() - start && tail < b.size() - start
                 && a.get(a.size() - 1 - tail).equals(b.get(b.size() - 1 - tail))) tail++;
-        StringBuilder out = new StringBuilder("--- текущий файл\n+++ после Apply\n@@ строка " + (start + 1) + " @@\n");
+        StringBuilder out = new StringBuilder(Messages.t(language, "diff.current_file"))
+                .append('\n').append(Messages.t(language, "diff.after_apply"))
+                .append('\n').append(Messages.t(language, "diff.line")).append(' ').append(start + 1).append(" @@\n");
         for (int i = Math.max(0, start - 2); i < start; i++) out.append(' ').append(a.get(i)).append('\n');
         for (int i = start; i < a.size() - tail; i++) out.append('-').append(a.get(i)).append('\n');
         for (int i = start; i < b.size() - tail; i++) out.append('+').append(b.get(i)).append('\n');

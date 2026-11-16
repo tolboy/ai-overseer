@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -928,6 +929,7 @@ public final class TaskLoop {
                 root.relativize(loaded.taskFile()).toString().replace('\\', '/'),
                 task.acceptanceFingerprint()));
         summary.put("risk", task.risk());
+        if (loaded.task().mode() != null) summary.put("mode", loaded.task().mode());
         summary.put("dry_run", dryRun);
         summary.put("prepare", prior.mode());
         summary.put("max_fix_attempts", task.maxFixAttempts());
@@ -1202,15 +1204,25 @@ public final class TaskLoop {
                 : Map.of();
         if (!dryRun && readiness != null) {
             List<dev.oseer.config.Profile> checks = new ArrayList<>();
+            var selected = new LinkedHashSet<String>();
+            RoleResolver.Writers wouldWrite = initialPreviewWriters(task);
             for (Workflow.Stage stage : workflow.stages()) {
                 if (stage.kind() != Workflow.Kind.ROLE || skipReason(stage, user, task, reviewByRisk) != null) continue;
+                RoleResolver.Writers judgedBy = stage.onFindings() == null ? RoleResolver.Writers.NONE : wouldWrite;
                 dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                        RoleResolver.Writers.NONE, workflow.rotationPositionOf(stage));
-                if (chosen != null) checks.add(chosen);
+                        judgedBy, workflow.rotationPositionOf(stage));
+                if (chosen != null) {
+                    checks.add(chosen);
+                    selected.add(chosen.name());
+                    wouldWrite = withPreviewWriter(wouldWrite, chosen);
+                }
                 if (stage.fixWith() != null) {
                     dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix", stage.fixWith(),
                             RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
-                    if (fixer != null) checks.add(fixer);
+                    if (fixer != null) {
+                        checks.add(fixer);
+                        selected.add(fixer.name());
+                    }
                     var fixSpec = user.policy() == null ? null : user.policy().roles().get(stage.fixWith());
                     if (!selectModels && fixSpec != null) for (String name : fixSpec.profiles()) {
                         var alternative = user.profiles().get(name);
@@ -1231,7 +1243,13 @@ public final class TaskLoop {
             if(!effortWarnings.isEmpty()){checked=new LinkedHashMap<>(checked);checked.put("effort_warnings",effortWarnings);}
             summary.put("model_check", checked);
             dev.oseer.execution.ModelCheck.atomicWrite(ledger.runDirectory().resolve("model-check.json"), Json.write(checked));
-            if (!Boolean.TRUE.equals(checked.get("ok"))) {
+            var standby = Boolean.TRUE.equals(checked.get("ok")) ? null
+                    : dev.oseer.execution.ModelCheck.standbyReadiness(checked, user.policy(), selected, java.util.Set.of());
+            if (standby != null) {
+                RunReadiness.narrateStandbys(standby, progress::line);
+                if (!standby.covered().isEmpty()) summary.put("model_check_covered_by_fallback", standby.covered());
+                if (!standby.unavailable().isEmpty()) summary.put("model_check_unavailable_standbys", standby.unavailable());
+            } else if (!Boolean.TRUE.equals(checked.get("ok"))) {
                 progress.line("check stopped the run; restore authentication/model access and check again");
                 return stop(ledger, summary, "model_check_failed", steps, 0, budget);
             }
@@ -1910,6 +1928,7 @@ public final class TaskLoop {
                 row.put("model", chosen.model());
                 row.put("effort", chosen.effort());
                 row.put("runner", chosen.runner());
+                putFallbacks(row, user, stage.role(), chosen.name());
                 // Named by the overlay is not the same as changed by it. A refused overlay
                 // is about to stop the run, and a row that still said "this run only" would
                 // be describing a dispatch that is not going to happen.
@@ -1990,6 +2009,7 @@ public final class TaskLoop {
             row.put("model", chosen.model());
             row.put("effort", chosen.effort());
             row.put("runner", chosen.runner());
+            putFallbacks(row, user, stage.role(), chosen.name());
             if (judgedBy != RoleResolver.Writers.NONE) {
                 row.put("judged_against", judgedBy.profiles().stream().sorted().toList());
             }
@@ -2081,6 +2101,16 @@ public final class TaskLoop {
         return result;
     }
 
+    /** The role's declared fallbacks other than the chosen profile, for the cast a person approves. */
+    private static void putFallbacks(Map<String, Object> row, UserConfig user, String role, String chosen) {
+        var spec = user.policy() == null || role == null ? null : user.policy().roles().get(role);
+        if (spec == null || spec.apiFallbackProfiles().isEmpty()) return;
+        List<String> standby = spec.apiFallbackProfiles().stream().filter(name -> !name.equals(chosen)).toList();
+        if (standby.isEmpty()) return;
+        row.put("fallbacks", standby);
+        row.put("on_vendor_failure", user.policy().vendorFailureModeFor(role));
+    }
+
     /** The cast as a person reads it: one stage per line, aligned, with the overlay marked. */
     private void printCast(List<Map<String, Object>> rows) {
         if (rows.isEmpty()) return;
@@ -2100,13 +2130,19 @@ public final class TaskLoop {
                 progress.line(line.toString());
                 continue;
             }
-            line.append(row.get("profile")).append("  ").append(row.get("vendor"));
-            if (row.get("model") != null) line.append('/').append(row.get("model"));
+            line.append(row.get("profile")).append("  ").append(dev.oseer.config.Profile.modelLabel(
+                    row.get("vendor") == null ? null : String.valueOf(row.get("vendor")),
+                    row.get("model") == null ? null : String.valueOf(row.get("model"))));
             if (row.get("effort") != null) line.append(' ').append(row.get("effort"));
             if (!"direct".equals(row.get("runner"))) line.append(" · ").append(row.get("runner"));
             if (Boolean.TRUE.equals(row.get("from_overlay"))) line.append("   (this run only)");
             if (Boolean.FALSE.equals(row.get("from_overlay"))) line.append("   (overlay refused)");
             progress.line(line.toString());
+            if (row.get("fallbacks") instanceof List<?> standby && !standby.isEmpty()) {
+                progress.line(" ".repeat(6 + width + 2) + "standby " + String.join(" -> ",
+                        standby.stream().map(String::valueOf).toList()) + "   (on failure: "
+                        + row.get("on_vendor_failure") + ")");
+            }
         }
     }
 
@@ -4934,6 +4970,14 @@ public final class TaskLoop {
         Budget budget = new Budget(ceilings.maxRoleRuns(), ceilings.enforcedMaxCostUsd(),
                 ceilings.maxElapsedMinutes(), nanos);
         budget.inherit(Chain.after(root, runId));
+        return preparationGate(budget);
+    }
+
+    static RoleRunner.DispatchGate preparationGate(TaskSpec.Budget ceilings) {
+        return preparationGate(new Budget(ceilings.maxRoleRuns(), ceilings.enforcedMaxCostUsd()));
+    }
+
+    private static RoleRunner.DispatchGate preparationGate(Budget budget) {
         return new RoleRunner.DispatchGate() {
             @Override public void requireDispatch() {
                 try {

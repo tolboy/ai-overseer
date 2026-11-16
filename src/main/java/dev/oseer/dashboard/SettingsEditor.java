@@ -56,11 +56,15 @@ public final class SettingsEditor {
                         String candidate, Map<String, Object> result) {}
 
     public Map<String, Object> preview(Map<String, Object> request) throws IOException {
-        return prepare(request, false).result();
+        return preview(request, Messages.DEFAULT);
+    }
+
+    Map<String, Object> preview(Map<String, Object> request, String language) throws IOException {
+        return prepare(request, false, language).result();
     }
 
     public Map<String, Object> apply(Map<String, Object> request) throws IOException {
-        Edit edit = prepare(request, true);
+        Edit edit = prepare(request, true, Messages.DEFAULT);
         if (!edit.result().get("preview_sha256").equals(request.get("preview_sha256")))
             throw new NextRun.Conflict();
         if (!Boolean.TRUE.equals(edit.result().get("apply_allowed")))
@@ -77,7 +81,7 @@ public final class SettingsEditor {
     }
 
     @SuppressWarnings("unchecked")
-    private Edit prepare(Map<String, Object> request, boolean applying) throws IOException {
+    private Edit prepare(Map<String, Object> request, boolean applying, String language) throws IOException {
         Set<String> keys = applying ? Set.of("task", "target", "revision", "changes", "preview_sha256")
                 : Set.of("task", "target", "revision", "changes");
         requireKeys(request, keys);
@@ -97,7 +101,13 @@ public final class SettingsEditor {
         Map<String, Object> changed = map(request.get("changes"));
         Map<String, Object> replacements = new LinkedHashMap<>();
         if (target.equals("task")) {
-            requireKeys(changed, Set.of("use", "limits"));
+            requireKeys(changed, Set.of("use", "limits", "mode"));
+            if (changed.containsKey("mode")) {
+                Object mode = changed.get("mode");
+                if (mode != null && !(mode instanceof String text && TaskSpec.MODES.contains(text)))
+                    throw new IllegalArgumentException("mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES));
+                replacements.put("mode", mode);
+            }
             if (changed.containsKey("use")) {
                 RunOverride overlay = RunOverride.fromMap(map(changed.get("use")));
                 Map<String, Object> use = new LinkedHashMap<>();
@@ -174,9 +184,15 @@ public final class SettingsEditor {
         }
         String candidate = YamlSettingsEdit.replace(source.text(), replacements);
         if (target.equals("task")) {
-            TaskSpec parsed = TaskSpec.parse(candidate, path.toString());
-            loaded = new ConfigLoader.Loaded(loaded.root(), loaded.projectFile(), loaded.taskFile(),
-                    loaded.project(), parsed, parsed.resolve(loaded.project(), path.toString()));
+            // A mode can make a valid task invalid (bug without reproduce, refactor without a
+            // baseline); say why in the preview instead of failing as "settings unavailable".
+            try {
+                TaskSpec parsed = TaskSpec.parse(candidate, path.toString());
+                loaded = new ConfigLoader.Loaded(loaded.root(), loaded.projectFile(), loaded.taskFile(),
+                        loaded.project(), parsed, parsed.resolve(loaded.project(), path.toString()));
+            } catch (dev.oseer.config.ConfigException invalid) {
+                throw new IllegalArgumentException(invalid.getMessage());
+            }
         } else {
             Policy parsed = Policy.parse(candidate, path.toString());
             user = new UserConfig(user.home(), parsed, user.profiles(), user.problems(), true, user.connections());
@@ -189,7 +205,7 @@ public final class SettingsEditor {
         result.put("changed", differs);
         result.put("apply_allowed", differs && Boolean.TRUE.equals(preview.get("settings_ok")));
         result.put("preview_sha256", NextRun.digest((target + "\n" + task + "\n" + revision + "\n" + candidate).getBytes(StandardCharsets.UTF_8)));
-        result.put("diff", YamlSettingsEdit.diff(source.text(), candidate));
+        result.put("diff", YamlSettingsEdit.diff(source.text(), candidate, language));
         result.put("preview", preview);
         // Invocation export can express use:, but cannot express unsaved task budgets/removals.
         Map<String, Object> original = Yaml.parseMapping(source.text());

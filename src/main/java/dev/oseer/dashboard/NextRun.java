@@ -57,6 +57,7 @@ public final class NextRun {
         result.put("revision", state.revision());
         result.put("goal", task.goal());
         result.put("risk", task.risk());
+        result.put("mode", state.loaded().task().mode());
         result.put("scope", task.scopePaths());
         result.put("acceptance", task.acceptanceCommands());
         result.put("visual_qa", task.visualQa().required());

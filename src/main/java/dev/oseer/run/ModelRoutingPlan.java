@@ -65,6 +65,9 @@ final class ModelRoutingPlan {
             }
             if(eligible.isEmpty())return new Prepared(targets,checks,Map.of("stage",stage.name(),"role",stage.role(),
                     "code",pinned?"pinned_model_unavailable":"no_admissible_model","rejected_profiles",rejected));
+            var role=user.policy().roles().get(stage.role());
+            if(!pinned && role.fallbackStandby())
+                eligible.sort(Comparator.comparing(p->role.standby(p.name())));
             String configuredName=configured==null?null:configured.name();
             if(configuredName==null || eligible.stream().noneMatch(p->p.name().equals(configuredName)))configured=eligible.getFirst();
             targets.add(new TaskRouting.Target(stage.name(),stage.role(),configured,List.copyOf(eligible),Map.copyOf(rejected),pinned));
@@ -97,6 +100,10 @@ final class ModelRoutingPlan {
             if(merged.problem(t.stage(),p,user.profiles(),user)!=null)return false;
             var role=user.policy().roles().get(t.role());
             if(p.readOnly()&&role!=null&&RoleResolver.assuranceOf(role,p,user.profiles(),writers).startsWith("refused:"))return false;
+            if(role!=null && p.name().equals(choices.get(t.stage())) && role.standby(p.name())
+                    && t.candidates().stream().filter(candidate->!role.standby(candidate.name()))
+                    .anyMatch(candidate->!RoleResolver.assuranceOf(role,candidate,user.profiles(),writers).startsWith("refused:")))
+                return false;
         }
         return true;
     }

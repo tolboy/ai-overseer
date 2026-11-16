@@ -162,6 +162,8 @@ public final class RosterCommand {
             if (profile != null && profile.role().equals(stage.role())) eligible.add(name);
         }
         if (eligible.isEmpty()) return null;
+        List<String> starters = eligible.stream().filter(name -> !spec.standby(name)).toList();
+        if (!starters.isEmpty()) eligible = new ArrayList<>(starters);
         if ("first".equals(spec.strategy())) return eligible.get(0);
         return eligible.get(Math.floorMod(chain.rotationPositionOf(stage), eligible.size()));
     }

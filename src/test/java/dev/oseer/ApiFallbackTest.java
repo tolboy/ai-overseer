@@ -85,7 +85,7 @@ public final class ApiFallbackTest implements Suite {
         f.policy(List.of("backup-one", "backup-two"), "auto", 2);
         int index = 0;
         for (String code : List.of("role_api_network_error", "role_api_timeout",
-                "role_api_rate_limited", "role_api_provider_error")) {
+                "role_api_rate_limited", "role_api_provider_error", "role_api_output_truncated")) {
             Calls calls = new Calls(Map.of("primary", code));
             var result = f.run("allowed-" + index++, calls, new Gate(3));
             check.that("a declared fallback handles " + code, result.ok());
@@ -93,7 +93,7 @@ public final class ApiFallbackTest implements Suite {
                     List.of("primary", "backup-one"), calls.profiles);
         }
         for (String code : List.of("role_api_auth_invalid", "role_api_model_mismatch", "role_api_effort_mismatch",
-                "role_api_profile_changed", "role_api_output_truncated", "role_api_protocol_error",
+                "role_api_profile_changed", "role_api_protocol_error",
                 "role_api_interrupted", "role_api_model_identity_unknown", "role_api_connection_disabled",
                 "role_api_artifact_failure", "role_api_response_unreadable", "role_api_request_invalid",
                 "role_artifact_unparseable", "role_artifact_incomplete",

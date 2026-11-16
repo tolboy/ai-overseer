@@ -102,6 +102,16 @@ public final class Preparation {
     /** The ceilings of a chain this preparation spends for; none for a first plan. */
     private RoleRunner.DispatchGate chain = () -> { };
     private Workspace workspace = Workspace.NONE;
+    private String draftMode;
+    private Long draftRoleRuns;
+    private Double draftCostUsd;
+
+    Preparation withDraftOptions(String mode, Long maxRoleRuns, Double maxCostUsd) {
+        this.draftMode = mode;
+        this.draftRoleRuns = maxRoleRuns;
+        this.draftCostUsd = maxCostUsd;
+        return this;
+    }
 
     public Preparation withWorkspace(Workspace workspace) {
         this.workspace = workspace == null ? Workspace.NONE : Workspace.guarded(workspace);
@@ -170,6 +180,11 @@ public final class Preparation {
      */
     public static List<String> payingStages(UserConfig user) {
         return reviewsPlans(user) ? List.of("planner", "plan-review") : List.of("planner");
+    }
+
+    /** Roster role names used by the preparation stages. */
+    public static List<String> payingRoles(UserConfig user) {
+        return reviewsPlans(user) ? List.of("planner", "plan_reviewer") : List.of("planner");
     }
 
     /**
@@ -314,6 +329,8 @@ public final class Preparation {
             noteCall("planner", protocolAttempts + redrafts + 1, outcome);
 
             if (dryRun) {
+                if (!outcome.ok()) return fail(outcome.code(), "planner cannot be dispatched",
+                        outcome, spent, reviewRounds);
                 Map<String, Object> preview = null;
                 if (reviewsPlans(user)) {
                     // The second reader is previewed too, so a dry run says whether the roster
@@ -323,6 +340,10 @@ public final class Preparation {
                             .run(loaded, user, "plan_reviewer", runId, null, context, true);
                     preview = Map.of("dry_run", true, "profile", String.valueOf(reviewer.profile()),
                             "ok", reviewer.ok(), "code", String.valueOf(reviewer.code()));
+                    if (!reviewer.ok()) {
+                        return new Outcome(false, reviewer.code(), "plan reviewer cannot be dispatched",
+                                reviewer, null, 0, 0, 0, preview);
+                    }
                 }
                 return new Outcome(true, "dry_run", "planner dry-run; no contract compiled",
                         outcome, null, 0, 0, 0, preview);
@@ -399,6 +420,9 @@ public final class Preparation {
                 } else {
                     written = PlannerDraft.write(root, taskId, goal, project, granted, artifact,
                             operatorBlocks);
+                    String issue = TaskDraft.applyMode(written, draftMode);
+                    if (issue == null) issue = TaskDraft.applyBudgets(written, draftRoleRuns, draftCostUsd);
+                    if (issue != null) return fail(DRAFT_INVALID, issue, outcome, spent, reviewRounds);
                     progress.line("      compiled " + written.file());
                 }
             } catch (TaskDraft.TaskConflict conflict) {
@@ -500,6 +524,10 @@ public final class Preparation {
             }
             redrafts++;
             gate.grant(1);
+            if (!gate.hasRoom()) {
+                return done(false, "budget_exhausted", "the budget cannot fund a redraft after plan review",
+                        review, written, spent, planReview(reviewRounds));
+            }
             boolean keepOperatorBlocks = written.existed();
             if (!keepOperatorBlocks) Files.deleteIfExists(written.file());
             plannerContext = writeRedraftContext(root, runId, goal, granted, project, blocking,

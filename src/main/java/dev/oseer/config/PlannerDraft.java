@@ -103,6 +103,7 @@ public final class PlannerDraft {
                     ? operatorBlocksFrom
                     : Files.readString(file, StandardCharsets.UTF_8);
             String merged = carryOperatorBlocks(compiled.yaml(), carryFrom);
+            TaskSpec.parse(merged, file.toString()).resolve(project, file.toString());
             Files.writeString(file, merged, StandardCharsets.UTF_8);
             return new TaskDraft.Written(file, taskId, true);
         }
@@ -292,7 +293,7 @@ public final class PlannerDraft {
      * losing precisely the settings the overlay exists to keep out of `~/.oseer`.
      */
     private static final List<String> OPERATOR_BLOCKS =
-            List.of("visual_qa", "use", "budgets", "max_fix_attempts", "timeout_minutes");
+            List.of("visual_qa", "use", "budgets", "max_fix_attempts", "timeout_minutes", "mode", "reproduce", "acceptance");
 
     /**
      * The compiled contract with the operator's own blocks taken from the file it replaces.

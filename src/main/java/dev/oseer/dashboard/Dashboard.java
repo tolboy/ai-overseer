@@ -1,6 +1,7 @@
 package dev.oseer.dashboard;
 
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpExchange;
 import dev.oseer.config.Profile;
 import dev.oseer.config.ConfigFileStore;
 import dev.oseer.config.UserConfig;
@@ -53,6 +54,7 @@ public final class Dashboard implements AutoCloseable {
 
     private final HttpServer server;
     private final String token;
+    private volatile RunLauncher launcher;
     private final ExecutorService requests;
     private static final int MAX_SETTINGS_BODY = 16 * 1024;
 
@@ -95,7 +97,7 @@ public final class Dashboard implements AutoCloseable {
         new SecureRandom().nextBytes(secret);
         token = Base64.getUrlEncoder().withoutPadding().encodeToString(secret);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        requests = Executors.newFixedThreadPool(4, task -> {
+        requests = Executors.newFixedThreadPool(8, task -> {
             Thread thread = new Thread(task, "oseer-dashboard-request");
             thread.setDaemon(true);
             return thread;
@@ -109,11 +111,13 @@ public final class Dashboard implements AutoCloseable {
             int status = 200;
             String contentType = "application/json; charset=utf-8";
             String body;
+            byte[] binary = null;
             String location = null;
             if (!authority.equals(host) || (origin != null && !origin.equals("http://" + authority))) {
                 status = 403; body = "{}";
             } else if ("POST".equals(exchange.getRequestMethod())
-                    && (path.startsWith("/api/connections/") || path.startsWith("/api/models/"))) {
+                    && (path.startsWith("/api/connections/") || path.startsWith("/api/models/")
+                        || path.startsWith("/api/launch/"))) {
                 String suppliedToken = exchange.getRequestHeaders().getFirst("X-Overseer-Token");
                 String suppliedType = exchange.getRequestHeaders().getFirst("Content-Type");
                 if (suppliedToken == null || !MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),
@@ -122,7 +126,7 @@ public final class Dashboard implements AutoCloseable {
                 } else if (suppliedType == null || !"application/json".equalsIgnoreCase(suppliedType.split(";", 2)[0].trim())) {
                     status = 415; body = Json.write(Map.of("ok", false, "code", "settings_json_required"));
                 } else {
-                    int bodyLimit="/api/models/save-jev-policy".equals(path)?160*1024:MAX_SETTINGS_BODY;
+                    int bodyLimit="/api/models/save-jev-policy".equals(path)||path.startsWith("/api/launch/")?160*1024:MAX_SETTINGS_BODY;
                     byte[] input = exchange.getRequestBody().readNBytes(bodyLimit + 1);
                     if (input.length > bodyLimit) {
                         status = 413; body = Json.write(Map.of("ok", false, "code", "settings_body_too_large"));
@@ -140,7 +144,25 @@ public final class Dashboard implements AutoCloseable {
                         if (payload == null) {
                             status = 400; body = Json.write(Map.of("ok", false, "code", "settings_json_invalid"));
                         } else {
-                            if (path.startsWith("/api/models/")) {
+                            if (path.startsWith("/api/launch/")) {
+                                RunLauncher runs = launcher;
+                                if (runs == null) {
+                                    status = 404; body = Json.write(Map.of("ok", false, "code", "launcher_disabled"));
+                                } else try {
+                                    body = Json.write(switch (path) {
+                                        case "/api/launch/inspect" -> runs.inspect(payload);
+                                        case "/api/launch/preview" -> runs.preview(payload);
+                                        case "/api/launch/start" -> runs.start(payload);
+                                        case "/api/launch/answer" -> runs.answer(payload);
+                                        case "/api/launch/land" -> runs.land(payload);
+                                        case "/api/launch/cancel" -> runs.cancel(payload);
+                                        case "/api/launch/attach" -> runs.attach(payload);
+                                        default -> throw new RunLauncher.Refused(404, "launch_unknown", "no such action");
+                                    });
+                                } catch (RunLauncher.Refused refused) {
+                                    status = refused.status(); body = Json.write(refused.toMap());
+                                }
+                            } else if (path.startsWith("/api/models/")) {
                                 var outcome = models.apply(path.substring("/api/models/".length()), payload);
                                 status = outcome.status(); body = Json.write(outcome.report());
                             } else {
@@ -156,19 +178,19 @@ public final class Dashboard implements AutoCloseable {
                 Map<String, String> form = form(new String(
                         exchange.getRequestBody().readNBytes(4096), StandardCharsets.UTF_8));
                 if (decisions == null) {
-                    status = 404; body = notice("Действие не подключено к этой панели.");
+                    status = 404; body = notice("{{t:dash.this_action_is_not_connected}}");
                 } else if (!MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),
                         form.getOrDefault("token", "").getBytes(StandardCharsets.UTF_8))) {
-                    status = 403; body = notice("Запрос не с этой панели.");
+                    status = 403; body = notice("{{t:dash.request_did_not_originate_from}}");
                 } else if (!runId.matches("[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}")) {
-                    status = 404; body = notice("Нет такого запуска.");
+                    status = 404; body = notice("{{t:dash.no_such_run}}");
                 } else {
                     try {
                         location = decisions.open(runId);
                         status = 303; body = "";
                     } catch (Exception refused) {
                         status = 409;
-                        body = notice("Страница решения для " + runId + " не открыта: " + refused.getMessage());
+                        body = notice("{{t:dash.decision_page_for}} " + runId + " {{t:dash.is_not_open}} " + refused.getMessage());
                     }
                 }
             } else if ("POST".equals(exchange.getRequestMethod()) && List.of("/api/next-run/preview",
@@ -184,7 +206,7 @@ public final class Dashboard implements AutoCloseable {
                     } else try {
                         Map<String, Object> request = Json.parseObject(new String(input, StandardCharsets.UTF_8));
                         body = Json.write(switch (path) {
-                            case "/api/settings/preview" -> settings.preview(request);
+                            case "/api/settings/preview" -> settings.preview(request, Messages.language(exchange));
                             case "/api/settings/apply" -> settings.apply(request);
                             default -> nextRun.preview(request);
                         });
@@ -234,6 +256,46 @@ public final class Dashboard implements AutoCloseable {
                 } catch (Exception failed) {
                     status = 503; body = Json.write(Map.of("error", "Settings unavailable; inspect Overseer configuration"));
                 }
+            } else if ("/favicon.ico".equals(path)) {
+                status = 204; body = "";
+            } else if ("/api/launch/jobs".equals(path)) {
+                RunLauncher runs = launcher;
+                body = Json.write(Map.of("enabled", runs != null, "jobs", runs == null ? List.of() : runs.jobs()));
+            } else if (path.startsWith("/api/launch/jobs/")) {
+                RunLauncher runs = launcher;
+                try {
+                    if (runs == null) throw new RunLauncher.Refused(404, "launcher_disabled", "the launcher is off");
+                    body = Json.write(runs.job(path.substring("/api/launch/jobs/".length())));
+                } catch (RunLauncher.Refused refused) { status = refused.status(); body = Json.write(refused.toMap()); }
+            } else if (path.startsWith("/api/runs/")) {
+                // A launcher job names its own project; any other project is not readable here.
+                Path runProject = jobProject(exchange, project);
+                try {
+                    if (runProject == null) throw new RunTimeline.NotFound();
+                    body = Json.write(RunTimeline.read(runProject, path.substring("/api/runs/".length())));
+                }
+                catch (RunTimeline.NotFound missing) { status = 404; body = Json.write(Map.of("error", "run_not_found")); }
+                catch (Exception unavailable) { status = 503; body = Json.write(Map.of("error", "Run unavailable")); }
+            } else if (path.startsWith("/evidence/")) {
+                // Evidence is opened by a link this page rendered, carrying the page token, so a
+                // page on another origin cannot even embed a screenshot of this project's runs.
+                Map<String, String> query = form(exchange.getRequestURI().getRawQuery() == null
+                        ? "" : exchange.getRequestURI().getRawQuery());
+                String[] parts = path.substring("/evidence/".length()).split("/", 3);
+                if (!MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),
+                        query.getOrDefault("t", "").getBytes(StandardCharsets.UTF_8))) {
+                    status = 403; body = "{}";
+                } else if (parts.length != 3) {
+                    status = 404; body = "{}";
+                } else {
+                    try {
+                        Path runProject = jobProject(exchange, project);
+                        if (runProject == null) throw new RunTimeline.NotFound();
+                        RunTimeline.Evidence evidence = RunTimeline.evidence(runProject, parts[0], parts[1], parts[2]);
+                        contentType = evidence.contentType(); binary = evidence.bytes(); body = "";
+                    } catch (RunTimeline.NotFound missing) { status = 404; body = "{}"; }
+                    catch (Exception unavailable) { status = 503; body = "{}"; }
+                }
             } else if ("/api/state".equals(path)) {
                 try { body = Json.write(snapshot(project, UserConfig.load(home))); }
                 catch (Exception failed) { status = 503; body = Json.write(Map.of("error", "State unavailable; inspect Overseer configuration")); }
@@ -263,9 +325,11 @@ public final class Dashboard implements AutoCloseable {
             if (location != null) exchange.getResponseHeaders().set("Location", location);
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
             exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.getResponseHeaders().set("Referrer-Policy", "no-referrer");
             exchange.getResponseHeaders().set("Content-Security-Policy",
-                    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'");
+            if (binary == null && contentType.startsWith("text/html")) body = Messages.render(body, Messages.language(exchange));
+            byte[] bytes = binary != null ? binary : body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
             try (var output = exchange.getResponseBody()) { output.write(bytes); }
         });
@@ -274,7 +338,7 @@ public final class Dashboard implements AutoCloseable {
     private static String notice(String text) {
         return "<!doctype html><meta charset=utf-8><title>AI Overseer</title><p>" + text
                 .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                + "</p><p><a href=\"/\">Назад к панели</a></p>";
+                + "</p><p><a href=\"/\">{{t:dash.back_to_dashboard}}</a></p>";
     }
 
     private static Map<String, String> form(String body) {
@@ -290,7 +354,30 @@ public final class Dashboard implements AutoCloseable {
 
     public void start() { server.start(); }
     public String url() { return "http://127.0.0.1:" + server.getAddress().getPort() + "/"; }
-    @Override public void close() { server.stop(0); requests.shutdownNow(); }
+    @Override public void close() {
+        server.stop(0);
+        requests.shutdownNow();
+        RunLauncher runs = launcher;
+        if (runs != null) runs.close();
+    }
+
+    /**
+     * Lets the browser start, continue and cancel runs. Off unless the caller turns it on:
+     * {@code oseer dashboard} does; an embedded dashboard stays read-only.
+     */
+    public Dashboard enableLauncher(RunLauncher runs) {
+        this.launcher = runs;
+        return this;
+    }
+
+    /** {@code ?job=} reads the timeline of a launcher job's project; nothing else widens it. */
+    private Path jobProject(HttpExchange exchange, Path project) {
+        String raw = exchange.getRequestURI().getRawQuery();
+        String job = form(raw == null ? "" : raw).get("job");
+        if (job == null || job.isBlank()) return project;
+        RunLauncher runs = launcher;
+        return runs == null ? null : runs.projectOf(job);
+    }
 
     public static Map<String, Object> snapshot(Path project, UserConfig user) throws IOException {
         Map<String, Object> state = new LinkedHashMap<>();
@@ -298,6 +385,12 @@ public final class Dashboard implements AutoCloseable {
         state.put("config_home", user.home().toString());
         state.put("observed_at", Instant.now().toString());
         state.put("problems", user.problems());
+        try {
+            state.put("credential_warnings", dev.oseer.execution.CredentialAudit.unresolved(
+                    user, new dev.oseer.execution.CredentialResolver()));
+        } catch (RuntimeException unreadable) {
+            state.put("credential_warnings", List.of());
+        }
         List<Map<String, Object>> plan = new ArrayList<>();
         if (user.policy() != null) for (var stage : user.policy().workflow().stages()) {
             if (stage.role() == null) continue;
@@ -310,6 +403,7 @@ public final class Dashboard implements AutoCloseable {
                 row.put("strategy", role.strategy()); row.put("when", stage.when());
                 row.put("position", user.policy().workflow().rotationPositionOf(stage));
                 if (profile != null) {
+                    row.put("vendor", profile.vendor());
                     row.put("model", profile.model()); row.put("effort", profile.effort());
                     row.put("runner", profile.runner()); row.put("verified", profile.verified());
                     row.put("read_only", profile.readOnly());
@@ -320,6 +414,7 @@ public final class Dashboard implements AutoCloseable {
         state.put("plan", plan);
         List<Map<String, Object>> attempts = new ArrayList<>();
         List<Map<String, Object>> runRows = new ArrayList<>();
+        List<Map<String, Object>> openRuns = new ArrayList<>();
         long dryRunsHidden = 0L;
         Path runs = project.toAbsolutePath().normalize().resolve(".oseer/runs");
         // Never follow project-controlled links out of the evidence directory.
@@ -330,6 +425,24 @@ public final class Dashboard implements AutoCloseable {
                 for (Path directory : directories.filter(p -> Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
                     if (!directory.toRealPath().startsWith(runsRoot)) continue;
                     Path summaryFile = directory.resolve("task-run.json");
+                    String directoryName = directory.getFileName().toString();
+                    if (!Files.exists(summaryFile, LinkOption.NOFOLLOW_LINKS)
+                            && Files.isRegularFile(directory.resolve("run.json"), LinkOption.NOFOLLOW_LINKS)) {
+                        // Reserved and not summarised: still going, or stopped before it wrote
+                        // a result. The timeline tells which from its live role views.
+                        try {
+                            Path reservation = directory.resolve("run.json");
+                            if (Files.size(reservation) <= 64 * 1024 && reservation.toRealPath().startsWith(runsRoot)) {
+                                Map<String, Object> reserved = Json.parseObject(Files.readString(reservation));
+                                Map<String, Object> open = new LinkedHashMap<>();
+                                open.put("run_id", directoryName);
+                                copyScalar(open, reserved, "task_id");
+                                copyScalar(open, reserved, "reserved_at");
+                                open.put("updated_at", Files.getLastModifiedTime(directory).toInstant().toString());
+                                openRuns.add(open);
+                            }
+                        } catch (RuntimeException | IOException invalid) { /* an unreadable reservation is not a run */ }
+                    }
                     if (Files.isRegularFile(summaryFile, LinkOption.NOFOLLOW_LINKS)) {
                         try {
                             if (Files.size(summaryFile) <= 2L * 1024 * 1024
@@ -375,6 +488,8 @@ public final class Dashboard implements AutoCloseable {
         }
         pendingDecisions.sort(Comparator.comparing(row -> String.valueOf(row.get("created_at"))));
         state.put("pending_decisions", pendingDecisions);
+        openRuns.sort(Comparator.comparing(row -> String.valueOf(row.get("reserved_at")), Comparator.reverseOrder()));
+        state.put("open_runs", openRuns.stream().limit(20).toList());
         state.put("dry_runs_hidden", dryRunsHidden);
         state.put("attempts", attempts.stream().limit(200).toList());
         return state;
@@ -572,7 +687,7 @@ public final class Dashboard implements AutoCloseable {
     }
 
     private static final String HTML = """
-            <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <!doctype html><html lang="{{t:meta.html_lang}}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
             <title>AI Overseer · Agents</title><style>
             :root{color-scheme:dark;font:14px/1.5 system-ui;background:#11171d;color:#e5edf4}body{max-width:1500px;margin:32px auto;padding:0 24px}
             h1{font-size:30px;margin-bottom:4px}h2{font-size:19px;margin-top:32px}.muted{color:#9caebd}#connection{color:#79d7ac}
@@ -597,142 +712,167 @@ public final class Dashboard implements AutoCloseable {
             .cards{display:flex;flex-wrap:wrap;gap:12px}.card{background:#19232c;border:1px solid #30404d;border-radius:8px;padding:12px;flex:1;min-width:140px;overflow-wrap:anywhere}.card strong{display:block;font-size:21px}
             nav{display:flex;flex-wrap:wrap;gap:16px;margin:20px 0}a{color:#9ee9c6}.editor details{margin:12px 0}.editor summary{cursor:pointer}
             @media(max-width:700px){.next-fields{grid-template-columns:1fr}#next-run{padding:10px}#next-run fieldset{padding:8px}}
-            </style><h1>Overseer <span class="muted">/ Agents</span></h1>
+            {{SHELL_CSS}}{{LAUNCH_CSS}}</style>
             <meta name="oseer-token" content="{{TOKEN}}"><meta name="oseer-actions" content="{{ACTIONS}}">
             <meta name="oseer-settings-token" content="{{SETTINGS_TOKEN}}">
-            <div id="connection" role="status">Подключение…</div><p id="path" class="muted"></p>
-            <nav aria-label="Разделы панели"><a href="#next-run">Задача и бюджеты</a><a href="#personal-settings">Личные настройки</a><a href="#analytics">Аналитика</a><a href="#runs">Запуски</a></nav>
-            <h2>Ждут вашего решения</h2><p class="muted">Кнопка открывает страницу решения или возвращает к уже открытой. Если процесс, задавший вопрос, перестал ждать, панель поднимает страницу заново и продолжает работу после ответа.</p>
-            <div class="scroll"><table><thead><tr><th>Run / задача</th><th>Вопрос</th><th>Варианты</th><th>Задан</th><th>Страница</th><th></th></tr></thead><tbody id="pending"></tbody></table><div id="pending-empty" class="empty" hidden>Открытых решений нет.</div></div>
-            <p class="muted">Workflow и роли задаёт Overseer. Orca подтверждает параметры запуска. Эти данные не подтверждают фактическую модель inference и не заменяют результат проверок.</p>
+            {{SHELL_HEADER}}
+            <main>
+            <div class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">{{SHELL_OVERVIEW}}
+            <h2>{{t:dash.awaiting_your_decision}}</h2><p class="muted">{{t:dash.the_button_opens_the_decision}}</p>
+            <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.run_task}}</th><th>{{t:dash.question}}</th><th>{{t:dash.options}}</th><th>{{t:dash.asked}}</th><th>{{t:dash.page}}</th><th></th></tr></thead><tbody id="pending"></tbody></table><div id="pending-empty" class="empty" hidden>{{t:dash.no_open_decisions}}</div></div>
+            </div>
+            <div class="panel" id="panel-launch" role="tabpanel" aria-labelledby="tab-launch">{{LAUNCH_HTML}}</div>
+            <div class="panel" id="panel-runs" role="tabpanel" aria-labelledby="tab-runs">{{SHELL_RUN_DETAIL}}
+            <h2>{{t:dash.runs}}</h2><p class="muted">{{t:dash.each_run_has_its_own}}</p>
+            <p id="dry-hidden" class="muted"></p>
+            <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.run_task}}</th><th>{{t:dash.outcome}}</th><th>{{t:dash.col_review}}</th><th>{{t:dash.col_blockers}}</th><th>{{t:dash.col_calls}}</th><th>{{t:dash.cost}}</th><th>{{t:dash.col_fix}}</th><th>{{t:dash.decision}}</th><th>{{t:dash.col_gate}}</th><th>{{t:dash.timeline}}</th></tr></thead><tbody id="runs"></tbody></table><div id="runs-empty" class="empty" hidden>{{t:dash.no_runs_yet}}</div></div>
+            <h2>{{t:dash.execution_attempts}}</h2><input id="filter" aria-label="{{t:dash.run_filter}}" placeholder="{{t:dash.search_by_run_role_or}}">
+            <p class="muted">{{t:dash.refreshes_every_2_seconds_the}}</p>
+            <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.run_stage}}</th><th>{{t:dash.role_profile}}</th><th>Runner</th><th>{{t:dash.requested}}</th><th>{{t:dash.confirmed_by_orca}}</th><th>{{t:dash.status_dispatch}}</th></tr></thead><tbody id="attempts"></tbody></table><div id="empty" class="empty" hidden>{{t:dash.no_attempts_yet_this_dashboard}}</div></div>
+            </div>
+            <div class="panel" id="panel-next" role="tabpanel" aria-labelledby="tab-next">
             <section id="next-run" aria-labelledby="next-title">
-            <h2 id="next-title">Следующий запуск</h2>
-            <p class="muted">Выберите задачу и параметры запуска. Сохранённый task use: заполнен в форме. Модель и runner выбираются через объявленный профиль; effort можно задать отдельно. Пустое поле убирает соответствующее закрепление задачи и наследует policy или профиль. Обязательные стадии определяет контракт.</p>
-            <label>Задача<select id="next-task"><option value="">Загрузка задач…</option></select></label>
+            <h2 id="next-title">{{t:dash.next_run}}</h2>
+            <p class="muted">{{t:dash.choose_a_task_and_run}}</p>
+            <label>{{t:dash.task}}<select id="next-task"><option value="">{{t:dash.loading_tasks}}</option></select></label>
             <p id="next-status" role="status" aria-live="polite"></p>
             <pre id="next-contract"></pre><div id="next-stages"></div>
             {{BUDGET_HTML}}
             <datalist id="next-efforts"><option value="low"><option value="medium"><option value="high"><option value="xhigh"><option value="max"></datalist>
-            <p class="muted">Effort вне профиля — пользовательский вариант: доставка параметра проверяется resolver, поддержка моделью требует отдельного probe. Текущие лимиты и обязательные проверки показаны выше выбора стадий.</p>
-            <button id="next-preview" type="button" disabled>Проверить состав и бюджет</button>
-            <button id="next-reset" type="button" disabled>Сбросить выбор и перечитать</button>
+            <p class="muted">{{t:dash.effort_outside_the_profile_is}}</p>
+            <button id="next-preview" type="button" disabled>{{t:dash.check_lineup_and_budget}}</button>
+            <button id="next-reset" type="button" disabled>{{t:dash.reset_selection_and_reload}}</button>
             <div id="next-result" hidden>
             <h3>Preview</h3><pre id="next-cast"></pre><pre id="next-budget"></pre><pre id="next-problems" class="bad"></pre>
             <p id="task-edit-file" class="muted"></p><pre id="task-edit-diff"></pre>
-            <button id="task-apply" type="button" disabled>Apply в файл задачи</button><p id="task-save-status" role="status"></p>
-            <p class="muted">Preview проверяет настройки. Перед запуском выполните CLI dry-run: он также проверит рабочее дерево и доступность среды. Команды читают актуальные файлы, поэтому после их изменения повторите проверку.</p>
-            <label>CLI dry-run<textarea id="next-dry-command" readonly></textarea></label>
-            <button type="button" data-next-copy="next-dry-command">Скопировать dry-run</button>
-            <label>CLI запуск<textarea id="next-run-command" readonly></textarea></label>
-            <button type="button" data-next-copy="next-run-command">Скопировать команду запуска</button>
-            <label>Task use: (объединён с настройками задачи)<textarea id="next-yaml" readonly></textarea></label>
-            <button type="button" data-next-copy="next-yaml">Скопировать use:</button>
+            <button id="task-apply" type="button" disabled>{{t:dash.apply_to_task_file}}</button><p id="task-save-status" role="status"></p>
+            <p class="muted">{{t:dash.preview_checks_settings_before_starting}}</p>
+            <label>{{t:dash.cli_dry_run}}<textarea id="next-dry-command" readonly></textarea></label>
+            <button type="button" data-next-copy="next-dry-command">{{t:dash.copy_dry_run}}</button>
+            <label>{{t:dash.cli_run}}<textarea id="next-run-command" readonly></textarea></label>
+            <button type="button" data-next-copy="next-run-command">{{t:dash.copy_run_command}}</button>
+            <label>{{t:dash.task_use_merged_with_task}}<textarea id="next-yaml" readonly placeholder="{{t:dash.no_stage_pins}}"></textarea></label>
+            <button type="button" data-next-copy="next-yaml">{{t:dash.copy_use}}</button>
             </div></section>
-            {{SETTINGS_HTML}}
+            <p class="muted">{{t:dash.overseer_defines_the_workflow_and}}</p>
+            <h2>{{t:dash.tasks}}</h2><div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.task}}</th><th>{{t:dash.risk}}</th><th>{{t:dash.calls}}</th><th>{{t:dash.money}}</th><th>{{t:dash.time}}</th><th>{{t:dash.fixes}}</th><th>Visual QA</th><th>{{t:dash.will_run}}</th><th>Overlay</th></tr></thead><tbody id="tasks"></tbody></table><div id="tasks-empty" class="empty" hidden>{{t:dash.no_tasks}}</div></div>
+            </div>
+            <div class="panel" id="panel-roles" role="tabpanel" aria-labelledby="tab-roles">
             {{MODEL_SETTINGS}}
-            <details id="api-auth-settings"><summary>Ключи и адреса API</summary>{{CONNECTION_SETTINGS}}</details>
-            <h2>Состав по стадиям</h2><p class="muted">По политике, до настроек конкретной задачи: её <code>use:</code> может закрепить другой профиль, а <code>review_assurance</code> — допустить пару того же вендора. Что запустится для задачи, показывает столбец «Запустится» в таблице задач. Кто заполнит каждую стадию и почему остальные кандидаты не подходят — это ответы самого резолвера. Ридеры проверены против писателя, которого выбрал бы запуск. Источник: личное — ~/.oseer, проект — .oseer/project.yaml, задача — файл задачи, по умолчанию — встроенное значение Overseer.</p>
-            <p><button id="reload-config" type="button">Перечитать настройки</button> <span id="config-status" class="muted"></span></p>
-            <div class="scroll"><table><thead><tr><th>Кандидат · вендор</th><th>Модель · усилие · канал</th><th>Допуск подтверждён</th><th>Допуск</th><th>Стоимость</th></tr></thead><tbody id="stages"></tbody></table></div>
-            <h2>Ограничения</h2><div class="scroll"><table><thead><tr><th>Параметр</th><th>Значение</th><th>Источник</th></tr></thead><tbody id="limits"></tbody></table></div>
-            <h2>Задачи</h2><div class="scroll"><table><thead><tr><th>Задача</th><th>Риск</th><th>Вызовы</th><th>Деньги</th><th>Время</th><th>Фиксы</th><th>Visual QA</th><th>Запустится</th><th>Overlay</th></tr></thead><tbody id="tasks"></tbody></table><div id="tasks-empty" class="empty" hidden>Задач нет.</div></div>
-            <h2>Запуски</h2><p class="muted">Каждый запуск со своей хронологией этапов, вердиктами, стоимостью и решением. Dry-run в этот список не входят.</p>
-            <p id="dry-hidden" class="muted"></p>
-            <div class="scroll"><table><thead><tr><th>Run / задача</th><th>Исход</th><th>Review</th><th>Блокеры</th><th>Вызовы</th><th>Стоимость</th><th>Фикс</th><th>Решение</th><th>Gate</th><th>Хронология</th></tr></thead><tbody id="runs"></tbody></table><div id="runs-empty" class="empty" hidden>Запусков пока нет.</div></div>
-            <h2>Попытки исполнения</h2><input id="filter" aria-label="Фильтр запусков" placeholder="Поиск по run, роли или профилю">
-            <p class="muted">Обновление каждые 2 секунды. После остановки контроллера работа агента может продолжаться; статус становится неизвестным.</p>
-            <div class="scroll"><table><thead><tr><th>Run / этап</th><th>Роль / профиль</th><th>Runner</th><th>Запрошено</th><th>Подтверждено Orca</th><th>Состояние / dispatch</th></tr></thead><tbody id="attempts"></tbody></table><div id="empty" class="empty" hidden>Попыток пока нет. Запуск агентов из этой панели не выполняется.</div></div>
+            {{PERSONAL_HTML}}
+            <h2>{{t:dash.lineup_by_stage}}</h2><p class="muted">{{t:dash.lineup_note}} {{t:dash.allow_a_same_vendor_pair}}</p>
+            <p><button id="reload-config" type="button">{{t:dash.reload_settings}}</button> <span id="config-status" class="muted"></span></p>
+            <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.candidate_vendor}}</th><th>{{t:dash.model_effort_channel}}</th><th>{{t:dash.eligibility_confirmed}}</th><th>{{t:dash.eligibility}}</th><th>{{t:dash.cost}}</th></tr></thead><tbody id="stages"></tbody></table></div>
+            <h2>{{t:dash.limits}}</h2><div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.parameter}}</th><th>{{t:dash.value}}</th><th>{{t:dash.source}}</th></tr></thead><tbody id="limits"></tbody></table></div>
+            </div>
+            <div class="panel" id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics">{{ANALYTICS_HTML}}</div>
+            <div class="panel" id="panel-connections" role="tabpanel" aria-labelledby="tab-connections">
+            <details id="api-auth-settings"><summary>{{t:conn.api_keys_and_endpoints}}</summary>{{CONNECTION_SETTINGS}}</details>
+            </div>
+            </main>
             <p id="problems" class="bad"></p>
             <script>
             const $=id=>document.getElementById(id); let data;
+            function costText(usd,unpriced){const n=Number(unpriced||0);const amount=usd==null||usd===''?'—':'$'+Number(usd).toFixed(Number(usd)<1?4:2);return n>0?amount+' (+'+n+' {{t:dash.unpriced}})':amount}
             function cell(tr,value){const td=document.createElement('td');td.textContent=value??'—';tr.append(td)}
             function table(id,rows){const body=$(id);body.replaceChildren();for(const values of rows){const tr=document.createElement('tr');values.forEach(v=>cell(tr,v));body.append(tr)}}
             function line(parent,text){const div=document.createElement('div');div.textContent=text;parent.append(div)}
             let openRuns=new Set();
-            function timeline(run){const details=document.createElement('details');details.className='timeline';details.dataset.run=run.run_id??'';if(openRuns.has(details.dataset.run))details.open=true;const summary=document.createElement('summary');summary.textContent='Хронология';details.append(summary);
-            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');text+=' · '+(s.ok===true?'ok':s.ok===false?'fail':'—')+(s.code?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+s.cost_usd;if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
+            function timeline(run){const details=document.createElement('details');details.className='timeline';details.dataset.run=run.run_id??'';if(openRuns.has(details.dataset.run))details.open=true;const summary=document.createElement('summary');summary.textContent='{{t:dash.timeline}}';details.append(summary);
+            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');text+=' · '+(s.ok===true?'ok':s.ok===false?'fail':'—')+(s.code?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+costText(s.cost_usd,0);if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
             for(const c of run.review_coverage||[]){line(details,'coverage '+(c.stage??'')+' · '+(c.role??'')+(c.assurance!=null?' · '+c.assurance:''))}
             for(const p of run.pending_stages||[]){line(details,'pending '+(p.stage??'')+' · '+(p.reason??''))}
-            for(const f of run.failovers||[]){line(details,f.kind==='switched'?('failover '+(f.stage??'')+' · '+(f.from_profiles||[]).join(', ')+' → '+(f.profile??'')):f.kind==='exhausted'?('квота исчерпана '+(f.stage??'')+' · '+(f.exhausted_profiles||[]).join(', ')):('ждёт подтверждения подмены '+(f.stage??'')+' · '+(f.from_profile??'')+' → '+(f.to_profile??'')))}
+            for(const f of run.failovers||[]){line(details,f.kind==='switched'?('failover '+(f.stage??'')+' · '+(f.from_profiles||[]).join(', ')+' → '+(f.profile??'')):f.kind==='exhausted'?('{{t:dash.quota_exhausted}} '+(f.stage??'')+' · '+(f.exhausted_profiles||[]).join(', ')):('{{t:dash.awaiting_substitution_approval}} '+(f.stage??'')+' · '+(f.from_profile??'')+' → '+(f.to_profile??'')))}
             if(run.next_step?.summary)line(details,run.next_step.summary);
             const options=run.decision?.options;if(options&&options.length)line(details,'oseer approve '+(run.run_id??'')+' --decision '+options.join('|'));
             return details}
             const token=document.querySelector('meta[name=oseer-token]').content,actions=document.querySelector('meta[name=oseer-actions]').content==='true';
             function drawPending(){const body=$('pending');body.replaceChildren();const rows=data.pending_decisions||[];
-            for(const d of rows){const tr=document.createElement('tr');[d.run_id+' / '+(d.task_id??'—'),(d.kind??'—')+(d.reason?' · '+d.reason:''),(d.options||[]).join(' | '),d.created_at?new Date(d.created_at).toLocaleString():'—',d.page_open?'открыта':'закрыта: процесс, задавший вопрос, больше не ждёт'].forEach(v=>cell(tr,v));
+            for(const d of rows){const tr=document.createElement('tr');[d.run_id+' / '+(d.task_id??'—'),(d.kind??'—')+(d.reason?' · '+d.reason:''),(d.options||[]).join(' | '),d.created_at?new Date(d.created_at).toLocaleString():'—',d.page_open?'{{t:dash.open}}':'{{t:dash.closed_the_process_that_asked}}'].forEach(v=>cell(tr,v));
             const td=document.createElement('td');if(actions){const form=document.createElement('form');form.method='post';form.action='/decide/'+encodeURIComponent(d.run_id);
-            const hidden=document.createElement('input');hidden.type='hidden';hidden.name='token';hidden.value=token;const button=document.createElement('button');button.textContent=d.page_open?'Открыть решение':'Продолжить ожидание и открыть';form.append(hidden,button);td.append(form)}else td.textContent='oseer decide '+d.run_id;
+            const hidden=document.createElement('input');hidden.type='hidden';hidden.name='token';hidden.value=token;const button=document.createElement('button');button.textContent=d.page_open?'{{t:dash.open_decision}}':'{{t:dash.resume_waiting_and_open}}';form.append(hidden,button);td.append(form)}else td.textContent='oseer decide '+d.run_id;
             tr.append(td);body.append(tr)}$('pending-empty').hidden=rows.length>0}
-            const reasons={profile_unverified:'профиль не проверен',harness_coding_unproven:'инструменты coding harness не подтверждены',connection_unavailable:'подключение отсутствует или отключено',connection_credential_unavailable:'ключ подключения отсутствует или недоступен',judge_not_read_only:'проверяющий с правом записи',vision_capability_unverified:'зрение не проверено',same_vendor_as_writer:'тот же вендор, что у писателя',shares_vendor_with_writer:'делит вендора с писателем',peer_not_allowed_by_task:'пара того же вендора не разрешена задачей',quota_exhausted_this_run:'квота исчерпана в этом запуске',executable_not_found:'программа не найдена',role_mismatch:'профиль другой роли',profile_not_found:'профиля нет',role_not_configured:'роль не настроена',no_eligible_profile:'некому заполнить стадию'};
-            const sources={personal:'личное',project:'проект',task:'задача',default:'по умолчанию'};
-            function reason(code){if(!code)return 'допущен';const base=code.split(':')[0];return (reasons[base]??code)+(code.includes(':')?' ('+code.slice(base.length+1)+')':'')}
-            function sourced(v){if(!v)return '—';const value=v.value==null?'нет':typeof v.value==='object'?JSON.stringify(v.value):String(v.value);return value+' · '+(sources[v.source]??v.source)}
-            function plannedDispatch(d){const stage=(d.stage??'—')+' → ';if(d.skipped)return stage+'пропуск';
-            if(!d.profile)return stage+'некому: '+Object.entries(d.unresolved||{}).map(([p,r])=>p+' '+reason(r)).join(', ');
-            const model=d.model??(d.runner==='orca'?'модель агента по умолчанию':'модель не задана');
-            return stage+d.profile+' · '+(d.vendor??'вендор не задан')+' · '+model+' · '+(d.effort==null?'effort не задан':'effort='+d.effort)+' · '+(d.runner??'runner не задан')+(d.from_overlay===true?' (overlay)':'')+(d.refused?' (отвергнется: '+reason(d.refused)+')':'')}
+            const reasons={profile_unverified:'{{t:dash.profile_not_verified}}',harness_coding_unproven:'{{t:dash.coding_harness_tools_not_confirmed}}',connection_unavailable:'{{t:dash.connection_missing_or_disabled}}',connection_credential_unavailable:'{{t:dash.connection_key_missing_or_unavailable}}',judge_not_read_only:'{{t:dash.reviewer_has_write_access}}',vision_capability_unverified:'{{t:dash.vision_not_verified}}',same_vendor_as_writer:'{{t:dash.same_vendor_as_the_writer}}',shares_vendor_with_writer:'{{t:dash.shares_a_vendor_with_the}}',peer_not_allowed_by_task:'{{t:dash.task_does_not_allow_a}}',quota_exhausted_this_run:'{{t:dash.quota_exhausted_in_this_run}}',executable_not_found:'{{t:dash.program_not_found}}',role_mismatch:'{{t:dash.profile_belongs_to_another_role}}',profile_not_found:'{{t:dash.profile_missing}}',role_not_configured:'{{t:dash.role_not_configured}}',no_eligible_profile:'{{t:dash.no_one_available_to_fill}}'};
+            const sources={personal:'{{t:dash.personal}}',project:'{{t:dash.project}}',task:'{{t:dash.task_2}}',default:'{{t:dash.default}}'};
+            function reason(code){if(!code)return '{{t:dash.eligible}}';const base=code.split(':')[0];return (reasons[base]??code)+(code.includes(':')?' ('+code.slice(base.length+1)+')':'')}
+            function sourced(v){if(!v)return '—';const value=v.value==null?'{{t:conn.no}}':typeof v.value==='object'?JSON.stringify(v.value):String(v.value);return value+' · '+(sources[v.source]??v.source)}
+            function plannedDispatch(d){const stage=(d.stage??'—')+' → ';if(d.skipped)return stage+'{{t:dash.skip}}';
+            if(!d.profile)return stage+'{{t:dash.no_one_available}} '+Object.entries(d.unresolved||{}).map(([p,r])=>p+' '+reason(r)).join(', ');
+            const model=d.model??(d.runner==='orca'?'{{t:dash.default_agent_model}}':'{{t:dash.model_not_set}}');
+            return stage+d.profile+' · '+(d.vendor??'{{t:dash.vendor_not_set}}')+' · '+model+' · '+(d.effort==null?'{{t:dash.effort_not_set}}':'effort='+d.effort)+' · '+(d.runner??'{{t:dash.runner_not_set}}')+(d.from_overlay===true?' (overlay)':'')+(d.refused?' {{t:dash.will_be_rejected}} '+reason(d.refused)+')':'')}
             let nextData=null,nextGeneration=0;
             function clearNext(){nextGeneration++;clearTaskEdit();$('next-result').hidden=true;for(const id of ['next-dry-command','next-run-command','next-yaml'])$(id).value=''}
             function labelled(parent,text,control){const label=document.createElement('label');label.append(document.createTextNode(text),control);parent.append(label);return control}
             function option(select,value,text){const item=document.createElement('option');item.value=value;item.textContent=text;select.append(item)}
             function nextTasks(tasks){const select=$('next-task'),old=select.value;select.replaceChildren();for(const t of tasks.filter(t=>!t.problem))option(select,t.task,t.task);
-            if(!select.options.length)option(select,'','Нет доступных задач');else if(Array.from(select.options).some(o=>o.value===old))select.value=old;return loadNext()}
+            if(!select.options.length)option(select,'','{{t:dash.no_available_tasks}}');else if(Array.from(select.options).some(o=>o.value===old))select.value=old;return loadNext()}
             async function loadNext(){clearNext();loadPersonal(null);const generation=nextGeneration,task=$('next-task').value;nextData=null;$('next-stages').replaceChildren();$('next-contract').textContent='';
-            $('next-preview').disabled=true;$('next-reset').disabled=true;if(!task){$('next-status').textContent='Создайте задачу через Overseer, затем перечитайте настройки.';return}
-            $('next-status').textContent='Читаю задачу…';try{const response=await fetch('/api/next-run?task='+encodeURIComponent(task),{cache:'no-store'}),data=await response.json();if(generation!==nextGeneration)return;
+            $('next-preview').disabled=true;$('next-reset').disabled=true;if(!task){$('next-status').textContent='{{t:dash.create_a_task_through_overseer}}';return}
+            $('next-status').textContent='{{t:dash.reading_task}}';try{const response=await fetch('/api/next-run?task='+encodeURIComponent(task),{cache:'no-store'}),data=await response.json();if(generation!==nextGeneration)return;
             if(!response.ok)throw Error(data.message??data.error);nextData=data;
-            $('next-contract').textContent=data.goal+'\\nРиск: '+data.risk+' · scope: '+data.scope.join(', ')+'\\nПроверки: '+data.acceptance.join('; ')+
-            '\\nVisual QA: '+(data.visual_qa?'обязательна':'не требуется')+' · review assurance: '+data.review_assurance+'\\nTask use: '+JSON.stringify(data.task_use);
+            $('next-contract').textContent=data.goal+'\\n{{t:dash.mode}} '+(data.mode??'{{t:dash.not_set}}')+' {{t:dash.risk_2}} '+data.risk+' · scope: '+data.scope.join(', ')+'\\n{{t:dash.checks}} '+data.acceptance.join('; ')+
+            '\\nVisual QA: '+(data.visual_qa?'{{t:dash.required}}':'{{t:dash.not_required}}')+' · {{t:dash.review_assurance}} '+data.review_assurance+'\\n{{t:dash.stage_pins}} '+(data.task_use&&Object.keys(data.task_use).length?Object.entries(data.task_use).map(([k,v])=>k+' → '+(typeof v==='object'?JSON.stringify(v):v)).join(', '):'{{t:dash.none_policy_lineup}}');
             fillLimits(data);await loadPersonal(task);if(generation!==nextGeneration)return;
             for(const s of data.stages){const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=s.stage+(s.role?' · '+s.role:'');field.append(legend);
-            if(s.kind!=='ROLE'){const note=document.createElement('p');note.textContent='Механическая стадия · условия: '+(s.when.join(', ')||'всегда');field.append(note);$('next-stages').append(field);continue}
-            field.dataset.nextStage=s.stage;const filter=document.createElement('select');filter.className='next-filter';option(filter,'','Все вендоры (фильтр вариантов)');for(const v of [...new Set(s.profiles.map(p=>p.vendor))])option(filter,v,v);labelled(field,'Вендор — фильтр профилей',filter);
+            if(s.kind!=='ROLE'){const note=document.createElement('p');note.textContent='{{t:dash.machine_stage_conditions}} '+(s.when.join(', ')||'{{t:dash.always}}');field.append(note);$('next-stages').append(field);continue}
+            field.dataset.nextStage=s.stage;const filter=document.createElement('select');filter.className='next-filter';option(filter,'','{{t:dash.all_vendors_option_filter}}');for(const v of [...new Set(s.profiles.map(p=>p.vendor))])option(filter,v,v);labelled(field,'{{t:dash.vendor_profile_filter}}',filter);
             const grid=document.createElement('div');grid.className='next-fields';field.append(grid);
-            const profile=document.createElement('select');profile.dataset.nextKind='profile';profile.setAttribute('aria-label',s.stage+' профиль');
-            function fillProfiles(){profile.replaceChildren();option(profile,'','Из policy (без task pin)');for(const p of s.profiles.filter(p=>!filter.value||p.vendor===filter.value))option(profile,p.profile,p.profile+' · '+p.vendor+' · '+(p.model??'модель по умолчанию')+' · '+(p.effort??'effort не задан')+' · '+p.runner+(p.verified?' · проверен':' · НЕ проверен'))}
-            fillProfiles();labelled(grid,'Профиль · модель · runner',profile);
-            const effort=document.createElement('input');effort.dataset.nextKind='effort';effort.setAttribute('list','next-efforts');effort.setAttribute('aria-label',s.stage+' effort');effort.placeholder='Из профиля';effort.maxLength=120;labelled(grid,'Effort (custom)',effort);
-            const host=document.createElement('select');host.dataset.nextKind='host';host.setAttribute('aria-label',s.stage+' размещение');option(host,'','Из профиля');option(host,'orca','Orca · объявленный профиль');labelled(grid,'Размещение',host);
-            for(const control of [profile,effort,host]){const saved=data.task_use[control.dataset.nextKind]?.[s.stage];if(saved){if(control===profile&&!Array.from(profile.options).some(o=>o.value===saved))option(profile,saved,saved+' · недоступен');control.value=saved}}
-            const note=document.createElement('p');note.className='muted';note.textContent='Условия: '+(s.when.join(', ')||'всегда')+' · policy '+(s.strategy??'—')+': '+(s.fallback.join(' → ')||'роль не настроена');field.append(note);
-            filter.addEventListener('change',()=>{fillProfiles();clearNext();$('next-status').textContent='Фильтр изменён. Выберите профиль и повторите preview.'});
-            for(const control of [profile,effort,host])control.addEventListener('input',()=>{clearNext();$('next-status').textContent='Выбор изменён. Повторите preview.'});$('next-stages').append(field)}
-            $('next-status').textContent='Задача прочитана. Выберите параметры и проверьте preview.';$('next-preview').disabled=false;$('next-reset').disabled=false;
-            }catch(e){if(generation===nextGeneration){$('next-status').textContent='Не удалось прочитать задачу: '+e.message;$('next-reset').disabled=false}}}
+            const profile=document.createElement('select');profile.dataset.nextKind='profile';profile.setAttribute('aria-label',s.stage+' {{t:dash.profile}}');
+            function fillProfiles(){profile.replaceChildren();option(profile,'','{{t:dash.from_policy_no_task_pin}}');for(const p of s.profiles.filter(p=>!filter.value||p.vendor===filter.value))option(profile,p.profile,p.profile+' · '+p.vendor+' · '+(p.model??'{{t:dash.default_model}}')+' · '+(p.effort??'{{t:dash.effort_not_set}}')+' · '+p.runner+(p.verified?' {{t:dash.verified}}':' {{t:dash.not_verified}}'))}
+            fillProfiles();labelled(grid,'{{t:dash.profile_model_runner}}',profile);
+            const effort=document.createElement('input');effort.dataset.nextKind='effort';effort.setAttribute('list','next-efforts');effort.setAttribute('aria-label',s.stage+' · {{t:launch.effort}}');effort.placeholder='{{t:dash.from_profile}}';effort.maxLength=120;labelled(grid,'{{t:dash.effort_custom}}',effort);
+            const host=document.createElement('select');host.dataset.nextKind='host';host.setAttribute('aria-label',s.stage+' {{t:dash.placement}}');option(host,'','{{t:dash.from_profile}}');option(host,'orca','{{t:dash.orca_declared_profile}}');labelled(grid,'{{t:dash.placement_2}}',host);
+            for(const control of [profile,effort,host]){const saved=data.task_use[control.dataset.nextKind]?.[s.stage];if(saved){if(control===profile&&!Array.from(profile.options).some(o=>o.value===saved))option(profile,saved,saved+' {{t:dash.unavailable}}');control.value=saved}}
+            const note=document.createElement('p');note.className='muted';note.textContent='{{t:dash.conditions}} '+(s.when.join(', ')||'{{t:dash.always}}')+' · policy '+(s.strategy??'—')+': '+(s.fallback.join(' → ')||'{{t:dash.role_not_configured}}');field.append(note);
+            filter.addEventListener('change',()=>{fillProfiles();clearNext();$('next-status').textContent='{{t:dash.filter_changed_choose_a_profile}}'});
+            for(const control of [profile,effort,host])control.addEventListener('input',()=>{clearNext();$('next-status').textContent='{{t:dash.selection_changed_repeat_preview}}'});$('next-stages').append(field)}
+            $('next-status').textContent='{{t:dash.task_loaded_choose_parameters_and}}';$('next-preview').disabled=false;$('next-reset').disabled=false;
+            }catch(e){if(generation===nextGeneration){$('next-status').textContent='{{t:dash.could_not_read_task}} '+e.message;$('next-reset').disabled=false}}}
             $('next-task').addEventListener('change',loadNext);$('next-reset').addEventListener('click',loadNext);
             $('next-preview').addEventListener('click',previewTask);
             for(const button of document.querySelectorAll('[data-next-copy]'))button.addEventListener('click',async()=>{const output=$(button.dataset.nextCopy);if(!output.value||$('next-result').hidden)return;
-            try{await navigator.clipboard.writeText(output.value);$('next-status').textContent='Скопировано.'}catch(e){output.focus();output.select();$('next-status').textContent='Текст выделен; скопируйте его сочетанием клавиш.'}});
+            try{await navigator.clipboard.writeText(output.value);$('next-status').textContent='{{t:dash.copied}}'}catch(e){output.focus();output.select();$('next-status').textContent='{{t:dash.text_selected_use_the_keyboard}}'}});
             function drawConfig(config){const stages=$('stages');stages.replaceChildren();
             for(const s of config.stages||[]){const head=document.createElement('tr');const td=document.createElement('td');td.colSpan=5;
-            let text=s.stage+(s.role?' · '+s.role:'')+' · '+(s.kind==='role'?('стратегия '+(s.strategy??'—')+(s.require_independent_vendor?' · нужен независимый вендор':'')+(s.same_vendor_peer?' · пара '+s.same_vendor_peer:'')+(s.judged_against?' · против писателя '+s.judged_against.profile+' ('+s.judged_against.vendor+')':'')):'механическая стадия: профиль не заполняет, overlay отвергается')+(s.when&&s.when.length?' · когда '+s.when.join(', '):'');
+            let text=s.stage+(s.role?' · '+s.role:'')+' · '+(s.kind==='role'?('{{t:dash.strategy}} '+(s.strategy??'—')+(s.require_independent_vendor?' {{t:dash.independent_vendor_required}}':'')+(s.same_vendor_peer?' {{t:dash.pair}} '+s.same_vendor_peer:'')+(s.judged_against?' {{t:dash.against_writer}} '+s.judged_against.profile+' ('+s.judged_against.vendor+')':'')):'{{t:dash.machine_stage_not_filled_by}}')+(s.when&&s.when.length?' {{t:dash.when}} '+s.when.join(', '):'');
             if(s.unresolved)text+=' · '+reason(s.unresolved);td.textContent=text;td.style.fontWeight='600';head.append(td);stages.append(head);
             for(const c of s.candidates||[]){const tr=document.createElement('tr');const verdict=s.judged_against?c.rejected_after_writer:c.rejected;
-            [(c.would_run?'▶ ':'')+c.profile+' · '+(c.vendor??'вендор не задан'),[(c.model??(c.model_note==='agent_default'?'модель агента по умолчанию':'модель не задана')),c.effort??'effort не задан',c.runner,c.connection?('подключение '+c.connection):null,c.model_vendor?('вендор модели '+c.model_vendor):null,c.execution==='text_completion_only'?'текстовый completion':null].filter(Boolean).join(' · '),c.verified?'да':'нет',reason(verdict)+(c.assurance&&c.assurance!=='independent'&&!verdict?' · '+c.assurance:''),c.cost_reported===false?'неизвестна: Orca не сообщает':(c.max_cost_usd!=null?'граница $'+c.max_cost_usd:'по отчёту вендора')].forEach(v=>cell(tr,v));stages.append(tr)}}
+            [(c.would_run?'▶ ':'')+c.profile+' · '+(c.vendor??'{{t:dash.vendor_not_set}}'),[(c.model??(c.model_note==='agent_default'?'{{t:dash.default_agent_model}}':'{{t:dash.model_not_set}}')),c.effort??'{{t:dash.effort_not_set}}',c.runner,c.connection?('{{t:dash.connection}} '+c.connection):null,c.model_vendor?('{{t:dash.model_vendor}} '+c.model_vendor):null,c.execution==='text_completion_only'?'{{t:dash.text_completion}}':null].filter(Boolean).join(' · '),c.verified?'{{t:conn.yes}}':'{{t:conn.no}}',reason(verdict)+(c.assurance&&c.assurance!=='independent'&&!verdict?' · '+c.assurance:''),c.cost_reported===false?'{{t:dash.unknown_orca_does_not_report}}':(c.max_cost_usd!=null?'{{t:dash.bound}} $'+c.max_cost_usd:'{{t:dash.as_reported_by_vendor}}')].forEach(v=>cell(tr,v));stages.append(tr)}}
             table('limits',(config.limits||[]).map(l=>[l.key,l.value==null?'—':typeof l.value==='object'?JSON.stringify(l.value):String(l.value),sources[l.source]??l.source]));
-            const tasks=config.tasks||[];table('tasks',tasks.map(t=>t.problem?[t.task,'ошибка: '+t.problem,'','','','','','','']:[t.task,sourced(t.risk),sourced(t.max_role_runs),(t.cost_cap?.value==='off'?'учёт без денежного лимита':(t.cost_cap?.value==='strict'?'строгий cap $':'порог $')+(t.max_cost_usd?.value??'—')+' · '+(sources[t.max_cost_usd?.source]??'')),sourced(t.max_elapsed_minutes),sourced(t.max_fix_attempts),sourced(t.visual_qa),(t.would_run||[]).map(plannedDispatch).join('\\n')||'—',(t.overlay||[]).map(o=>o.stage+' '+o.what+'='+o.value+(o.refused?' (отвергнется: '+reason(o.refused)+')':o.skipped?' (стадия пропускается)':'')).join('; ')||'—']));
+            const tasks=config.tasks||[];table('tasks',tasks.map(t=>t.problem?[t.task,'{{t:dash.error}} '+t.problem,'','','','','','','']:[t.task,sourced(t.risk),sourced(t.max_role_runs),(t.cost_cap?.value==='off'?'{{t:dash.tracking_without_a_spending_limit}}':(t.cost_cap?.value==='strict'?'{{t:dash.strict_cap}} $':'{{t:dash.threshold}} $')+(t.max_cost_usd?.value??'—')+' · '+(sources[t.max_cost_usd?.source]??'')),sourced(t.max_elapsed_minutes),sourced(t.max_fix_attempts),sourced(t.visual_qa),(t.would_run||[]).map(plannedDispatch).join('\\n')||'—',(t.overlay||[]).map(o=>o.stage+' '+o.what+'='+o.value+(o.refused?' {{t:dash.will_be_rejected}} '+reason(o.refused)+')':o.skipped?' {{t:dash.stage_skipped}}':'')).join('; ')||'—']));
             $('tasks-empty').hidden=tasks.length>0}
-            async function loadConfig(){$('config-status').textContent='читаю…';try{const response=await fetch('/api/config',{cache:'no-store'});if(!response.ok)throw Error('unavailable');const config=await response.json();drawConfig(config);await nextTasks(config.tasks||[]);$('config-status').textContent='прочитано '+new Date().toLocaleTimeString()}catch(e){$('config-status').textContent='настройки недоступны'}}
+            async function loadConfig(){$('config-status').textContent='{{t:dash.reading}}';try{const response=await fetch('/api/config',{cache:'no-store'});if(!response.ok)throw Error('unavailable');const config=await response.json();drawConfig(config);await nextTasks(config.tasks||[]);$('config-status').textContent='{{t:dash.loaded}} '+new Date().toLocaleTimeString()}catch(e){$('config-status').textContent='{{t:dash.settings_unavailable}}'}}
             $('reload-config').addEventListener('click',loadConfig);loadConfig();
             document.addEventListener('oseer:connections-changed',loadConfig);
             document.addEventListener('oseer:config-saved',loadConfig);
             function drawRuns(){openRuns=new Set([...document.querySelectorAll('#runs details[open]')].map(d=>d.dataset.run));const body=$('runs');body.replaceChildren();const runs=data.runs||[];
             for(const r of runs){const tr=document.createElement('tr');const chain=r.chain||{},decision=r.decision||{},gate=r.orca_gate||{};
             const cost=chain.cost_usd??r.total_cost_usd,unpriced=chain.unpriced_calls??r.unpriced_calls;
-            let costText=cost==null?'—':String(cost);if(unpriced)costText+=' · '+unpriced+' без цены';
-            const outcome=(r.ok===true?'ok':r.ok===false?'нет':'—')+(r.reason?' · '+r.reason:'');
-            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'да':r.candidate_review_passed===false?'нет':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costText,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
-            const td=document.createElement('td');td.append(timeline(r));tr.append(td);body.append(tr)}
-            $('runs-empty').hidden=runs.length>0;$('dry-hidden').textContent=data.dry_runs_hidden?('Скрыто dry-run: '+data.dry_runs_hidden):''}
-            const states={running:'В работе',completed:'Завершено',failed:'Ошибка',needs_you:'Нужен ответ',dry_run:'Dry run',unknown_controller_stopped:'Контроллер остановлен · агент не проверен'};
-            function draw(){if(!data)return;drawPending();drawRuns();const q=$('filter').value.toLowerCase();const rows=data.attempts.filter(r=>JSON.stringify(r).toLowerCase().includes(q));
-            table('attempts',rows.map(r=>{const l=r.launch,e=l?.effective;return [r.workflow_run_id+' / '+r.stage,r.role+' / '+r.profile,r.runner+(r.runner==='orca'&&!r.cost_known?' · стоимость неизвестна':''),(r.model??(r.model_note==='agent_default'?'модель агента по умолчанию':'по умолчанию'))+' · '+(r.effort_requested??'effort не задан'),l?.status==='matched'?(e?.model??'не задана')+' · '+(e?.effort??'effort неизвестен'):(l?.status??'не подтверждено'),(states[r.view_state]??r.view_state)+' / '+(r.orca_dispatch_id??'—')+(r.agent_blocked_on?' · не стартовал: '+(r.agent_blocked_on==='folder_trust'?'вопрос о доверии к папке':r.agent_blocked_on==='cli_update_prompt'?'предложение обновить CLI':r.agent_blocked_on)+(r.resolution?' — '+r.resolution:''):'')]}));$('empty').hidden=rows.length>0;
+            const costLabel=costText(cost,unpriced);
+            const outcome=(r.ok===true?'ok':r.ok===false?'{{t:conn.no}}':'—')+(r.reason?' · '+r.reason:'');
+            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'{{t:conn.yes}}':r.candidate_review_passed===false?'{{t:conn.no}}':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costLabel,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
+            const td=document.createElement('td');td.append(timeline(r));tr.append(td);const first=tr.firstChild,button=document.createElement('button');button.type='button';button.className='linkish';button.textContent=first.textContent;button.title='{{t:dash.open_run_timeline}}';button.addEventListener('click',()=>window.overseerOpenRun&&overseerOpenRun(r.run_id));first.replaceChildren(button);body.append(tr)}
+            $('runs-empty').hidden=runs.length>0;$('dry-hidden').textContent=data.dry_runs_hidden?('{{t:dash.hidden_dry_run_entries}} '+data.dry_runs_hidden):''}
+            const states={running:'{{t:dash.in_progress}}',completed:'{{t:dash.completed}}',failed:'{{t:dash.error_2}}',needs_you:'{{t:dash.answer_needed}}',dry_run:'{{t:dash.dry_run_state}}',unknown_controller_stopped:'{{t:dash.controller_stopped_agent_unchecked}}'};
+            function draw(){if(!data)return;drawPending();drawRuns();if(window.overseerShellDraw)overseerShellDraw();const q=$('filter').value.toLowerCase();const rows=data.attempts.filter(r=>JSON.stringify(r).toLowerCase().includes(q));
+            table('attempts',rows.map(r=>{const l=r.launch,e=l?.effective;return [r.workflow_run_id+' / '+r.stage,r.role+' / '+r.profile,r.runner+(r.runner==='orca'&&!r.cost_known?' {{t:dash.cost_unknown}}':''),(r.model??(r.model_note==='agent_default'?'{{t:dash.default_agent_model}}':'{{t:dash.default}}'))+' · '+(r.effort_requested??'{{t:dash.effort_not_set}}'),l?.status==='matched'?(e?.model??'{{t:dash.not_set_2}}')+' · '+(e?.effort??'{{t:dash.effort_unknown}}'):(l?.status??'{{t:dash.unconfirmed}}'),(states[r.view_state]??r.view_state)+' / '+(r.orca_dispatch_id??'—')+(r.agent_blocked_on?' {{t:dash.did_not_start}} '+(r.agent_blocked_on==='folder_trust'?'{{t:dash.folder_trust_prompt}}':r.agent_blocked_on==='cli_update_prompt'?'{{t:dash.cli_update_prompt}}':r.agent_blocked_on)+(r.resolution?' — '+r.resolution:''):'')]}));$('empty').hidden=rows.length>0;
             $('path').textContent=data.project+' · '+data.config_home;$('problems').textContent=Object.entries(data.problems).map(([k,v])=>k+': '+v).join('; ')}
             $('filter').addEventListener('input',draw);
-            async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error('unavailable');data=await response.json();draw();$('connection').textContent='Данные обновлены · '+new Date(data.observed_at).toLocaleTimeString();$('connection').className=''}catch(e){$('connection').textContent='Нет связи · показаны последние полученные данные';$('connection').className='bad'}finally{setTimeout(refresh,2000)}}refresh();
+            async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error('unavailable');data=await response.json();draw();$('connection').textContent='{{t:dash.data_updated}} '+new Date(data.observed_at).toLocaleTimeString();$('connection').className=''}catch(e){$('connection').textContent='{{t:dash.disconnected_showing_last_received_data}}';$('connection').className='bad'}finally{setTimeout(refresh,2000)}}refresh();
             {{SETTINGS_SCRIPT}}
+            {{SHELL_SCRIPT}}
+            {{LAUNCH_SCRIPT}}
             </script></html>
             """.replace("{{BUDGET_HTML}}", DashboardControls.BUDGET_HTML)
-            .replace("{{SETTINGS_HTML}}", DashboardControls.HTML)
-            .replace("{{SETTINGS_SCRIPT}}", DashboardControls.SCRIPT);
+            .replace("{{PERSONAL_HTML}}", DashboardControls.HTML.substring(0, DashboardControls.HTML.indexOf("<section id=\"analytics\"")))
+            .replace("{{ANALYTICS_HTML}}", DashboardControls.HTML.substring(DashboardControls.HTML.indexOf("<section id=\"analytics\"")))
+            .replace("{{SHELL_CSS}}", DashboardShell.CSS)
+            .replace("{{SHELL_HEADER}}", DashboardShell.HEADER)
+            .replace("{{SHELL_OVERVIEW}}", DashboardShell.OVERVIEW)
+            .replace("{{SHELL_RUN_DETAIL}}", DashboardShell.RUN_DETAIL)
+            .replace("{{SETTINGS_SCRIPT}}", DashboardControls.SCRIPT)
+            .replace("{{SHELL_SCRIPT}}", DashboardShell.SCRIPT)
+            .replace("{{LAUNCH_CSS}}", RunLauncherUi.CSS)
+            .replace("{{LAUNCH_HTML}}", RunLauncherUi.HTML)
+            .replace("{{LAUNCH_SCRIPT}}", RunLauncherUi.SCRIPT);
 }

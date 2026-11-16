@@ -152,9 +152,27 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
      */
     public record RoleSpec(String role, List<String> profiles, String strategy,
                            boolean requireIndependentVendor, PeerPair peer,
-                           String vendorFailureMode, List<String> apiFallbackProfiles) {
+                           String vendorFailureMode, List<String> apiFallbackProfiles,
+                           boolean fallbackStandby) {
         public RoleSpec {
             apiFallbackProfiles = List.copyOf(apiFallbackProfiles);
+        }
+
+        public RoleSpec(String role, List<String> profiles, String strategy,
+                        boolean requireIndependentVendor, PeerPair peer,
+                        String vendorFailureMode, List<String> apiFallbackProfiles) {
+            this(role, profiles, strategy, requireIndependentVendor, peer, vendorFailureMode,
+                    apiFallbackProfiles, false);
+        }
+
+        /**
+         * The profiles {@code first} and {@code rotate} choose among. With
+         * {@code fallback_standby: true} the fallbacks wait for a failure: they are left out of
+         * the choice while any other profile of the role is eligible, so a fallback is never
+         * the stage's first pick by rotation. Without it every profile takes part, as before.
+         */
+        public boolean standby(String profile) {
+            return fallbackStandby && apiFallbackProfiles.contains(profile);
         }
 
         public RoleSpec(String role, List<String> profiles, String strategy,
@@ -266,7 +284,7 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
     public static final Set<String> FAILOVER_MODES = Set.of("confirm", "auto", "stop");
     private static final Set<String> ROLE_KEYS = Set.of(
             "profiles", "strategy", "require_independent_vendor", "same_vendor_peer",
-            "on_vendor_failure", "api_fallback_profiles");
+            "on_vendor_failure", "api_fallback_profiles", "fallback_standby");
     private static final Set<String> PEER_KEYS = Set.of("implementer", "reviewer");
     private static final Set<String> REVIEW_KEYS =
             Set.of("required_for_risk", "repair_severities", "contract_gaps", "note");
@@ -318,8 +336,17 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
                             + "' must be one of this role's profiles " + profiles);
                 }
             }
+            boolean standby = spec.optBool("fallback_standby", false);
+            if (standby && apiFallbackProfiles.isEmpty()) {
+                root.collector().add("roles." + roleName + ".fallback_standby needs api_fallback_profiles: "
+                        + "there is nothing to hold in reserve");
+            }
+            if (standby && profiles.stream().allMatch(apiFallbackProfiles::contains)) {
+                root.collector().add("roles." + roleName + ".fallback_standby leaves no profile to start with; "
+                        + "keep at least one profile that is not a fallback");
+            }
             roles.put(roleName, new RoleSpec(roleName, profiles, strategy, independent, peer,
-                    roleVendorFailure, apiFallbackProfiles));
+                    roleVendorFailure, apiFallbackProfiles, standby));
         }
         if (roles.isEmpty()) {
             root.collector().add("roles must declare at least one role");

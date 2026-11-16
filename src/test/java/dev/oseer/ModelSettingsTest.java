@@ -208,7 +208,7 @@ public final class ModelSettingsTest implements Suite {
     private static void dashboard(Check check, Path home) throws Exception {
         try (Dashboard dashboard = new Dashboard(home, 0, null, home, ignored -> null); HttpClient client = HttpClient.newHttpClient()) {
             dashboard.start(); String root = dashboard.url();
-            var html = client.send(HttpRequest.newBuilder(URI.create(root)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var html = client.send(HttpRequest.newBuilder(URI.create(root)).header("Accept-Language", "ru").GET().build(), HttpResponse.BodyHandlers.ofString());
             check.contains("same panel offers vendor availability", html.body(), "Проверить подключения");
             check.contains("role composition has horizontal selectable slots", html.body(), "className='role-slot'");
             check.contains("same panel offers editable Jev rubric",html.body(),"jev-policy-yaml");
@@ -223,11 +223,11 @@ public final class ModelSettingsTest implements Suite {
             check.that("ordinary settings omit per-model ping buttons",!html.body().contains("Проверить все модели"));
             check.that("ordinary settings omit separate capability verification button",!html.body().contains("Проверить допуск"));
             check.that("template substitutions are complete", !html.body().contains("{{MODEL_SETTINGS}}"));
-            var noToken = client.send(HttpRequest.newBuilder(URI.create(root + "api/models/save-check"))
+            var noToken = client.send(HttpRequest.newBuilder(URI.create(root + "api/models/save-check")).header("Accept-Language", "ru")
                     .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{}"))
                     .build(), HttpResponse.BodyHandlers.ofString());
             check.eq("check and settings mutations require page token", 403, noToken.statusCode());
-            var read = client.send(HttpRequest.newBuilder(URI.create(root + "api/models")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var read = client.send(HttpRequest.newBuilder(URI.create(root + "api/models")).header("Accept-Language", "ru").GET().build(), HttpResponse.BodyHandlers.ofString());
             check.eq("settings are readable without inference", 200, read.statusCode());
             check.that("GET settings does not contain credential values", !read.body().contains("do-not-store"));
         }

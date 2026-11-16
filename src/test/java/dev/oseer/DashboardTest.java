@@ -110,10 +110,32 @@ public final class DashboardTest implements Suite {
 
         try (var dashboard = new Dashboard(root, 0); var client = HttpClient.newHttpClient()) {
             dashboard.start();
-            var page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).build(), HttpResponse.BodyHandlers.ofString());
+            var page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("dashboard reachable over loopback", 200, page.statusCode());
             check.contains("UI treats configured fields as text", page.body(), "td.textContent");
             check.contains("runs section is on the page", page.body(), "Запуски");
+            check.contains("one cost formatter for every cost on the page", page.body(), "function costText(usd,unpriced)");
+            String launchPage = page.body();
+            check.that("a waiting job badges the tab title", launchPage.contains("document.title=(waiting.length?"));
+            check.that("notifications are asked for on a click, not on load", launchPage.contains("addEventListener('click',async()=>{askToNotify();"));
+            // Every Russian message, and the page's own markup outside scripts and code samples,
+            // is free of the English config words a Russian reader kept tripping over.
+            String visible = launchPage.replaceAll("(?s)<script.*?</script>", "").replaceAll("(?s)<code>.*?</code>", "");
+            for (String word : List.of("use:", "pong", "Pong", "dry-run", "Dry-run", "Dry run")) {
+                check.that("no Russian message says " + word, dev.oseer.dashboard.Messages.bundle("ru").values().stream().noneMatch(v -> v.contains(word)));
+                check.that("the rendered Russian page says no " + word + " outside code", !visible.contains(word));
+            }
+            for (String leftover : List.of("Run / задача", "<th>Review</th>", "<th>Gate</th>", "'Dry run'", "Task use:", "Effort (custom)", "✓ pong", "'Ping'", "review assurance:"))
+                check.that("no untranslated leftover " + leftover + " on the Russian page", !launchPage.contains(leftover));
+            check.that("a waiting decision comes before the job facts",
+                    launchPage.indexOf("id=\"launch-decision\"") < launchPage.indexOf("id=\"launch-now\"")
+                            && launchPage.indexOf("id=\"launch-job-title\"") < launchPage.indexOf("id=\"launch-decision\""));
+            check.contains("a waiting decision has a link that follows the reader", launchPage, "id=\"launch-waiting\" hidden");
+            check.contains("the link follows any scroll container, from the first render", launchPage, "new IntersectionObserver(");
+            check.contains("the empty-jobs note starts hidden instead of flashing", launchPage, "id=\"launch-jobs-empty\" class=\"muted\" hidden");
+            check.that("the empty-jobs note stays hidden while a job is open", launchPage.contains("length>0||!!job"));
+            check.that("no cost is printed raw or with its own rounding",
+                    !page.body().contains("String(cost)") && !page.body().contains("cost_usd_known).toFixed"));
             check.contains("connections section is on the page", page.body(), "id=\"connection-editor-title\">Ключи и адреса API</h2>");
             check.contains("authorization is not inferred from key presence", page.body(), "не подтверждает авторизацию");
             check.contains("coding requires a separately verified harness", page.body(), "OpenCode после отдельной проверки профиля");
@@ -128,18 +150,18 @@ public final class DashboardTest implements Suite {
             }
             check.contains("run timeline is a details element", page.body(), "createElement('details')");
             check.that("page script never assigns innerHTML from data", !page.body().contains("innerHTML"));
-            var state = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).build(), HttpResponse.BodyHandlers.ofString());
+            var state = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("state endpoint readable", 200, state.statusCode());
             check.that("API publishes no raw transcripts", !state.body().contains("secret transcript"));
             check.that("API publishes no summary goal", !state.body().contains("SECRET_GOAL_MARKER"));
             check.that("API publishes no finding message", !state.body().contains("SECRET_FINDING_MARKER"));
-            var crossOrigin = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state"))
+            var crossOrigin = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru")
                     .header("Origin", "https://example.invalid").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("other web origins cannot read state", 403, crossOrigin.statusCode());
-            var write = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state"))
+            var write = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru")
                     .POST(HttpRequest.BodyPublishers.ofString("{}" )).build(), HttpResponse.BodyHandlers.ofString());
             check.eq("state projection remains read-only", 405, write.statusCode());
-            var file = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "profiles/test.yaml")).build(), HttpResponse.BodyHandlers.ofString());
+            var file = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "profiles/test.yaml")).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("dashboard cannot serve arbitrary config files", 404, file.statusCode());
         }
     }

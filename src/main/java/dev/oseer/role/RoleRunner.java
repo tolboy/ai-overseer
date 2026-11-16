@@ -1060,8 +1060,7 @@ public final class RoleRunner {
             // Said before the call, not after it: this is the line an operator reads while a
             // vendor is busy for ten minutes, and "which model is working right now" is the
             // question the silence was hiding.
-            progress.line("      " + profile.name() + "  " + profile.vendor()
-                    + (profile.model() == null ? "" : "/" + profile.model())
+            progress.line("      " + profile.name() + "  " + Profile.modelLabel(profile.vendor(), profile.model())
                     + (profile.effort() == null ? "" : " effort=" + profile.effort())
                     + (attempt > 1 ? "  (vendor attempt " + attempt + ")" : "")
                     + "  dispatching, up to " + profile.wallClockMinutes() + " min");
@@ -1526,11 +1525,15 @@ public final class RoleRunner {
         return new Successor(null, rejected);
     }
 
-    // Auth, identity, truncation, parse, cancellation and admission/configuration errors
-    // are deliberately absent. A different provider cannot repair those safely.
+    // Auth, identity, parse, cancellation and admission/configuration errors are
+    // deliberately absent. A different provider cannot repair those safely. Truncation is
+    // here: the answer hit this profile's output cap, so nothing was judged, and a declared
+    // fallback with its own cap (or a CLI reviewer) can produce the whole artifact. Measured
+    // 2026-11-16 on hello-loop: a GLM review stopped at 4096 output tokens and went straight
+    // to a person although codex-review was configured as the next fallback.
     private static boolean transientApiFailure(String code) {
         return code != null && Set.of("role_api_network_error", "role_api_timeout",
-                "role_api_rate_limited", "role_api_provider_error").contains(code);
+                "role_api_rate_limited", "role_api_provider_error", "role_api_output_truncated").contains(code);
     }
 
     /**
@@ -1570,7 +1573,7 @@ public final class RoleRunner {
                     "role_api_provider_error", "role_api_rate_limited" -> "vendor_call_failed";
             case "role_timeout", "role_api_timeout" -> "role_timeout";
             case "role_artifact_unparseable", "role_artifact_incomplete",
-                    "role_artifact_schema_violation" -> "artifact_invalid";
+                    "role_artifact_schema_violation", "role_api_output_truncated" -> "artifact_invalid";
             case "role_vendor_unavailable" -> "vendor_unavailable";
             default -> code;
         };

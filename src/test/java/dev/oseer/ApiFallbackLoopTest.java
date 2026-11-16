@@ -8,9 +8,11 @@ import dev.oseer.config.ProfileVerifier;
 import dev.oseer.config.UserConfig;
 import dev.oseer.config.UserSetup;
 import dev.oseer.execution.ApiExecutor;
+import dev.oseer.execution.ModelCheck;
 import dev.oseer.execution.RoleExecutor;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.run.RunReadiness;
 import dev.oseer.run.TaskLoop;
 import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
@@ -61,6 +63,28 @@ public final class ApiFallbackLoopTest implements Suite {
             check.eq("the final API response passes the mandatory review", "pass", review.get("verdict"));
             check.eq("the successful full loop leaves acceptance pending", "pending",
                     new ApprovalStore(auto.project).read("auto").state().jsonValue());
+        }
+        try (Fixture auto = new Fixture("auto", false)) {
+            Path policy = auto.home.resolve("policy.yaml");
+            Files.writeString(policy, Files.readString(policy).replace(
+                    "    api_fallback_profiles: [backup-one, backup-two]",
+                    "    api_fallback_profiles: [backup-one, backup-two]\n    fallback_standby: true"));
+            RunReadiness readiness = RunReadiness.using(new ModelCheck(new ProcessRunner(), System::getenv,
+                    (profile, user, project, settings) -> switch (profile.name()) {
+                        case "primary" -> Map.of("ok", false, "code", "role_api_provider_error");
+                        case "backup-two" -> Map.of("ok", false, "code", "role_api_auth_failed");
+                        default -> Map.of("ok", true, "code", "check_passed");
+                    }));
+            var result = auto.run("check-failover", null, readiness);
+            check.that("grouped launch check permits a standby that answered", result.ok());
+            check.eq("check coverage uses the policy profile, without its effort suffix",
+                    List.of(Map.of("role", "reviewer", "profile", "primary", "code", "role_api_provider_error",
+                            "fallback", "backup-one")), result.summaryReport().get("model_check_covered_by_fallback"));
+            check.eq("failed unused standby is reported without blocking the covered role",
+                    List.of(Map.of("role", "reviewer", "profile", "backup-two", "code", "role_api_auth_failed")),
+                    result.summaryReport().get("model_check_unavailable_standbys"));
+            check.eq("actual review still tries the primary and its declared successor",
+                    List.of("fixture/primary", "fixture/backup-one"), auto.models);
         }
         try (Fixture confirm = new Fixture("confirm", true)) {
             var first = confirm.run("confirm-first", null);
@@ -213,8 +237,11 @@ public final class ApiFallbackLoopTest implements Suite {
             }
         }
         TaskLoop.Outcome run(String id, String from) throws Exception {
+            return run(id, from, (user, loaded, profiles, strict, progress) -> Map.of("ok", true, "code", "fixture_ready"));
+        }
+        TaskLoop.Outcome run(String id, String from, RunReadiness readiness) throws Exception {
             TaskLoop loop = new TaskLoop(new ProcessRunner()).withOrcaGate(false)
-                    .withReadiness((user, loaded, profiles, strict, progress) -> Map.of("ok", true, "code", "fixture_ready"))
+                    .withReadiness(readiness)
                     .withExecutors((profile, processes, git) -> "api".equals(profile.runner())
                             ? new ApiExecutor(System::getenv, git) : request -> {
                                 writes.incrementAndGet();

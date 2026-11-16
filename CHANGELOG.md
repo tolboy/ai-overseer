@@ -30,6 +30,50 @@ that exists in code but has never been run live says so.
 
 ### Added
 
+- Dashboard **Launch** tab: start `oseer do` / `oseer run` from the browser against any git
+  repository top, with goal, task, risk, mode, preparation, call cap, spend threshold,
+  draft-only, in-place, per-stage profile and effort pins and the Orca gate switch. A dry-run
+  preview (cast, bound, estimate) is the plan approval; the start needs it, a confirmation,
+  and an unchanged HEAD, policy, profiles and task. Jobs run as child processes of the
+  dashboard (one per project, cancel by SIGTERM), with a live view: stage now, vendor,
+  elapsed, failed attempts with HTTP status, failovers, redacted narration. Pending
+  decisions are answered there, optionally switching a stage's profile for the
+  continuation; ready runs can be landed. Token, JSON and same-origin checks on every
+  mutating endpoint; `--no-launcher` turns it off. Run live on a test project.
+  Jobs are recorded under `<home>/ui-jobs/<job>/job.json` (identity and outcome, no argv),
+  so a restarted dashboard lists them and re-attaches; a job that was running when the
+  dashboard stopped shows as stopped. A job waiting for a person badges the tab title and,
+  once the browser allows it, raises a notification; the decision sits at the top of the
+  job view with a sticky "Waiting for you" link.
+- `oseer do --max-role-runs N --max-cost-usd X` write the budget into the contract that
+  invocation drafts.
+- English and Russian dashboard and decision-page text from message bundles, with a
+  language switcher; English is the default for a browser that does not ask for Russian.
+- Per-role fallback vendors in standby (`fallback_standby`), configurable in the browser;
+  a transient model-check failure with an answering standby and `on_vendor_failure: auto`
+  no longer stops the run.
+- `oseer doctor` and the dashboard name credential references the process cannot resolve.
+- A role API answer cut off at its output limit (`role_api_output_truncated`) now fails over
+  to the role's declared fallback, within `failover.max_per_stage`, before a person is
+  asked. The same profile is not retried with a larger cap: the cap is part of the
+  verified profile.
+- Run timelines name the failed attempts that stopped a run (HTTP status, code) and mark a
+  stage that did not pass as failed. Previews and the run report print a model id that
+  already carries its vendor once, and the cast lists each role's standby fallbacks.
+- One cost format on every dashboard surface: `$0.0004 (+2 unpriced)`.
+
+- Dashboard tabs with an **Обзор** page (waiting decisions, active agents, last run, known
+  cost and unpriced calls, the next run's cast) and a per-run **timeline**: stages with
+  role, vendor, model, effort, duration, cost or "unpriced", baseline and gate commands
+  attributed as regression or already red, and allowlisted, redacted evidence links.
+  Offline, token-gated, read-only; tested offline, shown against recorded runs.
+- Task `mode: quick|bug|task|refactor`, selectable in the dashboard's next-run form and
+  with `oseer do --mode`.
+- `oseer init --scan`, and Go and Python check detection in `init`.
+- The browser roster editor refuses a save that leaves a role requiring an independent
+  vendor with no candidate outside the implementer's vendor
+  (`reviewer_not_independent`).
+
 - Catalog refresh uses non-inference CLI metadata where supported, with source dates,
   explicit stale/unknown states and cache update instructions elsewhere. Removed or
   unknown models keep their manual configuration; refresh never changes roles, effort
