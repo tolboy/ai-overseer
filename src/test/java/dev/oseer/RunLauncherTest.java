@@ -57,7 +57,15 @@ public final class RunLauncherTest implements Suite {
         check.rejects("a relative path is refused", "absolute", () -> launcher.inspect(Map.of("project", "repo")));
         check.rejects("a missing directory is refused", "no such directory", () -> launcher.inspect(Map.of("project", scratch.resolve("nope").toString())));
         check.rejects("a directory outside git is refused", "not a git repository", () -> launcher.inspect(Map.of("project", plain.toString())));
-        check.rejects("a subdirectory is refused", "repository top", () -> launcher.inspect(Map.of("project", repo.resolve("src").toString())));
+        try { launcher.inspect(Map.of("project", repo.resolve("src").toString())); check.that("a subdirectory is refused", false); }
+        catch (RunLauncher.Refused refused) {
+            check.eq("a subdirectory is refused by code", "project_not_repo_root", refused.code());
+            check.eq("the refusal names only the top folder, the page says the rest", repo.toRealPath().toString(), refused.getMessage());
+        }
+        try { launcher.inspect(Map.of("project", repo.resolve(".oseer/tasks").toString())); check.that("a folder inside .oseer is refused", false); }
+        catch (RunLauncher.Refused refused) {
+            check.eq("a folder inside .oseer is called Overseer's own", "project_inside_oseer", refused.code());
+        }
         Map<String, Object> inspected = launcher.inspect(Map.of("project", repo.toString()));
         check.eq("inspect names the repository", repo.toRealPath().toString(), inspected.get("project"));
         check.eq("inspect lists its task contracts", List.of("hello", "slow", "stops"), inspected.get("tasks"));

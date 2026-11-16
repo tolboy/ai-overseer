@@ -129,18 +129,18 @@ final class RunLauncherUi {
             const key=document.querySelector('meta[name=oseer-settings-token]').content;
             const mk=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n};
             const stateText={running:'{{t:launch.state_running}}',finished:'{{t:launch.state_finished}}',failed:'{{t:launch.state_failed}}',stopped:'{{t:launch.state_stopped}}',cancelled:'{{t:launch.state_cancelled}}'};
-            const codes={project_not_git:'{{t:launch.err_not_git}}',project_not_repo_root:'{{t:launch.err_not_root}}',project_missing:'{{t:launch.err_missing}}',project_not_absolute:'{{t:launch.err_not_absolute}}',
+            const codes={project_not_git:'{{t:launch.err_not_git}}',project_not_repo_root:'{{t:launch.err_not_root}}',project_inside_oseer:'{{t:launch.err_inside_oseer}}',project_missing:'{{t:launch.err_missing}}',project_not_absolute:'{{t:launch.err_not_absolute}}',
             project_busy:'{{t:launch.err_busy}}',preview_stale:'{{t:launch.err_stale}}',preview_unknown:'{{t:launch.err_stale}}',confirmation_required:'{{t:launch.err_confirm}}',goal_invalid:'{{t:launch.err_goal}}',
             task_unknown:'{{t:launch.err_task}}',launcher_disabled:'{{t:launch.disabled}}',preview_timeout:'{{t:launch.err_timeout}}',decision_not_pending:'{{t:launch.err_not_pending}}',run_unknown:'{{t:launch.err_run_unknown}}'};
             const dur=ms=>{if(ms==null)return '—';const s=Math.round(ms/1000);return s<60?s+' {{t:launch.unit_s}}':Math.floor(s/60)+' {{t:launch.unit_min}} '+(s%60)+' {{t:launch.unit_s}}'};
             async function api(action,payload){const r=await fetch('/api/launch/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Overseer-Token':key},body:JSON.stringify(payload)});
-            let body={};try{body=await r.json()}catch(e){}if(!r.ok){const e=Error(codes[body.code]?codes[body.code]+(body.message?' ('+body.message+')':''):(body.message||body.code||('HTTP '+r.status)));e.code=body.code;throw e}return body}
+            let body={};try{body=await r.json()}catch(e){}if(!r.ok){const plain=['project_not_repo_root','project_inside_oseer'].includes(body.code);const e=Error(codes[body.code]?codes[body.code]+(body.message?(plain?' '+body.message:' ('+body.message+')'):''):(body.message||body.code||('HTTP '+r.status)));e.code=body.code;throw e}return body}
             let target=null,stages=[],plan=null,job=null,jobTimer=null,jobView=null;
             const kind=()=>document.querySelector('input[name=launch-kind]:checked').value;
             for(const r of document.querySelectorAll('input[name=launch-kind]'))r.addEventListener('change',()=>{g('launch-do').hidden=kind()!=='do';g('launch-run').hidden=kind()!=='run';discard()});
             async function inspect(){const s=g('launch-target');s.className='';s.textContent='{{t:launch.checking}}';
             try{const t=await api('inspect',{project:g('launch-project').value});target=t;g('launch-project').value=t.project;
-            s.className='ok';s.textContent=t.project+' · {{t:launch.branch}} '+(t.branch??'—')+' · HEAD '+(t.head??'—')+' · '+(t.dirty_files?t.dirty_files+' {{t:launch.dirty}}':'{{t:launch.clean}}')+(t.project_config?'':' · {{t:launch.no_project_yaml}}')+(t.busy?' · {{t:launch.err_busy}}':'');
+            s.className='ok';s.textContent=t.project+' · {{t:launch.branch}} '+(t.branch??'—')+' · HEAD '+(t.head??'—')+' · '+(t.dirty_files?t.dirty_files+' {{t:launch.dirty}}':'{{t:launch.clean}}')+' · '+((t.tasks||[]).length?'{{t:launch.task_list}} '+t.tasks.join(', '):'{{t:launch.no_tasks}}')+(t.project_config?'':' · {{t:launch.no_project_yaml}}')+(t.busy?' · {{t:launch.err_busy}}':'');
             const sel=g('launch-task');sel.replaceChildren();for(const name of t.tasks||[])sel.append(new Option(name,name));if(!(t.tasks||[]).length)sel.append(new Option('{{t:launch.no_tasks}}',''))}
             catch(e){target=null;s.className='bad';s.textContent=e.message}}
             g('launch-inspect').addEventListener('click',inspect);g('launch-project').addEventListener('change',()=>{target=null;discard()});
