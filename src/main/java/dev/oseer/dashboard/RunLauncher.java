@@ -331,6 +331,27 @@ public final class RunLauncher implements AutoCloseable {
         return launch("land", "land · " + runId, project, List.of(argv), runId).view();
     }
 
+    /**
+     * Shows a run this server did not start, such as one a terminal or a previous dashboard
+     * started, so its decision can be answered and its vendor switched from here. Runs nothing.
+     */
+    public Map<String, Object> attach(Map<String, Object> payload) throws Refused {
+        Path project = project(payload.get("project"));
+        String runId = optional(payload, "run_id", RunTimeline.RUN_ID, "run");
+        if (runId == null || runId.contains("--") || !Files.isDirectory(project.resolve(".oseer/runs").resolve(runId))) {
+            throw new Refused(404, "run_unknown", "no such run in " + project);
+        }
+        Job job;
+        synchronized (this) {
+            String id = "job-" + token().substring(0, 10);
+            job = new Job(id, "attach", "attach · " + runId, project, home.resolve("ui-jobs").resolve(id), List.of(), runId);
+            job.state = pending(project, runId) != null ? "stopped" : "finished";
+            job.ended = job.started;
+            jobs.put(id, job);
+        }
+        return job.view();
+    }
+
     public Map<String, Object> cancel(Map<String, Object> payload) throws Refused {
         Job job;
         synchronized (this) { job = jobs.get(string(payload.get("job"), "")); }
@@ -421,7 +442,10 @@ public final class RunLauncher implements AutoCloseable {
                 job.result = lastJson(job.dir.resolve("stdout.json"));
                 if (code != 0 && !(job.step < job.chain.size() - 1 && job.result != null && Boolean.TRUE.equals(job.result.get("ok")))) break;
             }
-            job.state = job.cancelled ? "cancelled" : job.exit != null && job.exit == 0 ? "finished" : "failed";
+            // A run that stopped for a person exits non-zero but answers with its own JSON;
+            // that is a stop to answer, not a crash.
+            job.state = job.cancelled ? "cancelled" : job.exit != null && job.exit == 0 ? "finished"
+                    : job.result != null && job.result.get("ok") instanceof Boolean ? "stopped" : "failed";
         } catch (IOException | InterruptedException failure) {
             job.state = "failed";
             job.note = failure.getClass().getSimpleName();
@@ -717,7 +741,7 @@ public final class RunLauncher implements AutoCloseable {
         if (narrated != null && !narrated.contains("--")) job.runId = narrated;
         view.put("run_id", job.runId);
         view.put("narration", redact(narration.subList(Math.max(0, narration.size() - TAIL_LINES), narration.size())));
-        view.put("step", job.step + 1);
+        view.put("step", Math.min(job.step + 1, job.chain.size()));
         view.put("steps", job.chain.size());
         view.put("note", job.note);
         Map<String, Object> result = job.result;

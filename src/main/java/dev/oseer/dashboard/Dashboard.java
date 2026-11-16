@@ -156,6 +156,7 @@ public final class Dashboard implements AutoCloseable {
                                         case "/api/launch/answer" -> runs.answer(payload);
                                         case "/api/launch/land" -> runs.land(payload);
                                         case "/api/launch/cancel" -> runs.cancel(payload);
+                                        case "/api/launch/attach" -> runs.attach(payload);
                                         default -> throw new RunLauncher.Refused(404, "launch_unknown", "no such action");
                                     });
                                 } catch (RunLauncher.Refused refused) {

@@ -31,6 +31,7 @@ public final class RunLauncherTest implements Suite {
             echo "plan  implement -> review" >&2
             echo "bound 3 vendor call(s)" >&2
             echo "vendor said api_key=sk-abcdefghijklmnop" >&2
+            case "$*" in *stops*) echo '{"ok":false,"reason":"vendor_protocol_failed"}'; exit 1;; esac
             case "$*" in *--dry-run*) mkdir -p ".oseer/runs/$rid" ".oseer/runs/$rid--implementer-0";; *slow*) sleep 30;; esac
             echo "home $OSEER_CONFIG_HOME" >&2
             echo '{"ok":true,"reason":"done","run_id":"'$rid'"}'
@@ -45,6 +46,7 @@ public final class RunLauncherTest implements Suite {
         Files.createDirectories(plain);
         Files.writeString(repo.resolve(".oseer/tasks/hello.yaml"), "id: hello\n");
         Files.writeString(repo.resolve(".oseer/tasks/slow.yaml"), "id: slow\n");
+        Files.writeString(repo.resolve(".oseer/tasks/stops.yaml"), "id: stops\n");
         git(repo, "init", "-q");
         git(repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
         Path script = scratch.resolve("fake-oseer.sh"), log = scratch.resolve("argv.log");
@@ -58,7 +60,7 @@ public final class RunLauncherTest implements Suite {
         check.rejects("a subdirectory is refused", "repository top", () -> launcher.inspect(Map.of("project", repo.resolve("src").toString())));
         Map<String, Object> inspected = launcher.inspect(Map.of("project", repo.toString()));
         check.eq("inspect names the repository", repo.toRealPath().toString(), inspected.get("project"));
-        check.eq("inspect lists its task contracts", List.of("hello", "slow"), inspected.get("tasks"));
+        check.eq("inspect lists its task contracts", List.of("hello", "slow", "stops"), inspected.get("tasks"));
         check.that("inspect shows the branch and HEAD", inspected.get("branch") != null && inspected.get("head") != null);
         check.eq("an empty project means the dashboard's own", repo.toRealPath().toString(), launcher.inspect(Map.of()).get("project"));
 
@@ -123,6 +125,10 @@ public final class RunLauncherTest implements Suite {
         check.contains("the Orca gate switch reaches the engine", Files.readAllLines(log).getLast(), "--no-orca-gate");
         check.rejects("a preview starts once", "preview again", () -> launcher.start(Map.of("preview_id", fresh.get("preview_id"), "confirm", true)));
 
+        Map<String, Object> stopsPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "stops")));
+        Map<String, Object> stopped = waitFor(launcher, String.valueOf(launcher.start(Map.of("preview_id", stopsPlan.get("preview_id"), "confirm", true)).get("id")));
+        check.eq("a run that stops for a person is stopped, not failed", "stopped", stopped.get("state"));
+
         // One job per project; cancel stops it.
         Map<String, Object> slowPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "slow")));
         Map<String, Object> slow = launcher.start(Map.of("preview_id", slowPlan.get("preview_id"), "confirm", true));
@@ -135,8 +141,14 @@ public final class RunLauncherTest implements Suite {
         Map<String, Object> cancelled = waitFor(launcher, String.valueOf(slow.get("id")));
         check.eq("cancel stops the job", "cancelled", cancelled.get("state"));
         check.that("cancel does not wait for the job to finish on its own", System.nanoTime() - before < 15_000_000_000L);
-        check.eq("the job list shows both jobs", 2, launcher.jobs().size());
+        check.eq("the job list shows every job", 3, launcher.jobs().size());
         check.rejects("an unknown job is refused", "no such job", () -> launcher.job("job-nope"));
+
+        Files.createDirectories(repo.resolve(".oseer/runs/run-earlier"));
+        Map<String, Object> attached = launcher.attach(Map.of("project", repo.toString(), "run_id", "run-earlier"));
+        check.eq("a run started elsewhere can be attached", "run-earlier", attached.get("run_id"));
+        check.eq("attaching runs nothing", "finished", attached.get("state"));
+        check.rejects("an unknown run cannot be attached", "no such run", () -> launcher.attach(Map.of("project", repo.toString(), "run_id", "run-nope")));
 
         // Answers and lands are validated before anything starts.
         check.rejects("an answer needs a pending decision", "no pending decision",

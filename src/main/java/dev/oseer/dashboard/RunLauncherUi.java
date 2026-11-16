@@ -86,6 +86,8 @@ final class RunLauncherUi {
             <h3>{{t:launch.jobs}}</h3>
             <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:launch.job}}</th><th>{{t:launch.state}}</th><th>{{t:launch.run}}</th><th>{{t:launch.elapsed}}</th><th></th></tr></thead><tbody id="launch-jobs"></tbody></table></div>
             <p id="launch-jobs-empty" class="muted">{{t:launch.no_jobs}}</p>
+            <div class="launch-grid"><label>{{t:launch.attach_run}}<input id="launch-attach-run" autocomplete="off" placeholder="run-…"></label></div>
+            <button type="button" id="launch-attach">{{t:launch.attach}}</button> <span id="launch-attach-status" role="status"></span>
             <section id="launch-job" hidden aria-labelledby="launch-job-title">
             <h3 id="launch-job-title"></h3>
             <div class="now" id="launch-now" aria-live="polite"></div>
@@ -123,10 +125,10 @@ final class RunLauncherUi {
             (()=>{const g=id=>document.getElementById(id);if(!g('launch'))return;
             const key=document.querySelector('meta[name=oseer-settings-token]').content;
             const mk=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n};
-            const stateText={running:'{{t:launch.state_running}}',finished:'{{t:launch.state_finished}}',failed:'{{t:launch.state_failed}}',cancelled:'{{t:launch.state_cancelled}}'};
+            const stateText={running:'{{t:launch.state_running}}',finished:'{{t:launch.state_finished}}',failed:'{{t:launch.state_failed}}',stopped:'{{t:launch.state_stopped}}',cancelled:'{{t:launch.state_cancelled}}'};
             const codes={project_not_git:'{{t:launch.err_not_git}}',project_not_repo_root:'{{t:launch.err_not_root}}',project_missing:'{{t:launch.err_missing}}',project_not_absolute:'{{t:launch.err_not_absolute}}',
             project_busy:'{{t:launch.err_busy}}',preview_stale:'{{t:launch.err_stale}}',preview_unknown:'{{t:launch.err_stale}}',confirmation_required:'{{t:launch.err_confirm}}',goal_invalid:'{{t:launch.err_goal}}',
-            task_unknown:'{{t:launch.err_task}}',launcher_disabled:'{{t:launch.disabled}}',preview_timeout:'{{t:launch.err_timeout}}',decision_not_pending:'{{t:launch.err_not_pending}}'};
+            task_unknown:'{{t:launch.err_task}}',launcher_disabled:'{{t:launch.disabled}}',preview_timeout:'{{t:launch.err_timeout}}',decision_not_pending:'{{t:launch.err_not_pending}}',run_unknown:'{{t:launch.err_run_unknown}}'};
             const dur=ms=>{if(ms==null)return '—';const s=Math.round(ms/1000);return s<60?s+' s':Math.floor(s/60)+' min '+(s%60)+' s'};
             async function api(action,payload){const r=await fetch('/api/launch/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Overseer-Token':key},body:JSON.stringify(payload)});
             let body={};try{body=await r.json()}catch(e){}if(!r.ok){const e=Error(codes[body.code]?codes[body.code]+(body.message?' ('+body.message+')':''):(body.message||body.code||('HTTP '+r.status)));e.code=body.code;throw e}return body}
@@ -176,7 +178,7 @@ final class RunLauncherUi {
             g('launch-jobs-empty').hidden=(d.jobs||[]).length>0}catch(e){}finally{setTimeout(jobs,3000)}}
             function openJob(id){job=id;clearTimeout(jobTimer);g('launch-job').hidden=false;g('launch-steps').replaceChildren();g('launch-tail').textContent='';pollJob();g('launch-job').scrollIntoView({block:'start'})}
             async function pollJob(){const id=job;if(!id)return;let v;try{const r=await fetch('/api/launch/jobs/'+encodeURIComponent(id),{cache:'no-store'});if(!r.ok)throw Error();v=await r.json()}catch(e){g('launch-job-status').textContent='{{t:launch.unreachable}}';jobTimer=setTimeout(pollJob,4000);return}
-            if(id!==job)return;jobView=v;let timeline=null;if(v.run_id){try{const r=await fetch('/api/runs/'+encodeURIComponent(v.run_id)+'?job='+encodeURIComponent(id),{cache:'no-store'});if(r.ok)timeline=await r.json()}catch(e){}}
+            if(id!==job)return;jobView=v;let timeline=null;if(v.run_id&&(v.narration||[]).length){try{const r=await fetch('/api/runs/'+encodeURIComponent(v.run_id)+'?job='+encodeURIComponent(id),{cache:'no-store'});if(r.ok)timeline=await r.json()}catch(e){}}
             drawJob(v,timeline);if(v.state==='running'||(timeline&&timeline.state==='running'))jobTimer=setTimeout(pollJob,2000)}
             function drawJob(v,t){g('launch-job-title').textContent=v.label+' · '+v.id;const now=g('launch-now');now.replaceChildren();
             const steps=(t&&t.steps)||[];const current=steps.find(s=>s.status==='running')??steps[steps.length-1];
@@ -193,7 +195,8 @@ final class RunLauncherUi {
             const tail=g('launch-tail');const atEnd=tail.scrollTop+tail.clientHeight>=tail.scrollHeight-8;tail.textContent=(v.narration||[]).join('\\n');if(atEnd)tail.scrollTop=tail.scrollHeight;
             const d=v.decision;g('launch-decision').hidden=!d;if(d){g('launch-decision-reason').textContent=(d.kind??'')+' · '+(d.reason??'');const c=g('launch-choice');const keep=c.value;c.replaceChildren();for(const o of d.options||[])c.append(new Option(o,o));if((d.options||[]).includes(keep))c.value=keep}
             g('launch-land').hidden=!(v.run_id&&v.state!=='running'&&!d&&t&&t.ok===true)}
-            g('launch-cancel').addEventListener('click',async()=>{if(!job)return;try{await api('cancel',{job});pollJob()}catch(e){g('launch-job-status').textContent=e.message}});
+            g('launch-attach').addEventListener('click',async()=>{const s=g('launch-attach-status');s.className='';try{const j=await api('attach',{project:g('launch-project').value,run_id:g('launch-attach-run').value.trim()});s.textContent='';openJob(j.id)}catch(e){s.className='bad';s.textContent=e.message}});
+                        g('launch-cancel').addEventListener('click',async()=>{if(!job)return;try{await api('cancel',{job});pollJob()}catch(e){g('launch-job-status').textContent=e.message}});
             g('launch-open-run').addEventListener('click',()=>{if(jobView&&jobView.run_id)window.overseerOpenRun(jobView.run_id,job)});
             g('launch-answer').addEventListener('click',async()=>{const s=g('launch-answer-status');if(!jobView)return;const p={use:{}};const st=g('launch-switch-stage').value,pr=g('launch-switch-profile').value;if(st&&pr)p.use[st]=pr;
             try{const started=await api('answer',{project:jobView.project,run_id:jobView.run_id,decision:g('launch-choice').value,note:g('launch-note').value,confirm:g('launch-answer-confirm').checked,params:p});s.textContent='';g('launch-answer-confirm').checked=false;openJob(started.id)}
