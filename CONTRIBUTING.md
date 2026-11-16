@@ -30,10 +30,10 @@ build.cmd && test.cmd
 Both produce `out/classes` and `out/test-classes` and run `dev.oseer.testing.TestMain`.
 There is no watch mode and no incremental build; a full compile takes a couple of seconds.
 
-Compilation targets `--release 21` — a floor, not a ceiling. The bytecode runs on any newer
-JVM, and CI builds it on JDK 21 and 25 across Linux and Windows. Override the floor with
-`OSEER_JAVA_RELEASE` if you are testing something specific, but do not raise it in a PR
-without a reason in the description.
+Compilation targets Java 21 with `--release 21`. CI runs the full suite on Linux and Windows
+with JDK 21, the minimum supported version. You can also build and run the tests with a newer
+JDK. Use `OSEER_JAVA_RELEASE` to override the target for a local test. Explain any proposed
+increase to the minimum in the pull request description.
 
 The hygiene gate is a script rather than a block of CI, so you can run it before you push:
 
