@@ -129,7 +129,7 @@ final class RunLauncherUi {
             const codes={project_not_git:'{{t:launch.err_not_git}}',project_not_repo_root:'{{t:launch.err_not_root}}',project_missing:'{{t:launch.err_missing}}',project_not_absolute:'{{t:launch.err_not_absolute}}',
             project_busy:'{{t:launch.err_busy}}',preview_stale:'{{t:launch.err_stale}}',preview_unknown:'{{t:launch.err_stale}}',confirmation_required:'{{t:launch.err_confirm}}',goal_invalid:'{{t:launch.err_goal}}',
             task_unknown:'{{t:launch.err_task}}',launcher_disabled:'{{t:launch.disabled}}',preview_timeout:'{{t:launch.err_timeout}}',decision_not_pending:'{{t:launch.err_not_pending}}',run_unknown:'{{t:launch.err_run_unknown}}'};
-            const dur=ms=>{if(ms==null)return '—';const s=Math.round(ms/1000);return s<60?s+' s':Math.floor(s/60)+' min '+(s%60)+' s'};
+            const dur=ms=>{if(ms==null)return '—';const s=Math.round(ms/1000);return s<60?s+' {{t:launch.unit_s}}':Math.floor(s/60)+' {{t:launch.unit_min}} '+(s%60)+' {{t:launch.unit_s}}'};
             async function api(action,payload){const r=await fetch('/api/launch/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Overseer-Token':key},body:JSON.stringify(payload)});
             let body={};try{body=await r.json()}catch(e){}if(!r.ok){const e=Error(codes[body.code]?codes[body.code]+(body.message?' ('+body.message+')':''):(body.message||body.code||('HTTP '+r.status)));e.code=body.code;throw e}return body}
             let target=null,stages=[],plan=null,job=null,jobTimer=null,jobView=null;
@@ -185,10 +185,10 @@ final class RunLauncherUi {
             const fact=(k,val)=>{const s=mk('span',k);s.append(mk('b',val));now.append(s)};
             fact('{{t:launch.state}}',stateText[v.state]??v.state);fact('{{t:launch.stage_now}}',current?(current.stage??current.step??'—')+(current.status?' · '+current.status:''):'—');
             fact('{{t:launch.vendor_now}}',current?[current.profile,current.vendor].filter(Boolean).join(' · ')||'—':'—');
-            fact('{{t:launch.elapsed}}',dur(v.elapsed_ms));if(current&&current.status==='running'&&current.started_at)fact('{{t:launch.stage_elapsed}}',dur(Date.now()-Date.parse(current.started_at)));
+            fact('{{t:launch.elapsed}}',dur(v.elapsed_ms));
             if(t&&t.totals)fact('{{t:launch.cost}}',t.totals.cost_usd_known!=null?'$'+Number(t.totals.cost_usd_known).toFixed(4):'—');
             g('launch-cancel').disabled=v.state!=='running';g('launch-open-run').disabled=!v.run_id||!t;
-            const res=v.result||{};g('launch-job-status').textContent=[v.note,res.code,res.reason,res.next_action,res.message,res.next].filter(Boolean).join(' · ');
+            const res=v.state==='running'?{}:(v.result||{});g('launch-job-status').textContent=[v.note,res.code,res.reason,res.next_action,res.message,res.next].filter(Boolean).join(' · ');
             const list=g('launch-steps');list.replaceChildren();for(const s of steps){const li=mk('li',[s.stage??s.step,s.status,[s.profile,s.vendor].filter(Boolean).join('/'),s.duration_ms!=null?dur(s.duration_ms):null,s.code,s.http_status?'HTTP '+s.http_status:null].filter(Boolean).join(' · '));
             for(const f of s.failed_attempts||[])li.append(mk('div','{{t:timeline.attempt_failed}} '+[f.profile,f.vendor,f.http_status?'HTTP '+f.http_status:null,f.code].filter(Boolean).join(' · '),'code'));
             for(const f of s.failovers||[])li.append(mk('div','{{t:timeline.switched}} '+[(f.from_profile??'—')+' → '+(f.to_profile??'—'),f.cause].filter(Boolean).join(' · '),'switch'));list.append(li)}
