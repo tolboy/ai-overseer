@@ -115,7 +115,7 @@ final class DashboardShell {
             const statusText={passed:'пройдено',failed:'не пройдено',running:'идёт',skipped:'пропущено',unknown:'неизвестно',completed:'завершена',pending:'не закрыта',finished:'завершён',stopped:'остановлен без итогов',no_summary:'без итогов'};
             const roleText={implementer:'исполнитель',reviewer:'ревью',planner:'планирование',plan_reviewer:'ревью плана',visual_qa:'визуальная проверка'};
             const money=v=>v==null?'—':'$'+Number(v).toFixed(Number(v)<1?4:2);
-            function duration(ms){if(ms==null)return '—';const s=Math.round(ms/1000);if(s<60)return s+' с';const m=Math.floor(s/60);if(m<60)return m+' мин '+(s%60)+' с';return Math.floor(m/60)+' ч '+(m%60)+' мин'}
+            function duration(ms){if(ms==null)return '—';if(ms<1000)return Math.round(ms)+' мс';if(ms<10000)return (ms/1000).toFixed(1).replace('.',',')+' с';const s=Math.round(ms/1000);if(s<60)return s+' с';const m=Math.floor(s/60);if(m<60)return m+' мин '+(s%60)+' с';return Math.floor(m/60)+' ч '+(m%60)+' мин'}
             function stepStatus(s){return s.status??(s.ok===true?'passed':s.ok===false?'failed':'unknown')}
             function primaryOf(rows){const byStage=new Map();for(const r of rows){if(!byStage.has(r.stage))byStage.set(r.stage,[]);byStage.get(r.stage).push(r)}return byStage}
             function drawCast(){const box=el('overview-cast');box.replaceChildren();const plan=data.plan||[];
