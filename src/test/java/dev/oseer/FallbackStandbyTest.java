@@ -93,6 +93,12 @@ public final class FallbackStandbyTest implements Suite {
                 resolver.resolve("reviewer", standby.policy(), standby.profiles(), RoleResolver.Writers.of("codex"), 0,
                         p -> !p.name().equals("reader-a"), Set.of(), Set.of(), Set.of()).selected().name());
 
+        check.eq("a model id that starts with its vendor is not doubled", "deepseek/deepseek-v4-flash",
+                dev.oseer.config.Profile.modelLabel("deepseek", "deepseek/deepseek-v4-flash"));
+        check.eq("a gateway id under another prefix keeps the vendor apart", "z-ai · zai-org/GLM-5.3-Flash",
+                dev.oseer.config.Profile.modelLabel("z-ai", "zai-org/GLM-5.3-Flash"));
+        check.eq("no model reads as the vendor", "codex", dev.oseer.config.Profile.modelLabel("codex", null));
+
         // The pre-run model check does not stop a run whose failed primary has an answering standby.
         java.util.function.BiFunction<String, String, Map<String, Object>> row = (name, code) -> {
             var r = new LinkedHashMap<String, Object>(); r.put("profile", name); r.put("ok", code == null); if (code != null) r.put("code", code); return r; };

@@ -1060,8 +1060,7 @@ public final class RoleRunner {
             // Said before the call, not after it: this is the line an operator reads while a
             // vendor is busy for ten minutes, and "which model is working right now" is the
             // question the silence was hiding.
-            progress.line("      " + profile.name() + "  " + profile.vendor()
-                    + (profile.model() == null ? "" : "/" + profile.model())
+            progress.line("      " + profile.name() + "  " + Profile.modelLabel(profile.vendor(), profile.model())
                     + (profile.effort() == null ? "" : " effort=" + profile.effort())
                     + (attempt > 1 ? "  (vendor attempt " + attempt + ")" : "")
                     + "  dispatching, up to " + profile.wallClockMinutes() + " min");

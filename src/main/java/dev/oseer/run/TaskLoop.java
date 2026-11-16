@@ -1920,6 +1920,7 @@ public final class TaskLoop {
                 row.put("model", chosen.model());
                 row.put("effort", chosen.effort());
                 row.put("runner", chosen.runner());
+                putFallbacks(row, user, stage.role(), chosen.name());
                 // Named by the overlay is not the same as changed by it. A refused overlay
                 // is about to stop the run, and a row that still said "this run only" would
                 // be describing a dispatch that is not going to happen.
@@ -2000,6 +2001,7 @@ public final class TaskLoop {
             row.put("model", chosen.model());
             row.put("effort", chosen.effort());
             row.put("runner", chosen.runner());
+            putFallbacks(row, user, stage.role(), chosen.name());
             if (judgedBy != RoleResolver.Writers.NONE) {
                 row.put("judged_against", judgedBy.profiles().stream().sorted().toList());
             }
@@ -2091,6 +2093,16 @@ public final class TaskLoop {
         return result;
     }
 
+    /** The role's declared fallbacks other than the chosen profile, for the cast a person approves. */
+    private static void putFallbacks(Map<String, Object> row, UserConfig user, String role, String chosen) {
+        var spec = user.policy() == null || role == null ? null : user.policy().roles().get(role);
+        if (spec == null || spec.apiFallbackProfiles().isEmpty()) return;
+        List<String> standby = spec.apiFallbackProfiles().stream().filter(name -> !name.equals(chosen)).toList();
+        if (standby.isEmpty()) return;
+        row.put("fallbacks", standby);
+        row.put("on_vendor_failure", user.policy().vendorFailureModeFor(role));
+    }
+
     /** The cast as a person reads it: one stage per line, aligned, with the overlay marked. */
     private void printCast(List<Map<String, Object>> rows) {
         if (rows.isEmpty()) return;
@@ -2110,13 +2122,19 @@ public final class TaskLoop {
                 progress.line(line.toString());
                 continue;
             }
-            line.append(row.get("profile")).append("  ").append(row.get("vendor"));
-            if (row.get("model") != null) line.append('/').append(row.get("model"));
+            line.append(row.get("profile")).append("  ").append(dev.oseer.config.Profile.modelLabel(
+                    row.get("vendor") == null ? null : String.valueOf(row.get("vendor")),
+                    row.get("model") == null ? null : String.valueOf(row.get("model"))));
             if (row.get("effort") != null) line.append(' ').append(row.get("effort"));
             if (!"direct".equals(row.get("runner"))) line.append(" · ").append(row.get("runner"));
             if (Boolean.TRUE.equals(row.get("from_overlay"))) line.append("   (this run only)");
             if (Boolean.FALSE.equals(row.get("from_overlay"))) line.append("   (overlay refused)");
             progress.line(line.toString());
+            if (row.get("fallbacks") instanceof List<?> standby && !standby.isEmpty()) {
+                progress.line(" ".repeat(6 + width + 2) + "standby " + String.join(" -> ",
+                        standby.stream().map(String::valueOf).toList()) + "   (on failure: "
+                        + row.get("on_vendor_failure") + ")");
+            }
         }
     }
 

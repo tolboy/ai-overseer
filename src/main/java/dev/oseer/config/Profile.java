@@ -115,6 +115,17 @@ public record Profile(
 
     public String connectionRef() { return apiSettings == null ? null : apiSettings.connection(); }
     public String modelVendor() { return apiSettings == null ? vendor : apiSettings.modelVendor(); }
+    /**
+     * Vendor and model as a person reads them. Gateway ids often start with the vendor
+     * already ({@code deepseek/deepseek-v4-flash}); joining with a slash printed
+     * {@code deepseek/deepseek/...}, which looks like a path nobody configured.
+     */
+    public static String modelLabel(String vendor, String model) {
+        if (model == null || model.isBlank()) return vendor == null ? "" : vendor;
+        if (vendor == null || vendor.isBlank() || model.startsWith(vendor + "/")) return model;
+        return vendor + " · " + model;
+    }
+
     public int maxOutputTokens() { return apiSettings == null ? 2048 : apiSettings.maxOutputTokens(); }
     public Connection apiConnection() { return apiSettings == null ? null : apiSettings.resolved(); }
     /** Model turns one OpenCode dispatch may take through the relay. */
