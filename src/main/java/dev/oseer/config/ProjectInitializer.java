@@ -126,20 +126,21 @@ public final class ProjectInitializer {
         for (String candidate : List.of("src", "test", "tests", "app", "lib", "docs", "scripts", "cmd", "internal", "pkg")) {
             if (Files.exists(root.resolve(candidate))) scopes.add(candidate);
         }
-        // A Python package is a top-level directory with __init__.py; a flat project keeps its
-        // modules beside the manifest. Both are named, not the whole repository.
-        if (detection.name().startsWith("python")) {
+        boolean python = detection.name().startsWith("python");
+        boolean go = detection.name().equals("go");
+        if (python || go) {
             try (var entries = Files.list(root)) {
                 for (Path entry : entries.sorted().toList()) {
                     String name = entry.getFileName().toString();
                     if (name.startsWith(".") || scopes.contains(name)) continue;
-                    if (Files.isRegularFile(entry.resolve("__init__.py"))) scopes.add(name);
-                    else if (scopes.size() < 30 && Files.isRegularFile(entry) && name.endsWith(".py")) scopes.add(name);
+                    if (python && Files.isRegularFile(entry.resolve("__init__.py"))) scopes.add(name);
+                    else if (Files.isRegularFile(entry) && name.endsWith(python ? ".py" : ".go")) scopes.add(name);
                 }
             }
         }
         if (scopes.isEmpty()) {
-            if (Files.isRegularFile(root.resolve("Makefile"))) scopes.add("Makefile");
+            if (go) scopes.add("go.mod");
+            else if (Files.isRegularFile(root.resolve("Makefile"))) scopes.add("Makefile");
             // A project from scratch has no directory to protect: whatever the agent creates
             // is new, and a blast radius of `src` would refuse the package.json it has to
             // write. This is the one case where the whole repository is the honest boundary,
@@ -173,24 +174,27 @@ public final class ProjectInitializer {
                 if (scripts.get(name) instanceof String) commands.add("npm run " + name);
             }
             if (commands.isEmpty()) throw new IOException("package.json has no test/check/build script to gate");
-            return new Detection("npm", commands);
+            return new Detection("npm", commands, "package.json");
         }
         boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
         if (Files.isRegularFile(root.resolve(windows ? "gradlew.bat" : "gradlew"))) {
             String wrapper = windows ? ".\\gradlew.bat" : "./gradlew";
-            return new Detection("gradle-wrapper", List.of(wrapper + " test", wrapper + " build"));
+            return new Detection("gradle-wrapper", List.of(wrapper + " test", wrapper + " build"),
+                    windows ? "gradlew.bat" : "gradlew");
         }
         if (Files.isRegularFile(root.resolve("pom.xml"))) {
             String wrapper = Files.isRegularFile(root.resolve(windows ? "mvnw.cmd" : "mvnw"))
                     ? (windows ? ".\\mvnw.cmd" : "./mvnw") : "mvn";
-            return new Detection("maven", List.of(wrapper + " test", wrapper + " package"));
+            List<String> evidence = wrapper.equals("mvn") ? List.of("pom.xml")
+                    : List.of("pom.xml", windows ? "mvnw.cmd" : "mvnw");
+            return new Detection("maven", List.of(wrapper + " test", wrapper + " package"), false, evidence);
         }
-        if (Files.isRegularFile(root.resolve("Cargo.toml"))) return new Detection("cargo", List.of("cargo test"));
+        if (Files.isRegularFile(root.resolve("Cargo.toml"))) return new Detection("cargo", List.of("cargo test"), "Cargo.toml");
         if (Files.isRegularFile(root.resolve("go.mod")))
-            return new Detection("go", List.of("go vet ./...", "go test ./..."), false, List.of("go.mod"));
-        Detection python = python(root);
+            return new Detection("go", List.of("go vet ./...", "go test ./..."), "go.mod");
+        Detection python = python(root, windows ? "python" : "python3");
         if (python != null) return python;
-        if (Files.isRegularFile(root.resolve("Makefile"))) return new Detection("make", List.of("make test"));
+        if (Files.isRegularFile(root.resolve("Makefile"))) return new Detection("make", List.of("make test"), "Makefile");
         // No build marker AND no files: a project that does not exist yet, which is a
         // different thing from one whose build system is unrecognised. Guessing a check for
         // the second produces a gate that fails for reasons unrelated to the task, so it is
@@ -252,7 +256,7 @@ public final class ProjectInitializer {
             """;
 
     private record Detection(String name, List<String> checks, boolean greenfield, List<String> evidence) {
-        Detection(String name, List<String> checks) { this(name, checks, false, List.of()); }
+        Detection(String name, List<String> checks, String evidence) { this(name, checks, false, List.of(evidence)); }
         Detection(String name, List<String> checks, boolean greenfield) { this(name, checks, greenfield, List.of()); }
     }
 
@@ -263,7 +267,7 @@ public final class ProjectInitializer {
      * needs nothing installed. A Python project with no tests at all has no check to infer and
      * is refused like any other unrecognised build.
      */
-    private static Detection python(Path root) throws IOException {
+    private static Detection python(Path root, String command) throws IOException {
         List<String> markers = new ArrayList<>();
         for (String name : List.of("pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini", "conftest.py")) {
             if (Files.isRegularFile(root.resolve(name))) markers.add(name);
@@ -272,28 +276,39 @@ public final class ProjectInitializer {
                 || mentions(root.resolve("pyproject.toml"), "[tool.pytest") || mentions(root.resolve("tox.ini"), "[pytest]")
                 || mentions(root.resolve("setup.cfg"), "[tool:pytest]");
         List<String> tests = new ArrayList<>();
+        List<String> checks = new ArrayList<>();
+        boolean discoversFromRoot = false;
         for (Path directory : List.of(root, root.resolve("tests"), root.resolve("test"))) {
             if (!Files.isDirectory(directory)) continue;
+            boolean hasTests = false;
             try (var entries = Files.list(directory)) {
                 for (Path entry : entries.sorted().toList()) {
                     String name = entry.getFileName().toString();
-                    if (Files.isRegularFile(entry) && name.endsWith(".py") && (name.startsWith("test_") || name.endsWith("_test.py"))) {
+                    if (!name.endsWith(".py") || !Files.isRegularFile(entry)) continue;
+                    boolean testName = pytest ? name.startsWith("test_") || name.endsWith("_test.py")
+                            : name.startsWith("test") && name.substring(0, name.length() - 3).matches("[a-zA-Z_]\\w*");
+                    if (testName) {
                         tests.add(root.relativize(entry).toString().replace('\\', '/'));
+                        hasTests = true;
                     }
+                }
+            }
+            if (hasTests && !pytest) {
+                if (directory.equals(root) || Files.isRegularFile(directory.resolve("__init__.py"))) {
+                    discoversFromRoot = true;
+                } else {
+                    checks.add(command + " -m unittest discover -q -s " + directory.getFileName());
                 }
             }
         }
         if (pytest) {
             List<String> evidence = new ArrayList<>(markers); evidence.addAll(tests);
-            return new Detection("python-pytest", List.of("python3 -m pytest -q"), false, List.copyOf(evidence));
+            return new Detection("python-pytest", List.of(command + " -m pytest -q"), false, List.copyOf(evidence));
         }
         if (tests.isEmpty()) return null;
-        // unittest discovers from one start directory; a tests/ package is started there.
-        boolean rootTests = tests.stream().anyMatch(path -> !path.contains("/"));
-        String command = rootTests ? "python3 -m unittest discover -q"
-                : "python3 -m unittest discover -q -s " + (tests.get(0).startsWith("tests/") ? "tests" : "test") + " -t .";
+        if (discoversFromRoot) checks.addFirst(command + " -m unittest discover -q");
         List<String> evidence = new ArrayList<>(markers); evidence.addAll(tests);
-        return new Detection("python-unittest", List.of(command), false, List.copyOf(evidence));
+        return new Detection("python-unittest", List.copyOf(checks), false, List.copyOf(evidence));
     }
 
     private static boolean mentions(Path file, String text) {

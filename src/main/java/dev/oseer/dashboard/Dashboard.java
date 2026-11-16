@@ -206,7 +206,7 @@ public final class Dashboard implements AutoCloseable {
                     } else try {
                         Map<String, Object> request = Json.parseObject(new String(input, StandardCharsets.UTF_8));
                         body = Json.write(switch (path) {
-                            case "/api/settings/preview" -> settings.preview(request);
+                            case "/api/settings/preview" -> settings.preview(request, Messages.language(exchange));
                             case "/api/settings/apply" -> settings.apply(request);
                             default -> nextRun.preview(request);
                         });
@@ -325,9 +325,11 @@ public final class Dashboard implements AutoCloseable {
             if (location != null) exchange.getResponseHeaders().set("Location", location);
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
             exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.getResponseHeaders().set("Referrer-Policy", "no-referrer");
             exchange.getResponseHeaders().set("Content-Security-Policy",
                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'");
-            byte[] bytes = binary != null ? binary : Messages.render(body, Messages.language(exchange)).getBytes(StandardCharsets.UTF_8);
+            if (binary == null && contentType.startsWith("text/html")) body = Messages.render(body, Messages.language(exchange));
+            byte[] bytes = binary != null ? binary : body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
             try (var output = exchange.getResponseBody()) { output.write(bytes); }
         });
@@ -424,7 +426,7 @@ public final class Dashboard implements AutoCloseable {
                     if (!directory.toRealPath().startsWith(runsRoot)) continue;
                     Path summaryFile = directory.resolve("task-run.json");
                     String directoryName = directory.getFileName().toString();
-                    if (!Files.exists(summaryFile, LinkOption.NOFOLLOW_LINKS) && !directoryName.contains("--")
+                    if (!Files.exists(summaryFile, LinkOption.NOFOLLOW_LINKS)
                             && Files.isRegularFile(directory.resolve("run.json"), LinkOption.NOFOLLOW_LINKS)) {
                         // Reserved and not summarised: still going, or stopped before it wrote
                         // a result. The timeline tells which from its live role views.

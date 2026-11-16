@@ -2,6 +2,7 @@ package dev.oseer.execution;
 
 import dev.oseer.config.CheckSettings;
 import dev.oseer.config.Connection;
+import dev.oseer.config.Policy;
 import dev.oseer.config.Profile;
 import dev.oseer.config.UserConfig;
 import dev.oseer.config.DecisionProfile;
@@ -16,6 +17,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -456,37 +458,52 @@ public final class ModelCheck {
     }
 
     /** Check codes that say "not now" rather than "never": the ones a standby fallback covers. */
-    static final java.util.Set<String> TRANSIENT_CHECK_CODES = java.util.Set.of(
+    private static final Set<String> TRANSIENT_CHECK_CODES = Set.of(
             "role_api_rate_limited", "role_api_provider_error", "role_api_timeout", "role_api_network_error");
 
-    /**
-     * When every failed check is a transient failure of a profile whose role switches
-     * automatically to a standby fallback that answered this same check, the run can start:
-     * the failover it would need is already authorized by the policy. Returns one row per
-     * covered failure, or {@code null} when any failure is not covered and the run must stop.
-     */
-    public static List<Map<String, Object>> coveredByFallback(Map<String, Object> checked, dev.oseer.config.Policy policy) {
+    public record StandbyReadiness(List<Map<String, Object>> covered, List<Map<String, Object>> unavailable) {}
+
+    /** Assess failed launch probes against the profiles picked for the run and declared standbys. */
+    public static StandbyReadiness standbyReadiness(Map<String, Object> checked, Policy policy,
+                                                     Set<String> selected, Set<String> singleCallRoles) {
         if (policy == null || !(checked.get("results") instanceof List<?> rows)) return null;
-        java.util.Set<String> answered = new java.util.HashSet<>();
-        for (Object raw : rows) if (raw instanceof Map<?, ?> row && Boolean.TRUE.equals(row.get("ok"))) answered.add(String.valueOf(row.get("profile")));
+        var represented = checked.get("represented_profiles") instanceof Map<?, ?> groups ? groups : Map.of();
+        Set<String> answered = new LinkedHashSet<>();
+        for (Object raw : rows) {
+            if (raw instanceof Map<?, ?> row && Boolean.TRUE.equals(row.get("ok"))) answered.addAll(sourceProfiles(row, represented));
+        }
         List<Map<String, Object>> covered = new ArrayList<>();
+        List<Map<String, Object>> unavailable = new ArrayList<>();
         for (Object raw : rows) {
             if (!(raw instanceof Map<?, ?> row) || Boolean.TRUE.equals(row.get("ok"))) continue;
-            String profile = String.valueOf(row.get("profile")), code = String.valueOf(row.get("code"));
-            if (!TRANSIENT_CHECK_CODES.contains(code)) return null;
-            boolean listed = false;
-            for (var spec : policy.roles().values()) {
-                if (!spec.profiles().contains(profile)) continue;
-                listed = true;
-                String standby = spec.apiFallbackProfiles().stream()
-                        .filter(name -> !name.equals(profile) && answered.contains(name)).findFirst().orElse(null);
-                if (standby == null || !"auto".equals(policy.vendorFailureModeFor(spec.role()))) return null;
-                Map<String, Object> row2 = new LinkedHashMap<>();
-                row2.put("role", spec.role()); row2.put("profile", profile); row2.put("code", code); row2.put("fallback", standby);
-                covered.add(row2);
+            String code = String.valueOf(row.get("code"));
+            for (String profile : sourceProfiles(row, represented)) {
+                boolean listed = false;
+                for (var spec : policy.roles().values()) {
+                    if (!spec.profiles().contains(profile)) continue;
+                    listed = true;
+                    if (spec.standby(profile) && !selected.contains(profile)) {
+                        unavailable.add(Map.of("role", spec.role(), "profile", profile, "code", code));
+                        continue;
+                    }
+                    if (!TRANSIENT_CHECK_CODES.contains(code) || policy.maxVendorFailovers() == 0
+                            || singleCallRoles.contains(spec.role()) || !"auto".equals(policy.vendorFailureModeFor(spec.role()))) return null;
+                    String fallback = spec.apiFallbackProfiles().stream()
+                            .filter(name -> spec.standby(name) && !name.equals(profile) && answered.contains(name))
+                            .findFirst().orElse(null);
+                    if (fallback == null) return null;
+                    covered.add(Map.of("role", spec.role(), "profile", profile, "code", code, "fallback", fallback));
+                }
+                if (!listed) return null;
             }
-            if (!listed) return null;
         }
-        return covered.isEmpty() ? null : covered;
+        return covered.isEmpty() && unavailable.isEmpty() ? null : new StandbyReadiness(covered, unavailable);
+    }
+
+    private static List<String> sourceProfiles(Map<?, ?> row, Map<?, ?> represented) {
+        Object id = row.get("profile");
+        if (id != null && represented.get(id) instanceof Collection<?> profiles && !profiles.isEmpty())
+            return profiles.stream().map(String::valueOf).toList();
+        return List.of(row.get("source_profile") instanceof String source ? source : String.valueOf(id));
     }
 }

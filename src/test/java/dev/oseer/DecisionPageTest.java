@@ -756,6 +756,9 @@ public final class DecisionPageTest implements Suite {
             check.eq("and says the waiter will", true, watched.get("waiter"));
             check.that("and does not print a command that would start a second run",
                     !watched.containsKey("command"));
+            Map<String, Object> launcher = Main.startAdvance(root, pending,
+                    new String[] {"--start-unless-waiting"}, null);
+            check.eq("the browser also leaves a live supervisor to start the next run", true, launcher.get("waiter"));
         }
     }
 

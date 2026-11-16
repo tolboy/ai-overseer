@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 /**
  * The browser pages' words, in one bundle per language ({@link MessagesEn}, {@link MessagesRu}).
  *
- * Pages and API answers are written with {@code {{t:key}}} markers and rendered for the
+ * Page templates are written with {@code {{t:key}}} markers and rendered for the
  * reader's language just before they are sent, so one template serves every language and a
  * missing translation is a test failure rather than a mixed page. A bundle value never
  * contains a quote, a backslash, an angle bracket or a brace (see {@link #unsafe}), which is

@@ -99,20 +99,20 @@ public final class RoleRosterEditor {
             if(effortChanged || modelChanged)capabilities.require(old,model,finalEffort,effortChanged);
             if(!Objects.equals(probe,old.verificationProbe()))yaml=replace(yaml,List.of("verification","probe"),Json.write(probe));
             boolean edited=!yaml.equals(original);
+            Profile next=old;
             if(edited) {
                 if(yaml.lines().anyMatch(line->line.startsWith("verification:"))) {
                     yaml=replace(yaml,List.of("verification","verified_on"),null);
                     yaml=replace(yaml,List.of("verification","connection_fingerprint"),null);
                 } else yaml+="\nverification:\n  status: unverified\n";
-                var next=Profile.parse(yaml,file.toString());
+                next=Profile.parse(yaml,file.toString());
                 if(next.connectionRef()!=null)next=next.withConnection(user.connections().get(next.connectionRef()),home);
                 if(next.verified())throw new Invalid();
                 updates.put(file,yaml);
             }
-            effective.put(name,edited?Profile.parse(yaml,file.toString()):old);
+            effective.put(name,next);
             if(edited || !old.verified())pending.add(name);
         }
-        requireIndependence(user,role,names,effective);
         String policy=Files.readString(policyFile);
         policy=replace(policy,List.of("roles",role,"profiles"),Json.write(names));
         policy=replace(policy,List.of("roles",role,"strategy"),Json.write(strategy));
@@ -120,12 +120,17 @@ public final class RoleRosterEditor {
         var spec=user.policy().roles().get(role);
         if(!spec.apiFallbackProfiles().isEmpty()) {
             var kept=spec.apiFallbackProfiles().stream().filter(names::contains).toList();
+            if(spec.fallbackStandby() && names.stream().allMatch(kept::contains))
+                return refused(400,"fallback_needs_primary");
             if(!kept.equals(spec.apiFallbackProfiles())) {
                 policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),kept.isEmpty()?null:Json.write(kept));
-                if(kept.isEmpty() || names.stream().allMatch(kept::contains))policy=replace(policy,List.of("roles",role,"fallback_standby"),null);
+                if(kept.isEmpty())policy=replace(policy,List.of("roles",role,"fallback_standby"),null);
             }
         }
-        Policy.parse(policy,policyFile.toString());updates.put(policyFile,policy);
+        Policy updatedPolicy=Policy.parse(policy,policyFile.toString());
+        var profiles=new LinkedHashMap<>(user.profiles());profiles.putAll(effective);
+        requireIndependence(updatedPolicy,role,profiles);
+        updates.put(policyFile,policy);
         // Recheck every revision immediately before the first write. No partial validation edits.
         for(var entry:expected.entrySet())expect(entry.getKey(),entry.getValue());
         for(Path file:updates.keySet())oldBytes.put(file,Files.readAllBytes(file));
@@ -157,7 +162,9 @@ public final class RoleRosterEditor {
         if(user.policy()==null || !user.policy().roles().containsKey(role))throw new Invalid();
         String mode=text(payload,"on_vendor_failure");
         if(!Set.of("inherit","auto","confirm","stop").contains(mode))throw new Invalid();
-        if(!(payload.get("fallbacks") instanceof List<?> raw) || raw.size()>4)throw new Invalid();
+        var spec=user.policy().roles().get(role);
+        if(!(payload.get("fallbacks") instanceof List<?> raw)
+                || raw.size()>Math.max(4,spec.apiFallbackProfiles().size()))throw new Invalid();
         var fallbacks=new ArrayList<String>();
         for(Object item:raw){
             if(!(item instanceof String name) || fallbacks.contains(name))throw new Invalid();
@@ -165,7 +172,6 @@ public final class RoleRosterEditor {
             if(profile==null || !role.equals(profile.role()))throw new Invalid();
             fallbacks.add(name);
         }
-        var spec=user.policy().roles().get(role);
         var profiles=new ArrayList<String>(spec.profiles());
         // A standby fallback the operator drops leaves the roster too; otherwise it would
         // silently join the rotation as a primary once fallback_standby no longer hides it.
@@ -175,9 +181,7 @@ public final class RoleRosterEditor {
         if(!fallbacks.isEmpty() && profiles.stream().allMatch(fallbacks::contains))
             return refused(400,"fallback_needs_primary");
         if(spec.requireIndependentVendor() && !"implementer".equals(role)) {
-            var writers=user.policy().roles().get("implementer");
-            Profile writer=writers==null || writers.profiles().isEmpty()?null:user.profiles().get(writers.profiles().get(0));
-            String writerVendor=writer==null?null:writer.independenceVendor();
+            String writerVendor=firstConfiguredWriterVendor(user.policy(),user.profiles());
             for(String name:fallbacks)
                 if(writerVendor!=null && writerVendor.equals(user.profiles().get(name).independenceVendor()))
                     return new Outcome(400,Map.of("ok",false,"code","fallback_not_independent","role",role,"profile",name,"writer_vendor",writerVendor));
@@ -187,7 +191,7 @@ public final class RoleRosterEditor {
         policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),fallbacks.isEmpty()?null:Json.write(fallbacks));
         policy=replace(policy,List.of("roles",role,"fallback_standby"),fallbacks.isEmpty()?null:"true");
         policy=replace(policy,List.of("roles",role,"on_vendor_failure"),"inherit".equals(mode)?null:Json.write(mode));
-        Policy.parse(policy,policyFile.toString());
+        requireIndependence(Policy.parse(policy,policyFile.toString()),role,user.profiles());
         expect(policyFile,text(payload,"revision"));
         ModelCheck.atomicWrite(policyFile,policy);
         var pending=fallbacks.stream().filter(name->!user.profiles().get(name).verified()).toList();
@@ -203,23 +207,24 @@ public final class RoleRosterEditor {
      * Only the roles this save changes are judged, so an unrelated edit is never blocked by
      * an existing configuration.
      */
-    static void requireIndependence(UserConfig user,String role,List<String> names,Map<String,Profile> edited){
-        var roles=new LinkedHashMap<String,List<String>>();
-        for(var entry:user.policy().roles().entrySet())roles.put(entry.getKey(),entry.getValue().profiles());
-        roles.put(role,names);
-        var profiles=new LinkedHashMap<String,Profile>(user.profiles());profiles.putAll(edited);
-        List<String> writers=roles.getOrDefault("implementer",List.of());
-        if(writers.isEmpty() || profiles.get(writers.get(0))==null)return;
-        String writer=profiles.get(writers.get(0)).independenceVendor();
+    private static void requireIndependence(Policy policy,String role,Map<String,Profile> profiles){
+        String writer=firstConfiguredWriterVendor(policy,profiles);
         if(writer==null)return;
-        for(var spec:user.policy().roles().values()){
+        for(var spec:policy.roles().values()){
             if(spec.role().equals("implementer") || !spec.requireIndependentVendor())continue;
             if(!role.equals("implementer") && !role.equals(spec.role()))continue;
-            List<String> readers=roles.getOrDefault(spec.role(),List.of());
-            if(readers.isEmpty())continue;
-            boolean independent=readers.stream().map(profiles::get).anyMatch(p->p!=null && !writer.equals(p.independenceVendor()));
+            boolean independent=spec.profiles().stream().map(profiles::get).filter(Objects::nonNull)
+                    .anyMatch(p->spec.role().equals(p.role()) && p.readOnly() && !writer.equals(p.independenceVendor()));
             if(!independent)throw new NotIndependent(spec.role(),writer);
         }
+    }
+
+    static String firstConfiguredWriterVendor(Policy policy,Map<String,Profile> profiles){
+        var writers=policy.roles().get("implementer");
+        if(writers==null)return null;
+        return writers.profiles().stream().filter(name->!writers.standby(name))
+                .map(profiles::get).filter(Objects::nonNull).filter(p->"implementer".equals(p.role()))
+                .map(Profile::independenceVendor).findFirst().orElse(null);
     }
     private static String replace(String yaml,List<String> path,String value){return ModelSettingsService.replaceValue(yaml,path,value);}
     private static void keys(Map<String,Object> map,Set<String> allowed){if(map==null || !allowed.containsAll(map.keySet()))throw new Invalid();}

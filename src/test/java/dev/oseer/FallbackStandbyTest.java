@@ -5,6 +5,7 @@ import dev.oseer.config.Policy;
 import dev.oseer.config.RoleRosterEditor;
 import dev.oseer.config.UserConfig;
 import dev.oseer.config.UserSetup;
+import dev.oseer.execution.ModelCheck;
 import dev.oseer.role.RoleResolver;
 import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
@@ -103,13 +104,21 @@ public final class FallbackStandbyTest implements Suite {
         java.util.function.BiFunction<String, String, Map<String, Object>> row = (name, code) -> {
             var r = new LinkedHashMap<String, Object>(); r.put("profile", name); r.put("ok", code == null); if (code != null) r.put("code", code); return r; };
         var limited = Map.<String, Object>of("ok", false, "results", List.of(row.apply("reader-a", "role_api_rate_limited"), row.apply("reader-b", null)));
-        var covered = dev.oseer.execution.ModelCheck.coveredByFallback(limited, standby.policy());
-        check.eq("a rate-limited primary with an answering standby is covered", "reader-b", covered == null ? null : covered.get(0).get("fallback"));
-        check.eq("an auth failure is never covered", null, dev.oseer.execution.ModelCheck.coveredByFallback(
-                Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_auth_failed"), row.apply("reader-b", null))), standby.policy()));
-        check.eq("a standby that also failed covers nothing", null, dev.oseer.execution.ModelCheck.coveredByFallback(
+        var covered = ModelCheck.standbyReadiness(limited, standby.policy(), Set.of("reader-a"), Set.of());
+        check.eq("a rate-limited primary with an answering standby is covered", "reader-b", covered == null ? null : covered.covered().getFirst().get("fallback"));
+        check.eq("an auth failure is never covered", null, ModelCheck.standbyReadiness(
+                Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_auth_failed"), row.apply("reader-b", null))), standby.policy(), Set.of("reader-a"), Set.of()));
+        check.eq("a standby that also failed covers nothing", null, ModelCheck.standbyReadiness(
                 Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_rate_limited"), row.apply("reader-b", "role_api_rate_limited"),
-                        row.apply("reader-c", "role_api_provider_error"))), standby.policy()));
+                        row.apply("reader-c", "role_api_provider_error"))), standby.policy(), Set.of("reader-a"), Set.of()));
+        var standbyFailed = row.apply("reader-b@null", "role_api_auth_failed");
+        standbyFailed.put("source_profile", "reader-b");
+        var groupedFailure = Map.<String, Object>of("ok", false, "results", List.of(standbyFailed),
+                "represented_profiles", Map.of("reader-b@null", List.of("reader-b", "reader-a")));
+        check.eq("a failed standby probe cannot hide an aliased primary failure", null,
+                ModelCheck.standbyReadiness(groupedFailure, standby.policy(), Set.of("reader-a"), Set.of()));
+        check.eq("a single-call bootstrap cannot cover a primary failure with a second call", null,
+                ModelCheck.standbyReadiness(limited, standby.policy(), Set.of("reader-a"), Set.of("reviewer")));
 
         check.eq("the editor offers the writer-vendor reviewer as not independent", List.of("same-reader"),
                 dev.oseer.config.ModelSettingsService.notIndependent(standby, standby.policy().roles().get("reviewer")));

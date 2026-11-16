@@ -51,24 +51,35 @@ public final class RunTimelineTest implements Suite {
         Files.writeString(implementer.resolve("prompts/implementer.md"), "Do the task");
         Files.writeString(implementer.resolve("raw/implementer.stdout.txt"),
                 "working\nkey sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX01 used\nAuthorization: Bearer abcdefghijklmnop12345\napi_key=\"hunter2hunter2\"\ndone");
+        Files.writeString(implementer.resolve("raw/unfinished.stderr.txt"),
+                "before\n-----BEGIN PRIVATE KEY-----\nUNFINISHED_KEY_BODY\n");
         Files.writeString(implementer.resolve("artifacts/implementer.json"), "{\"status\":\"done\"}");
         Files.writeString(implementer.resolve("view-implementer.json"), "{\"command\":\"secret argv\"}");
         Files.writeString(implementer.resolve("evidence.jsonl"), "{}\n");
         Path gates = Files.createDirectories(runs.resolve(id + "--gates-0"));
         Files.writeString(gates.resolve("machine-gate.json"), Json.write(Map.of("phase", "acceptance", "ok", false,
                 "violations", List.of(), "changed_paths", List.of("a", "b"),
-                "commands", List.of(command("make test", 2, 900), command("make lint", 1, 300), command("make build", 0, 500)))));
+                "commands", List.of(command("make test", 2, 900), command("api_key=gate-credential-value make lint", 1, 300), command("make build", 0, 500)))));
+        Path reproduce = Files.createDirectories(runs.resolve(id + "--reproduction-0"));
+        Files.writeString(reproduce.resolve("reproduction-gate.json"), Json.write(Map.of("phase", "reproduction",
+                "ok", true, "commands", List.of(command("make repro", 1, 50)))));
         Path look = Files.createDirectories(runs.resolve(id + "--visual-qa-0/screenshots"));
         Files.write(look.resolve("800x600.png"), new byte[] {(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10, 0, 0});
         Files.writeString(look.resolve("fake.png"), "not an image at all");
+        Files.write(look.resolve("bad-signature.png"), new byte[] {(byte) 0x89, 'P', 'N', 'G', 0, 0, 0, 0});
 
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("run_id", id); summary.put("task_id", "demo"); summary.put("ok", false);
         summary.put("reason", "gates_failed"); summary.put("total_cost_usd", 0.5); summary.put("unpriced_calls", 1L);
+        summary.put("safe_next_step", "Preserve {{t:shell.passed}} here");
         summary.put("baseline_required", true); summary.put("baseline_ok", true); summary.put("baseline_code", "passed");
         summary.put("baseline_commands", List.of("make test"));
         summary.put("baseline_report", root.resolve(".oseer/runs/" + id + "--baseline-0/baseline-gate.json").toString());
         summary.put("decision_note", "PRIVATE_NOTE_MARKER");
+        summary.put("finding_history", List.of(Map.of("stage", "review", "findings", List.of(
+                Map.of("id", "contract acceptance / case 1", "category", "contract_gap", "severity", "P1", "status", "open", "message", "FINDING_PROSE"),
+                Map.of("id", "closed", "category", "contract_gap", "severity", "P1", "status", "closed"),
+                Map.of("id", "defect", "category", "product_defect", "severity", "P1", "status", "open")))));
         summary.put("workflow", List.of(Map.of("stage", "implement", "run", "role", "role", "implementer", "when", List.of()),
                 Map.of("stage", "gates", "run", "machine_gates", "when", List.of()),
                 Map.of("stage", "review", "run", "role", "role", "reviewer", "when", List.of("review_required"))));
@@ -81,14 +92,19 @@ public final class RunTimelineTest implements Suite {
         Map<String, Object> attempt2 = new LinkedHashMap<>(attempt1);
         attempt2.put("duration_millis", 2500L); attempt2.put("model_reported", "m-1-build");
         attempt2.put("tokens", Map.of("input", 10L, "output", 20L, "cache", 99L));
+        Map<String, Object> pricedAttempt = new LinkedHashMap<>(attempt2);
+        pricedAttempt.put("duration_millis", 500L);
+        pricedAttempt.put("cost_usd", 0.25);
         Map<String, Object> roleStep = new LinkedHashMap<>();
         roleStep.put("step", "implementer"); roleStep.put("stage", "implement"); roleStep.put("attempt", 0L);
         roleStep.put("ok", true); roleStep.put("code", "ok"); roleStep.put("profile", "writer"); roleStep.put("vendor", "acme");
-        roleStep.put("cost_usd", null); roleStep.put("vendor_attempts", List.of(attempt1, attempt2));
+        roleStep.put("cost_usd", 0.25); roleStep.put("vendor_attempts", List.of(pricedAttempt, attempt1, attempt2));
         roleStep.put("artifact_path", ".oseer/runs/" + id + "--implementer-0/artifacts/implementer.json");
         summary.put("steps", List.of(
                 Map.of("step", "baseline", "attempt", 0L, "ok", true, "code", "passed",
                         "report", root.resolve(".oseer/runs/" + id + "--baseline-0/baseline-gate.json").toString()),
+                Map.of("step", "reproduction", "attempt", 0L, "ok", true, "code", "passed",
+                        "report", reproduce.resolve("reproduction-gate.json").toString()),
                 roleStep,
                 Map.of("step", "gates", "stage", "gates", "attempt", 0L, "ok", false, "code", "gates_failed",
                         "report", root.resolve(".oseer/runs/" + id + "--gates-0/machine-gate.json").toString()),
@@ -100,15 +116,16 @@ public final class RunTimelineTest implements Suite {
         check.eq("a summarised run is finished", "finished", timeline.get("state"));
         check.eq("task identity is read", "demo", timeline.get("task_id"));
         List<?> steps = (List<?>) timeline.get("steps");
-        check.eq("every summary step is on the timeline", 4, steps.size());
-        Map<?, ?> baselineStep = (Map<?, ?>) steps.get(0), role = (Map<?, ?>) steps.get(1), gate = (Map<?, ?>) steps.get(2);
+        check.eq("every summary step is on the timeline", 5, steps.size());
+        Map<?, ?> baselineStep = (Map<?, ?>) steps.get(0), role = (Map<?, ?>) steps.get(2), gate = (Map<?, ?>) steps.get(3);
         check.eq("baseline is a gate", "gate", baselineStep.get("kind"));
         check.eq("baseline duration comes from its commands", 1200L, ((Number) baselineStep.get("duration_ms")).longValue());
-        check.eq("role duration sums every vendor attempt", 3500L, ((Number) role.get("duration_ms")).longValue());
+        check.eq("role duration sums every vendor attempt", 4000L, ((Number) role.get("duration_ms")).longValue());
+        check.eq("summary labels the role", "implementer", role.get("role"));
         check.eq("model is the one the last attempt reported", "m-1-build", role.get("model"));
         check.eq("requested model is kept beside it", "m-1", role.get("model_requested"));
         check.eq("effort is the requested effort", "high", role.get("effort"));
-        check.eq("attempt count is shown", 2, ((Number) role.get("vendor_attempts")).intValue());
+        check.eq("attempt count is shown", 3, ((Number) role.get("vendor_attempts")).intValue());
         check.eq("unpriced calls are counted per vendor attempt", 2L, ((Number) role.get("unpriced_calls")).longValue());
         check.eq("a vendor call without a price is unpriced, not free", true, role.get("unpriced"));
         check.eq("only input and output tokens are shown", Map.of("input", 10L, "output", 20L), role.get("tokens"));
@@ -132,13 +149,18 @@ public final class RunTimelineTest implements Suite {
         check.eq("a stage that ran and did not pass is failed, not still open", "failed", ((Map<?, ?>) workflow.get(1)).get("state"));
         check.eq("inapplicable stage", "skipped", ((Map<?, ?>) workflow.get(2)).get("state"));
         Map<?, ?> totals = (Map<?, ?>) timeline.get("totals");
+        check.eq("known cost is the run's measured total, including preparation", 0.5, totals.get("cost_usd_known"));
         check.eq("one unpriced step is counted", 1L, ((Number) totals.get("unpriced_steps")).longValue());
         Object recorded = timeline.get("unpriced_calls");
         check.eq("unpriced calls agree with the run's own count when it has one",
                 recorded instanceof Number n ? n.longValue() : 1L, ((Number) totals.get("unpriced_calls")).longValue());
         String json = Json.write(timeline);
+        check.eq("only open contract gap IDs populate the waiver suggestions", List.of("contract acceptance / case 1"), timeline.get("contract_gap_ids"));
+        check.that("waiver suggestions contain only IDs", !json.contains("FINDING_PROSE"));
         check.that("raw output paths and prose are not in the projection", !json.contains("SECRET_RAW_MARKER"));
         check.that("the person's note stays on the decision page", !json.contains("PRIVATE_NOTE_MARKER"));
+        check.that("the command projection masks credential values", !json.contains("gate-credential-value"));
+        check.contains("the reproduction report appears in the evidence list", Json.write(steps.get(1)), "reproduction-gate.json");
 
         // A run with no summary yet is read from its step directories and live views.
         String live = "run-live";
@@ -157,6 +179,17 @@ public final class RunTimelineTest implements Suite {
         Files.writeString(liveStep.resolve("view-implementer.json"), Json.write(Map.of("stage", "implement",
                 "view_state", "running", "controller_pid", -1L)));
         check.eq("a dead controller is not running", "no_summary", RunTimeline.read(root, live).get("state"));
+        String similar = live + "--second";
+        Files.createDirectories(runs.resolve(similar));
+        Files.writeString(runs.resolve(similar + "/run.json"), Json.write(Map.of("run_id", similar, "task_id", "demo")));
+        Path similarStep = Files.createDirectories(runs.resolve(similar + "--reproduction-0"));
+        Files.writeString(similarStep.resolve("reproduction-gate.json"), "{\"ok\":true}");
+        check.eq("a CLI workflow id may include the step separator", similar, RunTimeline.read(root, similar).get("run_id"));
+        check.eq("the live reproduction report is projected as passed", "passed",
+                ((Map<?, ?>) ((List<?>) RunTimeline.read(root, similar).get("steps")).get(0)).get("status"));
+        check.eq("a similar workflow id and its step are excluded", 1, ((List<?>) RunTimeline.read(root, live).get("steps")).size());
+        refused(check, "a similarly named workflow's evidence", () -> RunTimeline.evidence(root, live,
+                similar + "--reproduction-0", "reproduction-gate.json"));
 
         for (String bad : List.of("", "../x", "run-alpha--implementer-0", "missing", ".hidden", "a/b")) {
             boolean refused;
@@ -171,9 +204,12 @@ public final class RunTimelineTest implements Suite {
         check.that("a bearer token is masked", !text.contains("abcdefghijklmnop12345"));
         check.that("an api_key assignment is masked", !text.contains("hunter2hunter2"));
         check.that("ordinary output survives", text.contains("working") && text.contains("done"));
+        String unfinished = new String(RunTimeline.evidence(root, id, id + "--implementer-0", "raw/unfinished.stderr.txt").bytes(), StandardCharsets.UTF_8);
+        check.eq("an unfinished PEM is masked through the end of the transcript", "before\n[redacted]", unfinished);
         check.eq("a real PNG is served as an image", "image/png",
                 RunTimeline.evidence(root, id, id + "--visual-qa-0", "screenshots/800x600.png").contentType());
         refused(check, "a .png that is not a PNG", () -> RunTimeline.evidence(root, id, id + "--visual-qa-0", "screenshots/fake.png"));
+        refused(check, "a .png with a partial signature", () -> RunTimeline.evidence(root, id, id + "--visual-qa-0", "screenshots/bad-signature.png"));
         refused(check, "a live view file", () -> RunTimeline.evidence(root, id, id + "--implementer-0", "view-implementer.json"));
         refused(check, "the ledger", () -> RunTimeline.evidence(root, id, id + "--implementer-0", "evidence.jsonl"));
         refused(check, "another run's directory", () -> RunTimeline.evidence(root, id, live + "--implementer-0", "prompts/implementer.md"));
@@ -201,6 +237,7 @@ public final class RunTimelineTest implements Suite {
             var detail = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/runs/" + id)).build(), HttpResponse.BodyHandlers.ofString());
             check.eq("run detail is readable", 200, detail.statusCode());
             check.contains("run detail is the timeline", detail.body(), "\"evidence_dir\"");
+            check.contains("JSON data retains literal translation markers", detail.body(), "Preserve {{t:shell.passed}} here");
             check.eq("an unknown run is 404", 404, client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/runs/nope")).build(),
                     HttpResponse.BodyHandlers.ofString()).statusCode());
             String path = "evidence/" + id + "/" + id + "--implementer-0/prompts/implementer.md";

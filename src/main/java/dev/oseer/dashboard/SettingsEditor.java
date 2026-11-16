@@ -56,11 +56,15 @@ public final class SettingsEditor {
                         String candidate, Map<String, Object> result) {}
 
     public Map<String, Object> preview(Map<String, Object> request) throws IOException {
-        return prepare(request, false).result();
+        return preview(request, Messages.DEFAULT);
+    }
+
+    Map<String, Object> preview(Map<String, Object> request, String language) throws IOException {
+        return prepare(request, false, language).result();
     }
 
     public Map<String, Object> apply(Map<String, Object> request) throws IOException {
-        Edit edit = prepare(request, true);
+        Edit edit = prepare(request, true, Messages.DEFAULT);
         if (!edit.result().get("preview_sha256").equals(request.get("preview_sha256")))
             throw new NextRun.Conflict();
         if (!Boolean.TRUE.equals(edit.result().get("apply_allowed")))
@@ -77,7 +81,7 @@ public final class SettingsEditor {
     }
 
     @SuppressWarnings("unchecked")
-    private Edit prepare(Map<String, Object> request, boolean applying) throws IOException {
+    private Edit prepare(Map<String, Object> request, boolean applying, String language) throws IOException {
         Set<String> keys = applying ? Set.of("task", "target", "revision", "changes", "preview_sha256")
                 : Set.of("task", "target", "revision", "changes");
         requireKeys(request, keys);
@@ -201,7 +205,7 @@ public final class SettingsEditor {
         result.put("changed", differs);
         result.put("apply_allowed", differs && Boolean.TRUE.equals(preview.get("settings_ok")));
         result.put("preview_sha256", NextRun.digest((target + "\n" + task + "\n" + revision + "\n" + candidate).getBytes(StandardCharsets.UTF_8)));
-        result.put("diff", YamlSettingsEdit.diff(source.text(), candidate));
+        result.put("diff", YamlSettingsEdit.diff(source.text(), candidate, language));
         result.put("preview", preview);
         // Invocation export can express use:, but cannot express unsaved task budgets/removals.
         Map<String, Object> original = Yaml.parseMapping(source.text());

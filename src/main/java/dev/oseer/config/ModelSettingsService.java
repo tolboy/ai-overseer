@@ -3,6 +3,7 @@ package dev.oseer.config;
 import dev.oseer.execution.ModelCheck;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.yaml.Yaml;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -365,6 +366,19 @@ public final class ModelSettingsService {
                 lines.add(end, " ".repeat(indent) + key + ": " + value);
                 return String.join("\n", lines) + "\n";
             }
+            if (part < path.size() - 1) {
+                String line = lines.get(found);
+                String withoutComment = Yaml.withoutLineComment(line);
+                int colon = indent + key.length();
+                if (withoutComment.substring(colon + 1).stripLeading().startsWith("{")) {
+                    Map<String, Object> entry = Yaml.parseMapping(withoutComment);
+                    if (!replaceInlineValue(entry, path.subList(part, path.size()), value)) return yaml;
+                    String comment = line.substring(withoutComment.length());
+                    lines.set(found, line.substring(0, colon + 1) + " " + Json.write(entry.get(key))
+                            + (comment.isEmpty() ? "" : " " + comment));
+                    return String.join(yaml.contains("\r\n") ? "\r\n" : "\n", lines);
+                }
+            }
             int limit = found + 1;
             while (limit < end) {
                 String line = lines.get(limit), stripped = line.stripLeading();
@@ -379,6 +393,22 @@ public final class ModelSettingsService {
             start = found + 1; end = limit; parentIndent = indent;
         }
         throw new Invalid();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean replaceInlineValue(Map<String, Object> entry, List<String> path, String value) {
+        for (String key : path.subList(0, path.size() - 1)) {
+            if (!(entry.get(key) instanceof Map<?, ?> nested)) throw new Invalid();
+            entry = (Map<String, Object>) nested;
+        }
+        String key = path.getLast();
+        if (value == null) {
+            if (!entry.containsKey(key)) return false;
+            entry.remove(key);
+            return true;
+        }
+        Object parsed = Yaml.parseMapping("value: " + value).get("value");
+        return !java.util.Objects.equals(entry.put(key, parsed), parsed);
     }
 
     private Path profileFile(String name) {
@@ -417,9 +447,7 @@ public final class ModelSettingsService {
      */
     public static List<String> notIndependent(UserConfig user, dev.oseer.config.Policy.RoleSpec spec) {
         if (!spec.requireIndependentVendor() || "implementer".equals(spec.role())) return List.of();
-        var writers = user.policy().roles().get("implementer");
-        Profile writer = writers == null || writers.profiles().isEmpty() ? null : user.profiles().get(writers.profiles().get(0));
-        String writerVendor = writer == null ? null : writer.independenceVendor();
+        String writerVendor = RoleRosterEditor.firstConfiguredWriterVendor(user.policy(), user.profiles());
         if (writerVendor == null) return List.of();
         return user.profiles().values().stream()
                 .filter(p -> spec.role().equals(p.role()) && writerVendor.equals(p.independenceVendor()))

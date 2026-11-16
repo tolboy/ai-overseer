@@ -94,6 +94,14 @@ public final class TaskModeTest implements Suite {
         check.contains("a call cap out of range is refused", TaskDraft.applyBudgets(capped, 0L, null), "1..50");
         check.eq("no budgets is a no-op", null, TaskDraft.applyBudgets(person, null, null));
 
+        var defaultAmount = new TaskDraft().write(root, "default-cost", "Fix the label", "code", "low");
+        check.eq("an explicit amount equal to the default still enables the threshold", null,
+                TaskDraft.applyBudgets(defaultAmount, null, 20.0));
+        check.eq("the resulting threshold is active", "threshold",
+                TaskSpec.parse(Files.readString(defaultAmount.file()), "default-cost.yaml").budget().costCap());
+        check.rejects("a non-finite CLI threshold is refused before drafting", "--max-cost-usd",
+                () -> dev.oseer.run.DoCommand.parse(new String[] {"do", "Fix the label", "--max-cost-usd", "NaN"}));
+
         // The browser selects a mode through the same reviewed, versioned task edit as budgets.
         Path sandbox = Files.createTempDirectory("oseer-task-mode-ui-");
         Path project = sandbox.resolve("project"), home = sandbox.resolve("home");

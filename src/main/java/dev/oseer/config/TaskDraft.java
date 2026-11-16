@@ -79,7 +79,8 @@ public final class TaskDraft {
     public static String applyBudgets(Written drafted, Long maxRoleRuns, Double maxCostUsd) throws IOException {
         if (maxRoleRuns == null && maxCostUsd == null) return null;
         if (maxRoleRuns != null && (maxRoleRuns < 1 || maxRoleRuns > 50)) return "max_role_runs must be 1..50";
-        if (maxCostUsd != null && (maxCostUsd < 0 || maxCostUsd > 10000)) return "max_cost_usd must be 0..10000";
+        if (maxCostUsd != null && (!Double.isFinite(maxCostUsd) || maxCostUsd < 0 || maxCostUsd > 10000))
+            return "max_cost_usd must be 0..10000";
         Path file = drafted.file();
         String text = Files.readString(file, StandardCharsets.UTF_8);
         TaskSpec existing;
@@ -89,7 +90,8 @@ public final class TaskDraft {
             return "task '" + drafted.id() + "' cannot be validated: " + invalid.getMessage();
         }
         boolean same = (maxRoleRuns == null || maxRoleRuns == existing.budget().maxRoleRuns())
-                && (maxCostUsd == null || Double.compare(maxCostUsd, existing.budget().maxCostUsd()) == 0);
+                && (maxCostUsd == null || (!"off".equals(existing.budget().costCap())
+                        && Double.compare(maxCostUsd, existing.budget().maxCostUsd()) == 0));
         if (same) return null;
         if (drafted.existed()) {
             return "task '" + drafted.id() + "' at " + file + " has its own budgets; change the contract or drop "

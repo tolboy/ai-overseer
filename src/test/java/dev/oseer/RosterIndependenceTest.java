@@ -80,6 +80,31 @@ public final class RosterIndependenceTest implements Suite {
         // An existing clash does not block an edit of an unrelated role.
         var planner = editor.apply(payload(home, "planner", List.of("planner-a")));
         check.eq("an unrelated role still saves", 200, planner.status());
+
+        Files.writeString(policy, """
+                version: 1
+                roles:
+                  implementer: {profiles: [writer, other-writer], strategy: first} # writer order
+                  reviewer: {profiles: [other-reader], strategy: first, require_independent_vendor: true}
+                """);
+        var fallbackEdit = new LinkedHashMap<String, Object>();
+        fallbackEdit.put("action", "fallbacks");
+        fallbackEdit.put("revision", ModelSettingsService.revision(policy));
+        fallbackEdit.put("role", "implementer");
+        fallbackEdit.put("on_vendor_failure", "auto");
+        fallbackEdit.put("fallbacks", List.of("writer"));
+        String original = Files.readString(policy);
+        var fallbackClash = editor.apply(fallbackEdit);
+        check.eq("moving the primary writer into standby cannot strand the reviewer",
+                "reviewer_not_independent", fallbackClash.report().get("code"));
+        check.eq("a refused fallback edit leaves the flow policy untouched", original, Files.readString(policy));
+        fallbackEdit.put("fallbacks", List.of("other-writer"));
+        check.eq("fallback editor accepts inline role mappings", 200, editor.apply(fallbackEdit).status());
+        check.contains("an inline role's comment survives the fallback edit", Files.readString(policy), "# writer order");
+        check.eq("standby remains configured after a roster reordering", 200,
+                editor.apply(payload(home, "implementer", List.of("other-writer", "writer"))).status());
+        var noPrimary = editor.apply(payload(home, "implementer", List.of("other-writer")));
+        check.eq("removing the primary does not silently promote a standby", "fallback_needs_primary", noPrimary.report().get("code"));
     }
 
     private static Map<String, Object> payload(Path home, String role, List<String> names) throws Exception {

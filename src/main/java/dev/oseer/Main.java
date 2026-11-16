@@ -228,7 +228,7 @@ public final class Main {
                         + unresolved.stream().map(row -> String.valueOf(row.get("credential_ref"))).toList()
                         + "; runs it starts stop at the model check. Start it from the shell or launcher"
                         + " that exports them (see `oseer doctor`).");
-            } catch (RuntimeException unreadable) {
+            } catch (java.io.IOException | RuntimeException unreadable) {
                 // The page shows configuration problems itself.
             }
             if (hasFlag(args, "--open-orca")) {
@@ -237,7 +237,13 @@ public final class Main {
                 if (!opened.ok()) System.err.println("Dashboard is available at " + dashboard.url()
                         + "; Orca did not open the tab: " + opened.stderr());
             }
-            new java.util.concurrent.CountDownLatch(1).await();
+            Thread shutdown = new Thread(dashboard::close, "oseer-dashboard-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdown);
+            try {
+                new java.util.concurrent.CountDownLatch(1).await();
+            } finally {
+                Runtime.getRuntime().removeShutdownHook(shutdown);
+            }
         }
         return 0;
     }
@@ -798,6 +804,11 @@ public final class Main {
      */
     static Map<String, Object> startAdvance(Path root, HumanDecision resolved, String[] args,
                                             ApproveEnv env) {
+        return startAdvance(root, resolved, args, env, false);
+    }
+
+    private static Map<String, Object> startAdvance(Path root, HumanDecision resolved, String[] args,
+                                                     ApproveEnv env, boolean waiterObserved) {
         String nextId = nextRunId(root, resolved.runId());
         boolean replan = resolved.kind() == HumanDecision.Kind.PREPARATION
                 && "replan".equals(resolved.decision());
@@ -810,22 +821,19 @@ public final class Main {
         report.put("run_id", nextId);
         report.put("continued_from", resolved.runId());
         report.put("prepare", prepareMode);
-        if (hasFlag(args, "--no-start")) {
+        if (waiterObserved || ((hasFlag(args, "--no-start") || hasFlag(args, "--start-unless-waiting"))
+                && supervisorAlive(root, resolved.runId()))) {
             report.put("started", false);
-            if (supervisorAlive(root, resolved.runId())) {
-                // The process that asked the question is still waiting. It will start the
-                // next run itself. Printing the command here is how plan-2's --no-start
-                // answered started:false and then the waiter started plan-3 anyway.
-                // Measured 2026-09-26.
-                report.put("waiter", true);
-                report.put("message", "a process is already waiting on this decision and will "
-                        + "start the next run; do not start another");
-                return report;
-            }
-            report.put("command", command);
+            report.put("waiter", true);
+            report.put("message", "a process is already waiting on this decision and will "
+                    + "start the next run; do not start another");
             return report;
         }
         report.put("command", command);
+        if (hasFlag(args, "--no-start")) {
+            report.put("started", false);
+            return report;
+        }
         String unchanged = "advance".equals(resolved.decision()) ? advanceWouldRepeat(root, resolved) : null;
         if (unchanged != null) {
             report.put("started", false);
@@ -856,9 +864,11 @@ public final class Main {
             List<Profile> models = names.stream().map(user.profiles()::get).filter(java.util.Objects::nonNull)
                     .filter(Profile::verified).toList();
             try {
+                var progress = narration(args);
                 Map<String, Object> checked = env.readiness.check(
-                        user, root, models, loaded.resolved().budget().strictCostCap(), narration(args)::line);
-                if (!Boolean.TRUE.equals(checked.get("ok"))) {
+                        user, root, models, loaded.resolved().budget().strictCostCap(), progress::line);
+                if (!dev.oseer.run.RunReadiness.permitsLaunch(checked, user, new ProcessRunner(),
+                        dev.oseer.config.RunOverride.fromArgs(args), java.util.Set.copyOf(Preparation.payingRoles(user)), progress::line)) {
                     report.put("started", false); report.put("ok", false);
                     report.put("code", "model_check_failed"); report.put("model_check", checked);
                     return report;
@@ -900,16 +910,19 @@ public final class Main {
                         ? null : loaded.task().scope().entries().get(0);
                 Map<String, Object> reservation = new LinkedHashMap<>();
                 reservation.put("prepare", "always");
+                var chainGate = TaskLoop.amendmentGate(root, resolved.runId(), loaded.resolved().budget(),
+                        () -> env.clock.nowMillis() * 1_000_000L);
                 new EvidenceLedger(root, nextId, user.home())
                         .reserveWorkflowRun(resolved.taskId(), reservation);
                 if (!hasFlag(args, "--no-workspace-status")) card.watch(narration, nextId);
                 Preparation.Outcome prepared = new Preparation(new ProcessRunner(),
-                        narration(args)).withWorkspace(card).run(root, loaded.project(), user, resolved.taskId(),
+                        narration(args)).withWorkspace(card).within(chainGate).run(root, loaded.project(), user, resolved.taskId(),
                         nextId, loaded.task().goal(), scope, loaded.task().risk(),
                         PlannerDraft.Access.DO_DEFAULT, false);
                 if (!prepared.ok()) {
                     Map<String, Object> prepReport = new LinkedHashMap<>();
                     prepReport.put("prepare", "always");
+                    prepReport.put("continued_from", resolved.runId());
                     prepReport.put("goal", loaded.task().goal());
                     prepReport.put("preparation_role_runs", (long) prepared.roleRuns());
                     prepReport.put("preparation_cost_usd", prepared.costUsd());
@@ -921,6 +934,7 @@ public final class Main {
                         prepReport.put("task_file", prepared.written().file().toString());
                     }
                     new DoCommand(new ProcessRunner(), narration(args))
+                            .withOrcaGate(!hasFlag(args, "--no-orca-gate"))
                             .recordPreparationStop(root, user, resolved.taskId(), nextId,
                                     prepared, prepReport);
                     report.put("started", true);
@@ -1957,6 +1971,11 @@ public final class Main {
                 if (repeat != null) throw new ApprovalException("advance_would_repeat", repeat);
             }
             final boolean applyProposal = "apply".equals(choice);
+            boolean waiterObserved = hasFlag(args, "--start-unless-waiting") && supervisorAlive(root, runId);
+            if (waiterObserved && !dev.oseer.config.RunOverride.fromArgs(args).isEmpty()) {
+                throw new ApprovalException("continuation_supervised",
+                        "a process is already waiting; clear the stage overrides or stop that process before answering");
+            }
             HumanDecision resolved = store.resolve(runId, expected, choice, actor, note, current -> {
                 if (applyProposal) dev.oseer.run.ContractProposal.apply(root, current);
             });
@@ -2009,7 +2028,7 @@ public final class Main {
             result.put("lands", false);
             if ("advance".equals(choice) || "apply".equals(choice)
                     || "replan".equals(choice) || "proceed".equals(choice)) {
-                Map<String, Object> started = startAdvance(root, resolved, args, env);
+                Map<String, Object> started = startAdvance(root, resolved, args, env, waiterObserved);
                 result.put("next_run", started);
                 if (Boolean.TRUE.equals(started.get("waiter"))) {
                     result.put("waiter", true);
@@ -2020,6 +2039,10 @@ public final class Main {
             } else if ("waive".equals(choice)) {
                 result.put("next", "the contract_gap stop was waived; nothing was landed. "
                         + "A product defect cannot be waived.");
+            } else if (hasFlag(args, "--start-unless-waiting") && continues(resolved)
+                    && (waiterObserved || supervisorAlive(root, runId))) {
+                result.put("waiter", true);
+                result.put("next", "a process is already waiting on this decision and will start the next run");
             } else {
                 result.put("next", "accept".equals(choice)
                         ? "inspect the exact diff and land it manually if desired"
@@ -2341,7 +2364,7 @@ public final class Main {
             if (env.readiness != null) {
                 UserConfig user = env.user();
                 List<Profile> models = new java.util.ArrayList<>();
-                for (String role : Preparation.payingStages(user)) {
+                for (String role : Preparation.payingRoles(user)) {
                     var roster = user.policy() == null ? null : user.policy().roles().get(role);
                     if (roster != null) for (String name : roster.profiles()) {
                         Profile profile = user.profiles().get(name);
@@ -2350,7 +2373,8 @@ public final class Main {
                 }
                 Map<String, Object> checked = env.readiness.check(user, root, models,
                         spec.resolve(project, taskFile.toString()).budget().strictCostCap(), narration::line);
-                if (!Boolean.TRUE.equals(checked.get("ok"))) {
+                if (!dev.oseer.run.RunReadiness.permitsLaunch(checked, user, new ProcessRunner(),
+                        dev.oseer.config.RunOverride.NONE, java.util.Set.copyOf(Preparation.payingRoles(user)), narration::line)) {
                     report.put("contract_amendment", Map.of("ok", false, "code", "model_check_failed", "model_check", checked));
                     return report;
                 }

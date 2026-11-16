@@ -52,6 +52,12 @@ public final class DoCommand {
             if (mode != null && !TaskSpec.MODES.contains(mode)) {
                 throw new IllegalArgumentException("--mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES));
             }
+            if (maxRoleRuns != null && (maxRoleRuns < 1 || maxRoleRuns > 50)) {
+                throw new IllegalArgumentException("--max-role-runs must be 1..50");
+            }
+            if (maxCostUsd != null && (!Double.isFinite(maxCostUsd) || maxCostUsd < 0 || maxCostUsd > 10000)) {
+                throw new IllegalArgumentException("--max-cost-usd must be 0..10000");
+            }
         }
 
         public Options(Path project, String goal, String scope, String risk, String taskId,
@@ -311,6 +317,15 @@ public final class DoCommand {
             }
         }
         Path root = placement.path();
+        String expectedWorktree = System.getenv("OSEER_UI_EXPECTED_WORKTREE");
+        if (!options.dryRun() && expectedWorktree != null && !Path.of(expectedWorktree).equals(root.toRealPath())) {
+            return fail("preview_stale", requested, root, taskId,
+                    "the checkout has changed since the preview; preview the run again");
+        }
+        String worktreeFile = System.getenv("OSEER_UI_WORKTREE_FILE");
+        if (worktreeFile != null && !worktreeFile.isBlank()) {
+            dev.oseer.execution.ModelCheck.atomicWrite(Path.of(worktreeFile), root.toRealPath().toString());
+        }
 
         // `do --dry-run` still initializes/drafts the task contract. It must not change
         // another workflow's pinned terms, even though it never pays a vendor.
@@ -360,6 +375,8 @@ public final class DoCommand {
                     "scope '" + scope + "' is not defined. Available: " + project.scopes().keySet());
         }
         String risk = options.risk() != null ? options.risk() : project.defaultRisk();
+        if (options.risk() == null && "quick".equals(options.mode())) risk = "low";
+        if (options.risk() == null && "refactor".equals(options.mode()) && "low".equals(risk)) risk = "medium";
         if (!ProjectConfig.RISK_LEVELS.contains(risk)) {
             return fail("risk_unknown", requested, root, taskId, "risk must be one of " + ProjectConfig.RISK_LEVELS);
         }
@@ -369,6 +386,15 @@ public final class DoCommand {
                 : project.checks().getOrDefault(project.defaultChecks(), List.of());
         Path taskFile = root.resolve(".oseer/tasks").resolve(taskId + ".yaml");
         boolean contractExists = Files.isRegularFile(taskFile);
+        if ("bug".equals(options.mode()) && !contractExists) {
+            return fail("task_mode_conflict", requested, root, taskId,
+                    "mode: bug needs an existing task contract with a reproduce command in its acceptance checks");
+        }
+        if ("refactor".equals(options.mode()) && ("low".equals(risk) || project.defaultBaselineChecks() == null
+                || project.checks().getOrDefault(project.defaultBaselineChecks(), List.of()).isEmpty())) {
+            return fail("task_mode_conflict", requested, root, taskId,
+                    "mode: refactor needs medium or high risk and defaults.baseline_checks in project.yaml");
+        }
         // `auto` means "plan when there is nothing to run yet and someone to plan it"; a roster
         // without a planner drafts the contract the old way rather than refusing the goal.
         boolean plannerConfigured = user != null && user.policy() != null
@@ -387,6 +413,11 @@ public final class DoCommand {
                 String conflict = PlannerDraft.intentConflict(taskId, options.goal(), scope, risk,
                         existing, taskFile);
                 if (conflict != null) return fail("task_conflict", requested, root, taskId, conflict);
+                TaskDraft.Written onDisk = new TaskDraft.Written(taskFile, taskId, true);
+                String modeProblem = TaskDraft.applyMode(onDisk, options.mode());
+                if (modeProblem != null) return fail("task_mode_conflict", requested, root, taskId, modeProblem);
+                String budgetProblem = TaskDraft.applyBudgets(onDisk, options.maxRoleRuns(), options.maxCostUsd());
+                if (budgetProblem != null) return fail("task_budget_conflict", requested, root, taskId, budgetProblem);
             } catch (RuntimeException unreadable) {
                 return fail("task_conflict", requested, root, taskId, "task '" + taskId
                         + "' already exists but cannot be validated: " + unreadable.getMessage());
@@ -404,10 +435,19 @@ public final class DoCommand {
         Workspace card = null;
         long preparationCap = 1;
         if (dispatchPlanner) {
+            TaskSpec.ResolvedTask measured = measureForReservation(root, project,
+                    taskId, options, scope, risk, contractExists);
+            TaskSpec.Budget ceilings = measured.budget();
+            boolean explicitBudget = options.maxRoleRuns() != null || options.maxCostUsd() != null
+                    || "quick".equals(options.mode());
+            if (explicitBudget && ceilings.maxRoleRuns() < Preparation.payingStages(user).size()) {
+                return fail("budget_insufficient_to_finish", requested, root, taskId,
+                        "max_role_runs cannot fit the planner and plan review");
+            }
             if (!options.dryRun() && readiness != null) {
                 List<dev.oseer.config.Profile> checks = new java.util.ArrayList<>();
-                var measured = measureForReservation(root, project, taskId, options.goal(), scope, risk, contractExists);
-                java.util.Set<String> checkRoles = new java.util.LinkedHashSet<>(Preparation.payingStages(user));
+                java.util.Set<String> checkRoles = new java.util.LinkedHashSet<>(Preparation.payingRoles(user));
+                var bootstrapRoles = java.util.Set.copyOf(checkRoles);
                 if (!options.draftOnly()) for (var stage : user.policy().workflow().stages())
                     if (stage.kind() == dev.oseer.config.Workflow.Kind.ROLE) checkRoles.add(stage.role());
                 for (String role : checkRoles) {
@@ -418,7 +458,7 @@ public final class DoCommand {
                     }
                 }
                 Map<String, Object> checked = readiness.check(user, root, checks, measured.budget().strictCostCap(), progress::line);
-                if (!Boolean.TRUE.equals(checked.get("ok"))) {
+                if (!RunReadiness.permitsLaunch(checked, user, processes, override, bootstrapRoles, progress::line)) {
                     Map<String, Object> report = new LinkedHashMap<>();
                     report.put("ok", false); report.put("code", "model_check_failed");
                     report.put("model_check", checked); report.put("run_id", runId);
@@ -445,10 +485,8 @@ public final class DoCommand {
                 if (options.draftOnly()) {
                     preparationPlan = new CallPlan(user.policy().workflow(),
                             stage -> true, Preparation.payingStages(user));
-                    preparationCap = Preparation.payingStages(user).size();
+                    preparationCap = explicitBudget ? ceilings.maxRoleRuns() : Preparation.payingStages(user).size();
                 } else {
-                    TaskSpec.ResolvedTask measured = measureForReservation(root, project,
-                            taskId, options.goal(), scope, risk, contractExists);
                     preparationPlan = TaskLoop.planFor(user.policy().workflow(), user,
                             measured, Preparation.payingStages(user));
                     preparationCap = measured.budget().maxRoleRuns();
@@ -471,7 +509,10 @@ public final class DoCommand {
                 card = Workspace.guarded(this.board.at(root));
                 if (watch) card.watch(root.resolve(".oseer/runs").resolve(runId).resolve("narration.log"), runId);
             }
-            prepared = new Preparation(processes, progress).withWorkspace(card).run(root, project, user, taskId,
+            Preparation runner = new Preparation(processes, progress).withWorkspace(card)
+                    .withDraftOptions(options.mode(), options.maxRoleRuns(), options.maxCostUsd());
+            if (explicitBudget && !options.dryRun()) runner.within(TaskLoop.preparationGate(ceilings));
+            prepared = runner.run(root, project, user, taskId,
                     runId, options.goal(), scope, risk, PlannerDraft.Access.DO_DEFAULT,
                     options.dryRun());
             if (!prepared.ok()) {
@@ -507,6 +548,9 @@ public final class DoCommand {
                 report.put("scope", scope);
                 report.put("risk", risk);
                 report.put("lands", false);
+                if (preparationPlan != null) {
+                    report.put("budget_plan", preparationPlan.toMap(preparationCap, user.policy().repairReserve()));
+                }
                 attachCorpusVisibility(report, root, runId, user.home());
                 return new Outcome(true, "dry_run", requested, root, taskId, report);
             }
@@ -568,12 +612,12 @@ public final class DoCommand {
                 return fail("task_conflict", requested, root, taskId, conflict.getMessage());
             }
         }
-        // A task mode chosen on the command line is written into the contract this run drafted,
-        // before the contract is loaded, so the loop and the record see the same preset.
-        String modeProblem = TaskDraft.applyMode(drafted, options.mode());
-        if (modeProblem != null) return fail("task_mode_conflict", requested, root, taskId, modeProblem);
-        String budgetProblem = TaskDraft.applyBudgets(drafted, options.maxRoleRuns(), options.maxCostUsd());
-        if (budgetProblem != null) return fail("task_budget_conflict", requested, root, taskId, budgetProblem);
+        if (!dispatchPlanner) {
+            String modeProblem = TaskDraft.applyMode(drafted, options.mode());
+            if (modeProblem != null) return fail("task_mode_conflict", requested, root, taskId, modeProblem);
+            String budgetProblem = TaskDraft.applyBudgets(drafted, options.maxRoleRuns(), options.maxCostUsd());
+            if (budgetProblem != null) return fail("task_budget_conflict", requested, root, taskId, budgetProblem);
+        }
         ConfigLoader.Loaded loaded = loader.load(root, taskId);
 
         // A compiled contract is the most consequential thing a run produces before it spends
@@ -838,7 +882,7 @@ public final class DoCommand {
      * numbers {@link TaskSpec} uses, which is what a planner-compiled contract gets.
      */
     private static TaskSpec.ResolvedTask measureForReservation(Path root, ProjectConfig project,
-            String taskId, String goal, String scope, String risk, boolean contractExists) {
+            String taskId, Options options, String scope, String risk, boolean contractExists) {
         if (contractExists) {
             try {
                 return new ConfigLoader().load(root, taskId).resolved();
@@ -847,9 +891,14 @@ public final class DoCommand {
                 // coherent plan, not a mix of the bootstrap cap and the full chain.
             }
         }
+        boolean quick = "quick".equals(options.mode());
+        long maxRoleRuns = options.maxRoleRuns() != null ? options.maxRoleRuns() : quick ? 3 : 6;
+        double maxCostUsd = options.maxCostUsd() != null ? options.maxCostUsd() : 20.0;
+        var budget = new TaskSpec.Budget(maxRoleRuns, maxCostUsd, null, null,
+                options.maxCostUsd() == null ? "off" : "threshold");
         return new TaskSpec.ResolvedTask(
                 taskId,
-                goal,
+                options.goal(),
                 List.of(),
                 risk,
                 project.baseRef(),
@@ -858,8 +907,8 @@ public final class DoCommand {
                 List.of(),
                 new TaskSpec.Authority(true, false, false),
                 new TaskSpec.VisualQa(false, List.of(), null, null),
-                new TaskSpec.Budget(6, 20.0),
-                project.defaultMaxFixAttempts(),
+                budget,
+                quick ? 1 : project.defaultMaxFixAttempts(),
                 project.defaultTimeoutMinutes());
     }
 
@@ -979,6 +1028,7 @@ public final class DoCommand {
         summary.put("task_id", taskId);
         summary.put("ok", false);
         summary.put("reason", prepared.code());
+        if (report.get("continued_from") instanceof String from) summary.put("continued_from", from);
         summary.put("next_action", "human_escalation");
         summary.put("prepare", report.get("prepare"));
         summary.put("goal", report.get("goal"));

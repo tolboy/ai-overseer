@@ -9,6 +9,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -39,12 +40,15 @@ public final class RunTimeline {
     static final long MAX_TEXT = 2L * 1024 * 1024;
     static final long MAX_IMAGE = 12L * 1024 * 1024;
     private static final int MAX_EVIDENCE_FILES = 120;
+    private static final List<String> GATE_REPORTS = List.of(
+            "machine-gate.json", "baseline-gate.json", "reproduction-gate.json", "visual-qa.json");
+    private static final byte[] PNG_SIGNATURE = {(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10};
     private static final Pattern EVIDENCE_FILE = Pattern.compile(
             "(prompts/[A-Za-z0-9._-]{1,120}\\.md"
                     + "|raw/[A-Za-z0-9._-]{1,120}\\.(?:stdout|stderr)\\.txt"
                     + "|artifacts/[A-Za-z0-9._-]{1,120}\\.json"
                     + "|screenshots/[A-Za-z0-9._-]{1,160}\\.png"
-                    + "|(?:machine-gate|baseline-gate|reproduce-gate|visual-qa)\\.json"
+                    + "|(?:machine-gate|baseline-gate|reproduction-gate|visual-qa)\\.json"
                     + "|preview\\.log)");
 
     /** Thrown for a run or file that does not exist or may not be served; the caller answers 404. */
@@ -58,13 +62,13 @@ public final class RunTimeline {
     // Timeline projection
 
     public static Map<String, Object> read(Path project, String runId) throws IOException, NotFound {
-        if (runId == null || !RUN_ID.matcher(runId).matches() || runId.contains("--")) throw new NotFound();
+        if (runId == null || !RUN_ID.matcher(runId).matches()) throw new NotFound();
         Path runsRoot = runsRoot(project);
         Path directory = runsRoot.resolve(runId);
-        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)
-                || !directory.toRealPath().startsWith(runsRoot)) throw new NotFound();
+        if (!isStepDirectory(runsRoot, runId)) throw new NotFound();
         Map<String, Object> summary = readJson(directory.resolve("task-run.json"), runsRoot);
         Map<String, Object> reserved = readJson(directory.resolve("run.json"), runsRoot);
+        if (summary == null && reserved == null) throw new NotFound();
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("run_id", runId);
@@ -72,7 +76,6 @@ public final class RunTimeline {
         result.put("task_id", task instanceof String text ? text : null);
         if (reserved != null && reserved.get("reserved_at") instanceof String at) result.put("started_at", at);
 
-        List<Path> stepDirectories = stepDirectories(runsRoot, runId);
         List<Map<String, Object>> steps;
         if (summary != null && summary.get("steps") instanceof List<?>) {
             result.put("state", "finished");
@@ -82,16 +85,16 @@ public final class RunTimeline {
                 copyScalar(result, summary, key);
             }
             if (summary.get("next_step") instanceof Map<?, ?> next && next.get("summary") instanceof String text) {
-                result.put("next_step", text);
+                result.put("next_step", redact(text));
             } else if (summary.get("safe_next_step") instanceof String text) {
-                result.put("next_step", text);
+                result.put("next_step", redact(text));
             }
             steps = summarySteps((List<?>) summary.get("steps"), runsRoot, runId);
         } else {
             boolean running = false;
             steps = new ArrayList<>();
-            for (Path step : stepDirectories) {
-                Map<String, Object> row = liveStep(step, runsRoot);
+            for (Path step : stepDirectories(runsRoot, runId)) {
+                Map<String, Object> row = liveStep(step, runsRoot, runId);
                 if (row == null) continue;
                 if ("running".equals(row.get("status"))) running = true;
                 steps.add(row);
@@ -103,9 +106,20 @@ public final class RunTimeline {
                 copyScalar(result, summary, "next_action");
             }
         }
+        if (summary != null && summary.get("finding_history") instanceof List<?> rounds) {
+            List<String> ids = dev.oseer.ledger.Findings.openBlockers(rounds).stream()
+                    .filter(finding -> "contract_gap".equals(finding.get("category")))
+                    .map(finding -> finding.get("id"))
+                    .filter(id -> id instanceof String text && !text.isBlank() && text.length() <= 80 && redact(text).equals(text))
+                    .map(String.class::cast).toList();
+            if (!ids.isEmpty()) result.put("contract_gap_ids", ids);
+        }
         result.put("workflow", workflow(summary));
-        result.put("baseline", baseline(summary, runsRoot));
-        attribute(steps, (Map<?, ?>) result.get("baseline"));
+        Map<String, Object> baseline = baseline(summary, runsRoot);
+        attribute(steps, baseline);
+        maskCommands(baseline);
+        steps.forEach(RunTimeline::maskCommands);
+        result.put("baseline", baseline);
         result.put("steps", steps);
         // A stage that ran and did not pass is failed, not "still open": the summary lists it
         // among pending stages with did_not_pass, which read as waiting in the timeline.
@@ -134,6 +148,7 @@ public final class RunTimeline {
         Map<String, Object> totals = new LinkedHashMap<>();
         totals.put("duration_ms", duration);
         totals.put("duration_complete", durationKnown);
+        if (result.get("total_cost_usd") instanceof Number recorded) cost = recorded.doubleValue();
         totals.put("cost_usd_known", Math.round(cost * 1_000_000d) / 1_000_000d);
         // The engine's own count wins when the run recorded one; the run list reads the same.
         if (result.get("unpriced_calls") instanceof Number recorded) unpriced = recorded.longValue();
@@ -181,13 +196,14 @@ public final class RunTimeline {
         for (Object item : source) {
             if (!(item instanceof Map<?, ?> step)) continue;
             Map<String, Object> row = new LinkedHashMap<>();
-            for (String key : List.of("step", "stage", "attempt", "ok", "code", "profile", "vendor", "cost_usd",
+            for (String key : List.of("step", "stage", "attempt", "ok", "code", "profile", "vendor", "cost_usd", "role",
                     "reused_from", "fix_for", "blocking_findings", "independence")) {
                 copyScalar(row, step, key);
             }
             if (!row.containsKey("stage")) row.put("stage", step.get("step"));
             String kind = kindOf(step);
             row.put("kind", kind);
+            if ("role".equals(kind) && step.get("step") instanceof String role) row.putIfAbsent("role", role);
             if (step.get("reused_from") instanceof String) row.put("reused", true);
             row.put("status", step.get("ok") instanceof Boolean ok ? (ok ? "passed" : "failed") : "unknown");
             if ("skipped".equals(step.get("code"))) row.put("status", "skipped");
@@ -195,17 +211,20 @@ public final class RunTimeline {
             // the role made, not from the profile: a failover or a retry changes them.
             if (step.get("vendor_attempts") instanceof List<?> attempts && !attempts.isEmpty()) {
                 long millis = 0L; boolean known = true; int count = 0; long unpricedCalls = 0L;
+                double attemptsCost = 0.0;
                 Map<?, ?> last = null;
                 for (Object raw : attempts) {
                     if (!(raw instanceof Map<?, ?> attempt)) continue;
                     count++; last = attempt;
                     // Counted per vendor call, as the engine counts unpriced_calls: a failed
                     // attempt with no price is unpriced even when a later attempt reported one.
-                    if (!(attempt.get("cost_usd") instanceof Number)) unpricedCalls++;
+                    if (attempt.get("cost_usd") instanceof Number price) attemptsCost += price.doubleValue();
+                    else unpricedCalls++;
                     if (attempt.get("duration_millis") instanceof Number number) millis += number.longValue();
                     else known = false;
                 }
                 row.put("vendor_attempts", count);
+                if (count > unpricedCalls) row.put("cost_usd", attemptsCost);
                 if (unpricedCalls > 0) row.put("unpriced_calls", unpricedCalls);
                 if (known && count > 0) row.put("duration_ms", millis);
                 List<Map<String, Object>> failures = failedAttempts(attempts);
@@ -271,44 +290,73 @@ public final class RunTimeline {
             if (rest == null) continue;
             int slash = rest.indexOf('/');
             String name = slash < 0 ? rest : rest.substring(0, slash);
-            if (ownedBy(name, runId) && isStepDirectory(runsRoot, name)) return name;
+            if (ownedBy(runsRoot, name, runId) && isStepDirectory(runsRoot, name)) return name;
         }
-        // Without a pointer the loop's naming convention is the fallback: `<run>--<stage>-<attempt>`.
-        Object stage = step.get("stage") != null ? step.get("stage") : step.get("step");
-        if (stage instanceof String text && step.get("attempt") instanceof Number attempt) {
-            String name = runId + "--" + text.replace('_', '-') + "-" + attempt.longValue();
-            if (RUN_ID.matcher(name).matches() && isStepDirectory(runsRoot, name)) return name;
+        // Stage names distinguish repeated roles. Single-stage roles keep their historical
+        // role-named directory, including failed calls whose report records no artifact.
+        if (step.get("attempt") instanceof Number attempt) {
+            for (String key : List.of("stage", "step")) {
+                if (!(step.get(key) instanceof String text)) continue;
+                for (String label : List.of(dev.oseer.config.Workflow.slug(text), text.replace('_', '-'))) {
+                    String name = runId + "--" + label + "-" + attempt.longValue();
+                    if (ownedBy(runsRoot, name, runId) && isStepDirectory(runsRoot, name)) return name;
+                }
+            }
         }
         return null;
     }
 
-    private static boolean ownedBy(String directory, String runId) {
-        return directory.equals(runId) || directory.startsWith(runId + "--");
+    private static boolean ownedBy(Path runsRoot, String directory, String runId) {
+        if (!RUN_ID.matcher(directory).matches()) return false;
+        if (directory.equals(runId)) return true;
+        String prefix = runId + "--";
+        if (!directory.startsWith(prefix)) return false;
+        // A user-chosen workflow ID can contain the same separator as a step ID. Its
+        // own receipt marks another workflow, including the step directories under it.
+        for (int boundary = directory.indexOf("--", prefix.length()); boundary >= 0;
+                boundary = directory.indexOf("--", boundary + 2)) {
+            if (hasWorkflowReceipt(runsRoot, directory.substring(0, boundary))) return false;
+        }
+        return !hasWorkflowReceipt(runsRoot, directory);
+    }
+
+    private static boolean hasWorkflowReceipt(Path runsRoot, String name) {
+        if (!isStepDirectory(runsRoot, name)) return false;
+        Path dir = runsRoot.resolve(name);
+        return Files.isRegularFile(dir.resolve("run.json"), LinkOption.NOFOLLOW_LINKS)
+                || Files.isRegularFile(dir.resolve("task-run.json"), LinkOption.NOFOLLOW_LINKS);
     }
 
     private static boolean isStepDirectory(Path runsRoot, String name) {
         if (!RUN_ID.matcher(name).matches()) return false;
         Path dir = runsRoot.resolve(name);
         try {
-            return Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS) && dir.toRealPath().startsWith(runsRoot);
+            return Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS) && dir.toRealPath().equals(dir);
         } catch (IOException unreadable) {
             return false;
         }
     }
 
-    private static void gateDetails(Map<String, Object> row, Map<?, ?> step, Path dir, Path runsRoot) throws IOException {
+    private static void gateDetails(Map<String, Object> row, Map<?, ?> step, Path dir, Path runsRoot) {
         Map<String, Object> report = null;
         if (step.get("report") instanceof String text) {
-            Path named = dir.resolve(Path.of(text.replace('\\', '/')).getFileName().toString());
-            report = readJson(named, runsRoot);
+            String normalized = text.replace('\\', '/');
+            String name = normalized.substring(normalized.lastIndexOf('/') + 1);
+            if (GATE_REPORTS.contains(name)) report = readJson(dir.resolve(name), runsRoot);
         }
-        if (report == null) {
-            for (String name : List.of("machine-gate.json", "baseline-gate.json", "reproduce-gate.json")) {
-                report = readJson(dir.resolve(name), runsRoot);
-                if (report != null) break;
-            }
+        if (report == null) report = findGateReport(dir, runsRoot);
+        if (report != null) gateDetails(row, report);
+    }
+
+    private static Map<String, Object> findGateReport(Path dir, Path runsRoot) {
+        for (String name : GATE_REPORTS) {
+            Map<String, Object> report = readJson(dir.resolve(name), runsRoot);
+            if (report != null) return report;
         }
-        if (report == null) return;
+        return null;
+    }
+
+    private static void gateDetails(Map<String, Object> row, Map<String, Object> report) {
         copyScalar(row, report, "phase");
         copyScalar(row, report, "finished_at");
         List<Map<String, Object>> commands = gateCommands(report);
@@ -356,7 +404,8 @@ public final class RunTimeline {
             }
         }
         for (Map<String, Object> step : steps) {
-            if (!"gate".equals(step.get("kind")) || "baseline".equals(step.get("step"))) continue;
+            if (!"gate".equals(step.get("kind")) || "baseline".equals(step.get("step"))
+                    || "reproduction".equals(step.get("phase"))) continue;
             if (!(step.get("commands") instanceof List<?> commands)) continue;
             for (Object raw : commands) {
                 if (!(raw instanceof Map<?, ?> rawCommand)) continue;
@@ -364,6 +413,17 @@ public final class RunTimeline {
                 if (Boolean.TRUE.equals(command.get("ok"))) continue;
                 Boolean earlier = command.get("command") instanceof String text ? before.get(text) : null;
                 command.put("attribution", earlier == null ? "no_baseline" : earlier ? "regression" : "pre_existing");
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void maskCommands(Map<String, Object> row) {
+        if (row.get("commands") instanceof List<?> commands) {
+            for (Object item : commands) {
+                if (item instanceof Map<?, ?> command && command.get("command") instanceof String text) {
+                    ((Map<String, Object>) command).put("command", redact(text));
+                }
             }
         }
     }
@@ -380,7 +440,7 @@ public final class RunTimeline {
         copyScalar(baseline, summary, "baseline_reused_from");
         if (summary.get("baseline_commands") instanceof List<?> list) {
             List<String> names = new ArrayList<>();
-            for (Object item : list) if (item instanceof String text) names.add(text);
+            for (Object item : list) if (item instanceof String text) names.add(redact(text));
             baseline.put("declared", names);
         }
         if (summary.get("baseline_report") instanceof String path) {
@@ -389,7 +449,8 @@ public final class RunTimeline {
             if (marker >= 0) {
                 String rest = normalized.substring(marker + ".oseer/runs/".length());
                 int slash = rest.indexOf('/');
-                if (slash > 0 && isStepDirectory(runsRoot, rest.substring(0, slash))) {
+                if (slash > 0 && rest.substring(slash + 1).equals("baseline-gate.json")
+                        && isStepDirectory(runsRoot, rest.substring(0, slash))) {
                     Map<String, Object> report = readJson(runsRoot.resolve(rest.substring(0, slash))
                             .resolve(rest.substring(slash + 1)), runsRoot);
                     if (report != null) {
@@ -459,13 +520,12 @@ public final class RunTimeline {
     }
 
     /** A step of a run that has not written its summary yet, from its directory alone. */
-    private static Map<String, Object> liveStep(Path dir, Path runsRoot) throws IOException {
+    private static Map<String, Object> liveStep(Path dir, Path runsRoot, String runId) throws IOException {
         String name = dir.getFileName().toString();
-        int separator = name.indexOf("--");
-        String label = separator < 0 ? name : name.substring(separator + 2);
+        String label = name.substring(runId.length() + 2);
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("stage", label.replaceFirst("-\\d+$", ""));
-        java.util.regex.Matcher attempt = Pattern.compile("-(\\d+)$").matcher(label);
+        java.util.regex.Matcher attempt = Pattern.compile("-(\\d{1,10})$").matcher(label);
         if (attempt.find()) row.put("attempt", Long.parseLong(attempt.group(1)));
         row.put("evidence_dir", name);
         Map<String, Object> view = null;
@@ -495,19 +555,14 @@ public final class RunTimeline {
             if ("running".equals(state) && view.get("controller_started_at") instanceof String started) row.put("started_at", started);
             if (!"running".equals(state) && !(view.get("cost_usd") instanceof Number) && view.get("vendor") != null) row.put("unpriced", true);
         } else {
-            Map<String, Object> report = null;
-            for (String file : List.of("machine-gate.json", "baseline-gate.json", "reproduce-gate.json", "visual-qa.json")) {
-                report = readJson(dir.resolve(file), runsRoot);
-                if (report != null) break;
-            }
+            Map<String, Object> report = findGateReport(dir, runsRoot);
             row.put("kind", "gate");
             if (report == null) {
                 row.put("status", "running");
             } else {
                 row.put("status", Boolean.TRUE.equals(report.get("ok")) ? "passed" : report.get("ok") == null ? "unknown" : "failed");
                 copyScalar(row, report, "code");
-                Map<String, Object> pseudo = new LinkedHashMap<>();
-                gateDetails(row, pseudo, dir, runsRoot);
+                gateDetails(row, report);
             }
             if ("baseline".equals(row.get("stage"))) row.put("step", "baseline");
         }
@@ -520,8 +575,8 @@ public final class RunTimeline {
         try (var entries = Files.list(runsRoot)) {
             for (Path entry : entries.toList()) {
                 String name = entry.getFileName().toString();
-                if (!name.startsWith(runId + "--") || !RUN_ID.matcher(name).matches()) continue;
-                if (!Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS) || !entry.toRealPath().startsWith(runsRoot)) continue;
+                if (name.equals(runId) || !ownedBy(runsRoot, name, runId)) continue;
+                if (!isStepDirectory(runsRoot, name)) continue;
                 dirs.add(entry);
             }
         }
@@ -545,11 +600,11 @@ public final class RunTimeline {
 
     static List<Map<String, Object>> evidenceList(Path dir, Path runsRoot) throws IOException {
         List<Map<String, Object>> files = new ArrayList<>();
-        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS) || !dir.toRealPath().startsWith(runsRoot)) return files;
+        if (!isStepDirectory(runsRoot, dir.getFileName().toString())) return files;
         try (var walk = Files.walk(dir, 2)) {
             for (Path file : walk.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).sorted().toList()) {
                 String relative = dir.relativize(file).toString().replace('\\', '/');
-                if (!EVIDENCE_FILE.matcher(relative).matches()) continue;
+                if (!EVIDENCE_FILE.matcher(relative).matches() || relative.contains("..") || !file.toRealPath().equals(file)) continue;
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("path", relative);
                 row.put("kind", evidenceKind(relative));
@@ -578,32 +633,38 @@ public final class RunTimeline {
     public static Evidence evidence(Path project, String runId, String directory, String relative)
             throws IOException, NotFound {
         if (runId == null || directory == null || relative == null
-                || !RUN_ID.matcher(runId).matches() || runId.contains("--")
-                || !RUN_ID.matcher(directory).matches() || !ownedBy(directory, runId)
+                || !RUN_ID.matcher(runId).matches()
                 || !EVIDENCE_FILE.matcher(relative).matches() || relative.contains("..")) throw new NotFound();
         Path runsRoot = runsRoot(project);
+        if (!hasWorkflowReceipt(runsRoot, runId) || !ownedBy(runsRoot, directory, runId)) throw new NotFound();
         Path dir = runsRoot.resolve(directory);
-        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS) || !dir.toRealPath().startsWith(runsRoot)) throw new NotFound();
+        if (!isStepDirectory(runsRoot, directory)) throw new NotFound();
         Path file = dir;
         for (String part : relative.split("/")) {
             file = file.resolve(part);
             if (Files.isSymbolicLink(file)) throw new NotFound();
         }
-        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !file.toRealPath().startsWith(dir.toRealPath())) throw new NotFound();
-        long size = Files.size(file);
-        if (relative.endsWith(".png")) {
-            if (size > MAX_IMAGE) throw new NotFound();
-            byte[] bytes = Files.readAllBytes(file);
-            if (bytes.length < 8 || (bytes[0] & 0xff) != 0x89 || bytes[1] != 'P' || bytes[2] != 'N' || bytes[3] != 'G') throw new NotFound();
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !file.toRealPath().equals(file)) throw new NotFound();
+        boolean image = relative.endsWith(".png");
+        if (image && Files.size(file) > MAX_IMAGE) throw new NotFound();
+        byte[] bytes;
+        try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = input.readNBytes((int) (image ? MAX_IMAGE : MAX_TEXT) + 1);
+        }
+        if (image) {
+            if (bytes.length > MAX_IMAGE || bytes.length < PNG_SIGNATURE.length
+                    || !Arrays.equals(bytes, 0, PNG_SIGNATURE.length, PNG_SIGNATURE, 0, PNG_SIGNATURE.length)) throw new NotFound();
             return new Evidence(bytes, "image/png");
         }
-        String text;
-        try (var input = Files.newInputStream(file)) {
-            byte[] head = input.readNBytes((int) Math.min(size, MAX_TEXT));
-            text = new String(head, StandardCharsets.UTF_8);
+        boolean truncated = bytes.length > MAX_TEXT;
+        int length = Math.min(bytes.length, (int) MAX_TEXT);
+        if (truncated) {
+            // An incomplete line can contain a partial token that would evade a pattern.
+            while (length > 0 && bytes[length - 1] != '\n') length--;
         }
-        if (size > MAX_TEXT) text += "\n\n[truncated by the dashboard: " + size + " bytes on disk, first " + MAX_TEXT + " shown]\n";
-        return new Evidence(redact(text).getBytes(StandardCharsets.UTF_8), "text/plain; charset=utf-8");
+        String text = redact(new String(bytes, 0, length, StandardCharsets.UTF_8));
+        if (truncated) text += "\n[truncated by the dashboard at " + MAX_TEXT + " bytes]\n";
+        return new Evidence(text.getBytes(StandardCharsets.UTF_8), "text/plain; charset=utf-8");
     }
 
     private static final List<Pattern> SECRET_SHAPES = List.of(
@@ -616,7 +677,7 @@ public final class RunTimeline {
             Pattern.compile("\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"),
             Pattern.compile("(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]{12,}"),
             Pattern.compile("(?i)((?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|passwd)[\"']?\\s*[:=]\\s*[\"']?)[^\\s\"',}]{8,}"),
-            Pattern.compile("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----"));
+            Pattern.compile("(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\\z)"));
 
     /** Masks credential-shaped text. A guard for what a vendor printed, not a guarantee. */
     static String redact(String text) {
@@ -633,18 +694,21 @@ public final class RunTimeline {
     // ---------------------------------------------------------------------------------------
 
     private static Path runsRoot(Path project) throws IOException, NotFound {
-        Path runs = project.toAbsolutePath().normalize().resolve(".oseer/runs");
+        Path runs = project.toRealPath().resolve(".oseer/runs");
         if (!Files.isDirectory(runs, LinkOption.NOFOLLOW_LINKS)) throw new NotFound();
         Path real = runs.toRealPath();
-        if (!real.startsWith(project.toRealPath())) throw new NotFound();
+        if (!real.equals(runs)) throw new NotFound();
         return real;
     }
 
     private static Map<String, Object> readJson(Path file, Path runsRoot) {
         try {
-            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) > MAX_JSON
-                    || !file.toRealPath().startsWith(runsRoot)) return null;
-            return Json.parseObject(Files.readString(file));
+            if (!file.normalize().startsWith(runsRoot) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(file) > MAX_JSON || !file.toRealPath().equals(file)) return null;
+            try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+                byte[] bytes = input.readNBytes((int) MAX_JSON + 1);
+                return bytes.length > MAX_JSON ? null : Json.parseObject(new String(bytes, StandardCharsets.UTF_8));
+            }
         } catch (RuntimeException | IOException unreadable) {
             return null;
         }

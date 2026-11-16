@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -1203,15 +1204,25 @@ public final class TaskLoop {
                 : Map.of();
         if (!dryRun && readiness != null) {
             List<dev.oseer.config.Profile> checks = new ArrayList<>();
+            var selected = new LinkedHashSet<String>();
+            RoleResolver.Writers wouldWrite = initialPreviewWriters(task);
             for (Workflow.Stage stage : workflow.stages()) {
                 if (stage.kind() != Workflow.Kind.ROLE || skipReason(stage, user, task, reviewByRisk) != null) continue;
+                RoleResolver.Writers judgedBy = stage.onFindings() == null ? RoleResolver.Writers.NONE : wouldWrite;
                 dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                        RoleResolver.Writers.NONE, workflow.rotationPositionOf(stage));
-                if (chosen != null) checks.add(chosen);
+                        judgedBy, workflow.rotationPositionOf(stage));
+                if (chosen != null) {
+                    checks.add(chosen);
+                    selected.add(chosen.name());
+                    wouldWrite = withPreviewWriter(wouldWrite, chosen);
+                }
                 if (stage.fixWith() != null) {
                     dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix", stage.fixWith(),
                             RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
-                    if (fixer != null) checks.add(fixer);
+                    if (fixer != null) {
+                        checks.add(fixer);
+                        selected.add(fixer.name());
+                    }
                     var fixSpec = user.policy() == null ? null : user.policy().roles().get(stage.fixWith());
                     if (!selectModels && fixSpec != null) for (String name : fixSpec.profiles()) {
                         var alternative = user.profiles().get(name);
@@ -1232,15 +1243,12 @@ public final class TaskLoop {
             if(!effortWarnings.isEmpty()){checked=new LinkedHashMap<>(checked);checked.put("effort_warnings",effortWarnings);}
             summary.put("model_check", checked);
             dev.oseer.execution.ModelCheck.atomicWrite(ledger.runDirectory().resolve("model-check.json"), Json.write(checked));
-            var covered = Boolean.TRUE.equals(checked.get("ok")) ? null
-                    : dev.oseer.execution.ModelCheck.coveredByFallback(checked, user.policy());
-            if (covered != null) {
-                // A transient failure with an answering standby fallback and on_vendor_failure:
-                // auto does not stop the run; the role fails over if the call fails again.
-                for (var row : covered) progress.line("warn  check " + row.get("profile") + " · " + row.get("code")
-                        + "; standby fallback " + row.get("fallback") + " answered, so " + row.get("role")
-                        + " fails over to it if the call fails again");
-                summary.put("model_check_covered_by_fallback", covered);
+            var standby = Boolean.TRUE.equals(checked.get("ok")) ? null
+                    : dev.oseer.execution.ModelCheck.standbyReadiness(checked, user.policy(), selected, java.util.Set.of());
+            if (standby != null) {
+                RunReadiness.narrateStandbys(standby, progress::line);
+                if (!standby.covered().isEmpty()) summary.put("model_check_covered_by_fallback", standby.covered());
+                if (!standby.unavailable().isEmpty()) summary.put("model_check_unavailable_standbys", standby.unavailable());
             } else if (!Boolean.TRUE.equals(checked.get("ok"))) {
                 progress.line("check stopped the run; restore authentication/model access and check again");
                 return stop(ledger, summary, "model_check_failed", steps, 0, budget);
@@ -4962,6 +4970,14 @@ public final class TaskLoop {
         Budget budget = new Budget(ceilings.maxRoleRuns(), ceilings.enforcedMaxCostUsd(),
                 ceilings.maxElapsedMinutes(), nanos);
         budget.inherit(Chain.after(root, runId));
+        return preparationGate(budget);
+    }
+
+    static RoleRunner.DispatchGate preparationGate(TaskSpec.Budget ceilings) {
+        return preparationGate(new Budget(ceilings.maxRoleRuns(), ceilings.enforcedMaxCostUsd()));
+    }
+
+    private static RoleRunner.DispatchGate preparationGate(Budget budget) {
         return new RoleRunner.DispatchGate() {
             @Override public void requireDispatch() {
                 try {

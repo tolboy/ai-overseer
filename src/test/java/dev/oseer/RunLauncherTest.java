@@ -1,5 +1,7 @@
 package dev.oseer;
 
+import dev.oseer.approval.ApprovalStore;
+import dev.oseer.approval.HumanDecision;
 import dev.oseer.dashboard.Dashboard;
 import dev.oseer.dashboard.RunLauncher;
 import dev.oseer.json.Json;
@@ -12,7 +14,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +28,7 @@ public final class RunLauncherTest implements Suite {
     public String name() { return "run-launcher"; }
 
     static final String FAKE = """
-            log="$1"; shift
+            log="$1"; worktree="$2"; shift 2
             printf '%s\\n' "$*" >> "$log"
             rid=""; prev=""
             for a in "$@"; do if [ "$prev" = "--run-id" ]; then rid="$a"; fi; prev="$a"; done
@@ -31,8 +36,22 @@ public final class RunLauncherTest implements Suite {
             echo "plan  implement -> review" >&2
             echo "bound 3 vendor call(s)" >&2
             echo "vendor said api_key=sk-abcdefghijklmnop" >&2
-            case "$*" in *stops*) echo '{"ok":false,"reason":"vendor_protocol_failed"}'; exit 1;; esac
-            case "$*" in *--dry-run*) mkdir -p ".oseer/runs/$rid" ".oseer/runs/$rid--implementer-0";; *slow*) sleep 30;; esac
+            if [ "$1" = do ]; then
+                printf '%s' "$worktree" > "$OSEER_UI_WORKTREE_FILE"
+                cd "$worktree" || exit 4
+            fi
+            case "$*" in *broken*) echo '{"ok":false,"reason":"bad_contract","message":"api_key=sk-abcdefghijklmnop"}'; exit 1;; esac
+            case "$*" in *changes*) echo '# changed during preview' >> .oseer/tasks/changes.yaml;; esac
+            case "$*" in *--dry-run*) mkdir -p ".oseer/runs/$rid" ".oseer/runs/$rid--implementer-0";;
+                *stops*) echo '{"ok":false,"reason":"vendor_protocol_failed"}'; exit 1;;
+                *slow*) sleep 30;; esac
+            if [ "$1" = approve ]; then
+                case "$*" in
+                  *"--decision replan"*) echo '{"ok":true,"next_run":{"ok":false,"started":true,"run_id":"run-replanned","reason":"plan_review_findings_remain"}}';;
+                  *) echo '{"ok":true,"code":"decision_recorded"}';;
+                esac
+                exit 0
+            fi
             echo "home $OSEER_CONFIG_HOME" >&2
             echo '{"ok":true,"reason":"done","run_id":"'$rid'"}'
             """;
@@ -47,11 +66,16 @@ public final class RunLauncherTest implements Suite {
         Files.writeString(repo.resolve(".oseer/tasks/hello.yaml"), "id: hello\n");
         Files.writeString(repo.resolve(".oseer/tasks/slow.yaml"), "id: slow\n");
         Files.writeString(repo.resolve(".oseer/tasks/stops.yaml"), "id: stops\n");
+        Files.writeString(repo.resolve(".oseer/tasks/broken.yaml"), "id: broken\n");
+        Files.writeString(repo.resolve(".oseer/tasks/changes.yaml"), "id: changes\n");
         git(repo, "init", "-q");
         git(repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+        Path worktree = scratch.resolve("worktree");
+        git(repo, "worktree", "add", "--detach", worktree.toString());
         Path script = scratch.resolve("fake-oseer.sh"), log = scratch.resolve("argv.log");
         Files.writeString(script, FAKE);
-        RunLauncher launcher = new RunLauncher(home, repo, List.of("sh", script.toString(), log.toString()));
+        List<String> fake = List.of("sh", script.toString(), log.toString(), worktree.toString());
+        RunLauncher launcher = new RunLauncher(home, repo, fake);
 
         // The target is shown before anything starts, and only a repository's top is accepted.
         check.rejects("a relative path is refused", "absolute", () -> launcher.inspect(Map.of("project", "repo")));
@@ -75,7 +99,7 @@ public final class RunLauncherTest implements Suite {
         }
         Map<String, Object> inspected = launcher.inspect(Map.of("project", repo.toString()));
         check.eq("inspect names the repository", repo.toRealPath().toString(), inspected.get("project"));
-        check.eq("inspect lists its task contracts", List.of("hello", "slow", "stops"), inspected.get("tasks"));
+        check.eq("inspect lists its task contracts", List.of("broken", "changes", "hello", "slow", "stops"), inspected.get("tasks"));
         check.that("inspect shows the branch and HEAD", inspected.get("branch") != null && inspected.get("head") != null);
         check.eq("an empty project means the dashboard's own", repo.toRealPath().toString(), launcher.inspect(Map.of()).get("project"));
 
@@ -89,6 +113,13 @@ public final class RunLauncherTest implements Suite {
                 "params", Map.of("task", "hello", "use", Map.of("review", "x; rm -rf /")))));
         check.rejects("run needs a known task", "task", () -> launcher.preview(Map.of("kind", "run", "params", Map.of("task", "nope"))));
         check.rejects("only do and run are previewed", "kind", () -> launcher.preview(Map.of("kind", "land", "params", Map.of())));
+        Map<String, Object> broken = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "broken")));
+        check.eq("a failed dry run is reported", false, broken.get("ok"));
+        check.that("a failed dry run is not startable", !broken.containsKey("preview_id"));
+        check.eq("a failed dry run explains its reason", "bad_contract", broken.get("dry_run_reason"));
+        check.that("a failed dry run masks quoted credentials", !String.valueOf(broken.get("dry_run_message")).contains("sk-abcdefghijklmnop"));
+        check.rejects("a task edited while the preview runs is refused", "changed since the preview",
+                () -> launcher.preview(Map.of("kind", "run", "params", Map.of("task", "changes"))));
 
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("goal", "Сделай кнопку синей; it's \"quoted\"");
@@ -111,12 +142,16 @@ public final class RunLauncherTest implements Suite {
         check.contains("draft-only is passed", argv, "--draft-only");
         check.contains("the job never waits on a terminal gate", argv, "--no-wait-for-gate");
         check.that("the preview has an id to start", preview.get("preview_id") instanceof String);
-        try (var left = Files.list(repo.resolve(".oseer/runs"))) {
-            check.eq("the dry run leaves no run or step directories behind", List.of(), left.map(p -> p.getFileName().toString()).toList());
+        try (var left = Files.list(worktree.resolve(".oseer/runs"))) {
+            check.eq("the isolated dry run leaves no run or step directories behind", List.of(), left.map(p -> p.getFileName().toString()).toList());
         }
         check.contains("the plan shows the narrated bound", String.valueOf(preview.get("plan")), "bound 3 vendor call(s)");
         check.that("the plan masks a quoted key", !String.valueOf(preview.get("plan")).contains("sk-abcdefghijklmnop"));
         check.contains("the plan runs with the server's configuration home", String.valueOf(preview.get("plan")), home.toString());
+        Path worktreeTasks = Files.createDirectories(worktree.resolve(".oseer/tasks"));
+        Files.writeString(worktreeTasks.resolve("changes.yaml"), "id: changes\n");
+        check.rejects("a reused isolated checkout edited during preview is refused", "changed since the preview",
+                () -> launcher.preview(Map.of("kind", "do", "params", Map.of("goal", "test", "task_id", "changes"))));
 
         // The start names the preview, carries the confirmation, and finds nothing moved.
         check.rejects("a start without confirmation is refused", "confirm", () -> launcher.start(Map.of("preview_id", preview.get("preview_id"))));
@@ -138,13 +173,19 @@ public final class RunLauncherTest implements Suite {
         check.that("the job's narration is redacted", !String.valueOf(done.get("narration")).contains("sk-abcdefghijklmnop"));
         check.that("a real start is not a dry run", !Files.readAllLines(log).getLast().contains("--dry-run"));
         check.contains("the Orca gate switch reaches the engine", Files.readAllLines(log).getLast(), "--no-orca-gate");
+        check.contains("a launcher run returns control at a gate", Files.readAllLines(log).getLast(), "--no-wait-for-gate");
         check.rejects("a preview starts once", "preview again", () -> launcher.start(Map.of("preview_id", fresh.get("preview_id"), "confirm", true)));
 
         Map<String, Object> stopsPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "stops")));
+        String stoppingRun = String.valueOf(stopsPlan.get("run_id"));
+        ApprovalStore approval = new ApprovalStore(repo);
+        HumanDecision stoppedDecision = approval.createFailure(stoppingRun, "stops", "vendor_protocol_failed",
+                repo.resolve(".oseer/runs").resolve(stoppingRun).resolve("task-run.json"), null);
         Map<String, Object> stopped = waitFor(launcher, String.valueOf(launcher.start(Map.of("preview_id", stopsPlan.get("preview_id"), "confirm", true)).get("id")));
-        check.eq("a run that stops for a person is stopped, not failed", "stopped", stopped.get("state"));
-        check.eq("a job list row says whether it waits for a person", Boolean.class,
-                launcher.jobs().get(0).get("waiting") == null ? null : launcher.jobs().get(0).get("waiting").getClass());
+        check.eq("a run with a pending decision stops", "stopped", stopped.get("state"));
+        check.eq("a job list row says whether it waits for a person", true, launcher.jobs().get(0).get("waiting"));
+        check.eq("the job exposes the decision revision", stoppedDecision.updatedAt().toString(),
+                stopped.get("decision") instanceof Map<?, ?> decision ? decision.get("updated_at") : null);
 
         // One job per project; cancel stops it.
         Map<String, Object> slowPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "slow")));
@@ -161,15 +202,16 @@ public final class RunLauncherTest implements Suite {
         check.eq("the job list shows every job", 3, launcher.jobs().size());
         check.rejects("an unknown job is refused", "no such job", () -> launcher.job("job-nope"));
 
-        Files.createDirectories(repo.resolve(".oseer/runs/run-earlier"));
-        Map<String, Object> attached = launcher.attach(Map.of("project", repo.toString(), "run_id", "run-earlier"));
-        check.eq("a run started elsewhere can be attached", "run-earlier", attached.get("run_id"));
+        Path prior = Files.createDirectories(repo.resolve(".oseer/runs/run--earlier"));
+        Files.writeString(prior.resolve("task-run.json"), "{}");
+        Map<String, Object> attached = launcher.attach(Map.of("project", repo.toString(), "run_id", "run--earlier"));
+        check.eq("a run started elsewhere can be attached", "run--earlier", attached.get("run_id"));
         check.eq("attaching runs nothing", "finished", attached.get("state"));
         check.rejects("an unknown run cannot be attached", "no such run", () -> launcher.attach(Map.of("project", repo.toString(), "run_id", "run-nope")));
 
         // A restarted dashboard lists the jobs it had and re-attaches to their runs.
         for (int i = 0; i < 100 && Files.readString(home.resolve("ui-jobs").resolve(String.valueOf(slow.get("id"))).resolve(RunLauncher.JOB_RECORD)).contains("\"running\""); i++) Thread.sleep(50);
-        RunLauncher restarted = new RunLauncher(home, repo, List.of("sh", script.toString(), log.toString()));
+        RunLauncher restarted = new RunLauncher(home, repo, fake);
         check.eq("a restarted dashboard lists the jobs it had", 4, restarted.jobs().size());
         Map<String, Object> again = restarted.job(job);
         check.eq("a restored job keeps its state", "finished", again.get("state"));
@@ -179,14 +221,68 @@ public final class RunLauncherTest implements Suite {
         check.eq("a restored job's project still serves its timeline", repo.toRealPath(), restarted.projectOf(job));
         Path record = home.resolve("ui-jobs").resolve(job).resolve(RunLauncher.JOB_RECORD);
         Files.writeString(record, Files.readString(record).replace("\"finished\"", "\"running\""));
-        Map<String, Object> interrupted = new RunLauncher(home, repo, List.of("sh", script.toString(), log.toString())).job(job);
+        Map<String, Object> interrupted = new RunLauncher(home, repo, fake).job(job);
         check.eq("a job a dead dashboard left running is shown as stopped", "stopped", interrupted.get("state"));
         check.contains("and says why", String.valueOf(interrupted.get("note")), "restarted");
         check.that("the record keeps no argv or goal", !Files.readString(record).contains("--goal-file") && !Files.readString(record).contains("argv"));
 
+        Map<String, Object> isolatedPlan = launcher.preview(Map.of("kind", "do", "params", params));
+        Map<String, Object> doStarted = launcher.start(Map.of("preview_id", isolatedPlan.get("preview_id"), "confirm", true));
+        String doJob = String.valueOf(doStarted.get("id"));
+        check.eq("the isolated do job reads from the actual checkout", worktree.toRealPath(), launcher.projectOf(doJob));
+        check.eq("the isolated job's actions target the actual checkout", worktree.toRealPath().toString(),
+                waitFor(launcher, doJob).get("project"));
+        check.eq("an isolated job re-attaches to the actual checkout after restart", worktree.toRealPath(),
+                new RunLauncher(home, repo, fake).projectOf(doJob));
+
         // Answers and lands are validated before anything starts.
         check.rejects("an answer needs a pending decision", "no pending decision",
                 () -> launcher.answer(Map.of("project", repo.toString(), "run_id", "run-none", "decision", "abort")));
+        check.rejects("an answer needs the displayed pending decision revision", "the decision changed",
+                () -> launcher.answer(Map.of("project", repo.toString(), "run_id", stoppingRun, "decision", "abort",
+                        "expected_updated_at", "stale")));
+        try (var supervisor = dev.oseer.dashboard.DecisionPage.supervise(repo, stoppingRun)) {
+            check.that("the test owns the terminal supervision lock", supervisor != null);
+            check.rejects("a stage override cannot be discarded by a terminal supervisor", "a process is already waiting",
+                    () -> launcher.answer(Map.of("project", repo.toString(), "run_id", stoppingRun,
+                            "decision", "retry", "confirm", true, "expected_updated_at", stoppedDecision.updatedAt().toString(),
+                            "params", Map.of("use", Map.of("implement", "another-writer")))));
+        }
+        Map<String, Object> retry = launcher.answer(Map.of("project", repo.toString(), "run_id", stoppingRun,
+                "decision", "retry", "confirm", true, "note", "--acknowledge-expired",
+                "expected_updated_at", stoppedDecision.updatedAt().toString()));
+        waitFor(launcher, String.valueOf(retry.get("id")));
+        String commands = Files.readString(log);
+        check.contains("the continuation returns control at a gate", commands.lines().reduce((a, b) -> b).orElse(""), "--no-wait-for-gate");
+        check.contains("notes travel in a file", commands, "--note-file");
+        check.that("note text cannot be read as a CLI flag", !commands.contains("--acknowledge-expired"));
+        HumanDecision preparation = approval.createPreparationStop("run-prepare", "hello", "plan_review_findings_remain",
+                repo.resolve(".oseer/runs/run-prepare/task-run.json"), null);
+        Map<String, Object> replan = launcher.answer(Map.of("project", repo.toString(), "run_id", preparation.runId(),
+                "decision", "replan", "confirm", true, "expected_updated_at", preparation.updatedAt().toString()));
+        Map<String, Object> replanned = waitFor(launcher, String.valueOf(replan.get("id")));
+        String replanArgs = Files.readAllLines(log).getLast();
+        check.contains("replan is handled by the engine's approval command", replanArgs, "approve run-prepare --decision replan");
+        check.that("replan does not use the generic start-less approval", !replanArgs.contains("--no-start"));
+        check.eq("the replan job follows the engine's actual next run", "run-replanned", replanned.get("run_id"));
+        check.eq("the successful approval does not hide a failed replan", "failed", replanned.get("state"));
+        HumanDecision expired = new ApprovalStore(repo, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)).createSuccess(
+                "run-expired", "hello", "expired", repo.resolve(".oseer/runs/run-expired/task-run.json"), "candidate", Duration.ofMinutes(1));
+        Map<String, Object> expiredAnswer = new LinkedHashMap<>(Map.of("project", repo.toString(), "run_id", expired.runId(),
+                "decision", "accept", "expected_updated_at", expired.updatedAt().toString()));
+        check.rejects("a browser acceptance of an expired gate needs explicit acknowledgement", "gate expired",
+                () -> launcher.answer(expiredAnswer));
+        expiredAnswer.put("acknowledge_expired", true);
+        Map<String, Object> accepted = launcher.answer(expiredAnswer);
+        waitFor(launcher, String.valueOf(accepted.get("id")));
+        check.contains("the explicit acknowledgement reaches the engine", Files.readAllLines(log).getLast(), "--acknowledge-expired");
+        Map<String, Object> waiver = new LinkedHashMap<>(Map.of("project", repo.toString(), "run_id", stoppingRun,
+                "decision", "waive", "expected_updated_at", stoppedDecision.updatedAt().toString()));
+        check.rejects("waiving needs the finding's identity", "contract-gap finding", () -> launcher.answer(waiver));
+        waiver.put("finding", "CG/Example 42");
+        Map<String, Object> waived = launcher.answer(waiver);
+        waitFor(launcher, String.valueOf(waived.get("id")));
+        check.contains("an actual vendor-named finding reaches the engine", Files.readAllLines(log).getLast(), "--finding CG/Example 42");
         check.rejects("a push needs its own confirmation", "confirm the push",
                 () -> launcher.land(Map.of("project", repo.toString(), "run_id", "run-x", "push", true)));
 

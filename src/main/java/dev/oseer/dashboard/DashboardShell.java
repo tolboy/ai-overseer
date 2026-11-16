@@ -110,7 +110,7 @@ final class DashboardShell {
             const legacy={'next-run':'next','personal-settings':'roles','analytics':'analytics','runs':'runs','model-settings':'roles','api-auth-settings':'connections'};
             function show(name,focus){if(!panels.includes(name))name='overview';for(const p of panels){const on=p===name;el('panel-'+p).hidden=!on;const tab=el('tab-'+p);tab.setAttribute('aria-selected',on);tab.tabIndex=on?0:-1;if(on&&focus)tab.focus()}
             if(name==='connections'){const d=el('api-auth-settings');if(d)d.open=true}}
-            function route(){const hash=decodeURIComponent(location.hash.slice(1));if(hash.startsWith('run/')){show('runs');const [rid,jid]=hash.slice(4).split('@');openRun(rid,jid);return}
+            function route(){let hash;try{hash=decodeURIComponent(location.hash.slice(1))}catch(e){show('overview');return}if(hash.startsWith('run/')){show('runs');const [rid,jid]=hash.slice(4).split('@');openRun(rid,jid);return}
             if(hash.startsWith('tab-')){show(hash.slice(4));return}const target=hash&&document.getElementById(hash);
             if(legacy[hash]){show(legacy[hash]);if(target)target.scrollIntoView()}else if(target){const panel=target.closest('.panel');show(panel?panel.id.slice(6):'overview');target.scrollIntoView()}else show('overview')}
             for(const p of panels)el('tab-'+p).addEventListener('click',()=>{history.replaceState(null,'','#tab-'+p);show(p)});
@@ -181,11 +181,12 @@ final class DashboardShell {
             if(st==='failed'&&s.code)li.append(make('div','{{t:shell.code_2}} '+s.code+(s.http_status?' · HTTP '+s.http_status:''),'code'));for(const f of s.failed_attempts||[])li.append(make('div','{{t:timeline.attempt_failed}} '+[f.profile,f.vendor,f.http_status?'HTTP '+f.http_status:null,f.code,f.failure_phase,f.duration_ms!=null?duration(f.duration_ms):null].filter(Boolean).join(' · '),'code'));for(const f of s.failovers||[])li.append(make('div','{{t:timeline.switched}} '+(f.from_profile||'?')+' → '+(f.to_profile||'?')+(f.cause?' · '+f.cause:'')+(f.authorized_by?' · '+f.authorized_by:''),'muted'));if(s.blocking_findings)li.append(make('div','{{t:shell.blocking_findings}} '+s.blocking_findings,'code'));
             if(s.scope_violations)li.append(make('div','{{t:shell.scope_violations}} '+s.scope_violations,'code'));commandsTable(li,s.commands);drawEvidence(li,s.evidence_dir,s.evidence);list.append(li)}
             if(!(d.steps||[]).length)list.append(make('li','{{t:shell.no_steps_yet}}','unknown'));
-            el('run-detail-status').textContent=(d.state==='running'?'{{t:shell.refreshes_every_2_seconds}} ':'')+'{{t:next.read}} '+new Date(d.observed_at).toLocaleTimeString()}
+            el('run-detail-status').textContent=(unsettled(d)?'{{t:shell.refreshes_every_2_seconds}} ':'')+'{{t:next.read}} '+new Date(d.observed_at).toLocaleTimeString()}
+            const unsettled=d=>d.state==='running'||d.state==='no_summary';
             async function loadRun(){const generation=detailGeneration,id=detailRun;if(!id)return;
             try{const r=await fetch('/api/runs/'+encodeURIComponent(id)+(detailJob?'?job='+encodeURIComponent(detailJob):''),{cache:'no-store'});if(generation!==detailGeneration)return;if(!r.ok){el('run-detail-status').textContent=r.status===404?'{{t:shell.run_not_found}}':'{{t:shell.run_data_unavailable}}';return}
-            const d=await r.json();if(generation!==detailGeneration)return;drawDetail(d);if(d.state==='running')detailTimer=setTimeout(loadRun,2000)}
-            catch(e){el('run-detail-status').textContent='{{t:shell.cannot_reach_the_dashboard}}';detailTimer=setTimeout(loadRun,4000)}}
+            const d=await r.json();if(generation!==detailGeneration)return;drawDetail(d);if(unsettled(d))detailTimer=setTimeout(loadRun,2000)}
+            catch(e){if(generation===detailGeneration){el('run-detail-status').textContent='{{t:shell.cannot_reach_the_dashboard}}';detailTimer=setTimeout(loadRun,4000)}}}
             function openRun(id,job){if(!id)return;clearTimeout(detailTimer);detailGeneration++;detailRun=id;detailJob=job||null;const box=el('run-detail');box.hidden=false;el('run-detail-steps').replaceChildren();el('run-detail-status').textContent='{{t:shell.loading}}';loadRun();box.focus({preventScroll:true});box.scrollIntoView({block:'start'})}
             el('run-detail-close').addEventListener('click',()=>{clearTimeout(detailTimer);detailGeneration++;detailRun=null;el('run-detail').hidden=true;history.replaceState(null,'','#tab-runs')});
             window.overseerOpenRun=(id,job)=>{location.hash='run/'+encodeURIComponent(id)+(job?'@'+encodeURIComponent(job):'')};

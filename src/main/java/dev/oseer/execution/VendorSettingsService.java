@@ -36,7 +36,7 @@ public final class VendorSettingsService {
         for(var vendor:inventory(user).values()){
             var row=new LinkedHashMap<String,Object>();row.put("id",vendor.id());row.put("kind",vendor.kind());row.put("provider",vendor.provider());row.put("label",vendor.label());
             row.put("profiles",vendor.profiles().stream().map(Profile::name).toList());row.put("classifier_profiles",vendor.classifiers().stream().map(DecisionProfile::name).toList());
-            row.put("access_label",vendor.connection()!=null?"API":UNMAPPED.equals(vendor.id())?"{{t:vendors.service_not_specified}}":"{{t:models.via_cli}}");row.put("billing","unknown");
+            row.put("access_label",vendor.connection()!=null?"API":UNMAPPED.equals(vendor.id())?"Service not specified":"Via CLI");row.put("billing","unknown");
             if(vendor.connection()==null)row.put("accounts",accounts(vendor));
             if(UNMAPPED.equals(vendor.id()))row.put("mapping",vendor.profiles().stream().map(p->{var binding=ServiceBinding.of(p);var item=new LinkedHashMap<String,Object>();item.put("profile",p.name());item.put("reason",binding.reason());item.put("suggested",binding.suggested());return item;}).toList());
             row.put("enabled",vendor.connection()==null || vendor.connection().enabled());row.put("docs_url",docs(vendor.provider()));
@@ -138,7 +138,7 @@ public final class VendorSettingsService {
             String id=displayVendorId(profile);var vendor=groups.get(id);
             if(vendor==null){
                 var binding=ServiceBinding.of(profile);
-                vendor=binding.needsMapping()?new Vendor(id,"unmapped",null,"{{t:vendors.service_not_specified}}",null,new ArrayList<>(),new ArrayList<>())
+                vendor=binding.needsMapping()?new Vendor(id,"unmapped",null,"Service not specified",null,new ArrayList<>(),new ArrayList<>())
                         :new Vendor(id,"cli",binding.service(),providerLabel(binding.service()),null,new ArrayList<>(),new ArrayList<>());
                 groups.put(id,vendor);
             }

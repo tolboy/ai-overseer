@@ -44,6 +44,18 @@ public final class ModelRoutingLoopTest implements Suite {
         check.eq("dependent model never runs",List.of("primary","review"),unsafe.calls);
         check.eq("final admission rejection is explicit","final_cast_not_admissible",routing(result).get("model_selection_rejected"));
 
+        Fixture standby=new Fixture();
+        Path policy=standby.home.resolve("policy.yaml");
+        Files.writeString(policy,Files.readString(policy).replace(
+                "implementer: {profiles: [primary, alternate, unverified, missing], strategy: first}",
+                "implementer: {profiles: [alternate, primary, unverified, missing], strategy: first, "
+                +"api_fallback_profiles: [alternate], fallback_standby: true}"));
+        result=standby.loop((u,p,t,targets,progress)->advice(Map.of("implement","alternate")))
+                .run(standby.loaded(),standby.user(),"standby",false);
+        check.that("an automatic standby suggestion keeps the eligible primary",result.ok());
+        check.eq("Jev cannot use a standby as the first writer while a primary is eligible",
+                List.of("primary","review"),standby.calls);
+
         Fixture unavailable=new Fixture();unavailable.failedPing="primary";
         result=unavailable.loop((u,p,t,targets,progress)->{
             var writer=targets.stream().filter(x->x.stage().equals("implement")).findFirst().orElseThrow();

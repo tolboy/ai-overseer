@@ -260,9 +260,11 @@ keys: the runs it starts inherit its environment and its `OSEER_CONFIG_HOME`.
 3. **Vendors and gates.** Leave each stage on the policy's choice or pin a profile and an
    effort for this run (`--use`, `--effort`); skip the Orca gate mirror if you want.
 4. **Preview plan and estimate** runs the same command with `--dry-run` and shows its
-   narration: the cast, the call bound, the estimate. Tick the approval and **Start**. The
-   start is refused (`preview_stale`) when HEAD, the policy, a profile or a task file
-   changed since the preview, and a preview starts once.
+   narration with the cast, the call bound and the estimate. A goal preview can create or reuse
+   a worktree and write the initial project and task configuration. When a planner must draft the
+   contract, the preview uses the inputs available before planning. Approve the preview and click
+   **Start**. If HEAD, the policy, a profile or a task file changed since the preview, the dashboard
+   asks for a fresh preview (`preview_stale`). A preview starts once.
 
 The job list and the job view poll every two to three seconds: state, the stage running now
 and its profile and vendor, elapsed time, reported cost, every step with failed attempts
@@ -285,13 +287,13 @@ in a file, not on the command line. Job logs are under `<config home>/ui-jobs/<j
 **Roles and vendors → Fallback vendors** picks up to two profiles per role and what happens
 when a call fails (inherit the policy, switch automatically, ask, stop). It writes
 `api_fallback_profiles`, `fallback_standby: true` and the role's `on_vendor_failure` to
-`policy.yaml`. A standby fallback never takes part in `first`/`rotate` selection while
-another profile is eligible; it runs only after a transient API failure (network, timeout,
-rate limit, HTTP 5xx) and only if it passes verification, reviewer independence and the
-budget. A reviewer fallback from the writer's vendor is refused when you save it. A
-transient failure of the pre-run model check is not a stop when the role switches
-automatically and its standby answered the same check. Without a usable fallback the run
-stops and the Launch tab offers retry, another profile, or abort.
+`policy.yaml`. Initial selection prefers eligible primary profiles. After an API network
+error, timeout, rate limit, HTTP 5xx or truncated reply, the role can switch to a declared
+fallback if verification, reviewer independence and budget allow. The editor refuses a
+reviewer fallback from the writer's vendor. Startup warns when an unused standby fails its
+model check. A transient check failure can be covered by an answering standby when the role
+allows automatic failover and has room to switch. If the run stops, the Launch tab offers
+the decisions available for that stop.
 
 ### Interface language and credential warnings
 
@@ -307,8 +309,9 @@ stderr at start and in a banner; `oseer doctor` reports the same list as
 The **Следующий запуск** form has a **Режим задачи** select. It saves `mode:` into the
 task file through the same reviewed diff and **Apply** as budgets, and a mode the task
 cannot satisfy is explained in the preview instead. From the command line,
-`oseer do "<goal>" --mode quick|bug|task|refactor` writes the mode into the contract that
-run drafts; a contract someone wrote keeps its own mode and a different one is refused.
+`oseer do "<goal>" --mode quick|task|refactor` writes the mode into the contract that
+run drafts. For `bug`, supply a task contract with a `reproduce` command among its acceptance
+checks. Existing contracts keep their declared mode.
 See [the specification](../spec/SPEC.md#oseertasksidyaml--a-task) for what each mode sets.
 
 ### Scan a new project first
