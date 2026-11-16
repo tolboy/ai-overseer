@@ -21,7 +21,7 @@ public final class RoleRosterEditor {
             try (var channel=FileChannel.open(home.resolve(".model-settings.lock"),StandardOpenOption.CREATE,StandardOpenOption.WRITE);
                  var lock=channel.tryLock()) {
                 if(lock==null)return refused(409,"settings_busy");
-                return save(payload);
+                return "fallbacks".equals(payload==null?null:payload.get("action"))?saveFallbacks(payload):save(payload);
             }
         } catch(NotIndependent shared) {
             return new Outcome(400,Map.of("ok",false,"code","reviewer_not_independent","role",shared.role,"writer_vendor",shared.vendor));
@@ -116,6 +116,15 @@ public final class RoleRosterEditor {
         String policy=Files.readString(policyFile);
         policy=replace(policy,List.of("roles",role,"profiles"),Json.write(names));
         policy=replace(policy,List.of("roles",role,"strategy"),Json.write(strategy));
+        // A fallback the roster no longer lists cannot stay a fallback; the rest keep their order.
+        var spec=user.policy().roles().get(role);
+        if(!spec.apiFallbackProfiles().isEmpty()) {
+            var kept=spec.apiFallbackProfiles().stream().filter(names::contains).toList();
+            if(!kept.equals(spec.apiFallbackProfiles())) {
+                policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),kept.isEmpty()?null:Json.write(kept));
+                if(kept.isEmpty() || names.stream().allMatch(kept::contains))policy=replace(policy,List.of("roles",role,"fallback_standby"),null);
+            }
+        }
         Policy.parse(policy,policyFile.toString());updates.put(policyFile,policy);
         // Recheck every revision immediately before the first write. No partial validation edits.
         for(var entry:expected.entrySet())expect(entry.getKey(),entry.getValue());
@@ -132,6 +141,56 @@ public final class RoleRosterEditor {
         return new Outcome(200,Map.of("ok",true,"code","role_composition_saved","role",role,"pending_verification",pending,
                 "profiles",names,"revisions",revisions,"policy_revision",ModelSettingsService.revision(policyFile)));
     }
+    /**
+     * The fallbacks of one role and what a vendor failure does there, saved on their own so a
+     * roster draft in another card is never written with them. A fallback the role does not
+     * list yet is appended to its profiles; every fallback is held in standby
+     * ({@code fallback_standby: true}), so it runs only when a call fails. A judging role that
+     * must be independent refuses a fallback from the writer's vendor: it could never run.
+     * Admission is unchanged: an unverified fallback is saved and reported, and the run's
+     * resolver still checks verification, independence and budget before a switch.
+     */
+    private Outcome saveFallbacks(Map<String,Object> payload)throws Exception {
+        keys(payload,Set.of("action","revision","role","fallbacks","on_vendor_failure"));
+        Path policyFile=home.resolve("policy.yaml");expect(policyFile,text(payload,"revision"));
+        var user=UserConfig.load(home);String role=text(payload,"role");
+        if(user.policy()==null || !user.policy().roles().containsKey(role))throw new Invalid();
+        String mode=text(payload,"on_vendor_failure");
+        if(!Set.of("inherit","auto","confirm","stop").contains(mode))throw new Invalid();
+        if(!(payload.get("fallbacks") instanceof List<?> raw) || raw.size()>4)throw new Invalid();
+        var fallbacks=new ArrayList<String>();
+        for(Object item:raw){
+            if(!(item instanceof String name) || fallbacks.contains(name))throw new Invalid();
+            Profile profile=user.profiles().get(name);
+            if(profile==null || !role.equals(profile.role()))throw new Invalid();
+            fallbacks.add(name);
+        }
+        var spec=user.policy().roles().get(role);
+        var profiles=new ArrayList<String>(spec.profiles());
+        for(String name:fallbacks)if(!profiles.contains(name))profiles.add(name);
+        if(!fallbacks.isEmpty() && profiles.stream().allMatch(fallbacks::contains))
+            return refused(400,"fallback_needs_primary");
+        if(spec.requireIndependentVendor() && !"implementer".equals(role)) {
+            var writers=user.policy().roles().get("implementer");
+            Profile writer=writers==null || writers.profiles().isEmpty()?null:user.profiles().get(writers.profiles().get(0));
+            String writerVendor=writer==null?null:writer.independenceVendor();
+            for(String name:fallbacks)
+                if(writerVendor!=null && writerVendor.equals(user.profiles().get(name).independenceVendor()))
+                    return new Outcome(400,Map.of("ok",false,"code","fallback_not_independent","role",role,"profile",name,"writer_vendor",writerVendor));
+        }
+        String policy=Files.readString(policyFile);
+        policy=replace(policy,List.of("roles",role,"profiles"),Json.write(profiles));
+        policy=replace(policy,List.of("roles",role,"api_fallback_profiles"),fallbacks.isEmpty()?null:Json.write(fallbacks));
+        policy=replace(policy,List.of("roles",role,"fallback_standby"),fallbacks.isEmpty()?null:"true");
+        policy=replace(policy,List.of("roles",role,"on_vendor_failure"),"inherit".equals(mode)?null:Json.write(mode));
+        Policy.parse(policy,policyFile.toString());
+        expect(policyFile,text(payload,"revision"));
+        ModelCheck.atomicWrite(policyFile,policy);
+        var pending=fallbacks.stream().filter(name->!user.profiles().get(name).verified()).toList();
+        return new Outcome(200,Map.of("ok",true,"code","fallbacks_saved","role",role,"fallbacks",fallbacks,
+                "profiles",profiles,"pending_verification",pending,"policy_revision",ModelSettingsService.revision(policyFile)));
+    }
+
     /**
      * A judging role that must be independent of the writer keeps at least one candidate from
      * another vendor than the implementer the next run starts with. The resolver refuses a

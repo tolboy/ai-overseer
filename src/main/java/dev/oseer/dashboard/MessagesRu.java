@@ -826,6 +826,21 @@ vendors.service_not_specified = Сервис не указан
 
     private static final String ADDED = """
 # Added by hand after the extraction, in the same format.
+fallback.current = Сейчас:
+fallback.help = Запасной ждёт в резерве: он работает только когда вызов этой роли упал с сетевой ошибкой, таймаутом, лимитом запросов или ошибкой провайдера (HTTP 5xx). Перед переключением Overseer всё так же проверяет допуск, независимость ревьюера и бюджет и записывает переключение в журнал и хронологию.
+fallback.mode_auto = Переключать автоматически
+fallback.mode_confirm = Сначала спросить меня
+fallback.mode_inherit = Как в политике
+fallback.mode_stop = Остановить запуск
+fallback.needs_primary = все профили роли стали бы запасными; оставьте хотя бы один, который начинает этап.
+fallback.none = Нет
+fallback.not_independent = этот запасной от того же вендора, что и исполнитель; ревьюер должен быть независим, поэтому он никогда не запустится. Выберите запасного от другого вендора.
+fallback.on_failure = Если вызов упал
+fallback.save = Сохранить запасных
+fallback.saving = Сохраняю запасных…
+fallback.slot = Запасной
+fallback.title = Запасные вендоры
+fallback.unverified = не проверен
 lang.en = English
 lang.label = Язык
 lang.ru = Русский

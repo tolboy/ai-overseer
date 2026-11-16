@@ -77,11 +77,18 @@ public final class ModelSettingsService {
             row.put("configuration",connection==null?"unbound":classifier.fingerprint(connection));profiles.add(row);
         }
         List<Map<String, Object>> routes = new ArrayList<>();
-        if (user.policy() != null) for (var role : user.policy().roles().values())
-            routes.add(Map.of("role", role.role(), "profiles", role.profiles(), "strategy", role.strategy()));
+        if (user.policy() != null) for (var role : user.policy().roles().values()) {
+            Map<String, Object> route = new LinkedHashMap<>();
+            route.put("role", role.role()); route.put("profiles", role.profiles()); route.put("strategy", role.strategy());
+            route.put("fallbacks", role.apiFallbackProfiles()); route.put("fallback_standby", role.fallbackStandby());
+            route.put("on_vendor_failure", role.vendorFailureMode() == null ? "inherit" : role.vendorFailureMode());
+            route.put("require_independent_vendor", role.requireIndependentVendor());
+            routes.add(route);
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", true); result.put("config_home", home.toString());
         result.put("profiles", profiles); result.put("routes", routes);
+        result.put("on_vendor_failure_default", user.policy() == null ? "stop" : user.policy().vendorFailureMode());
         result.put("policy_revision", revision(home.resolve("policy.yaml")));
         result.put("settings_revision", revision(CheckSettings.file(home)));
         result.put("check", CheckSettings.load(home).toMap()); result.put("checking", checking.get());
@@ -109,6 +116,11 @@ public final class ModelSettingsService {
                 if(!checking.compareAndSet(false,true))return refused(409,"check_already_running");
                 try{return new Outcome(200,"refresh-vendors".equals(action)?vendors.refresh(ids):vendors.check(ids));}
                 finally{checking.set(false);}
+            }
+            if("save-fallbacks".equals(action)){
+                var body=new LinkedHashMap<String,Object>(payload);body.put("action","fallbacks");
+                var saved=new RoleRosterEditor(home).apply(body);
+                return new Outcome(saved.status(),saved.report());
             }
             if("save-composition".equals(action)){
                 var saved=new RoleRosterEditor(home).apply(payload);

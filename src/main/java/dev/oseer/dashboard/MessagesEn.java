@@ -826,6 +826,21 @@ vendors.service_not_specified = Service not specified
 
     private static final String ADDED = """
 # Added by hand after the extraction, in the same format.
+fallback.current = Now:
+fallback.help = A fallback waits in reserve: it runs only when a call to this role fails with a network error, a timeout, a rate limit or a provider error (HTTP 5xx). Overseer still checks verification, reviewer independence and the budget before switching, and records the switch in the ledger and the timeline.
+fallback.mode_auto = Switch automatically
+fallback.mode_confirm = Ask me first
+fallback.mode_inherit = As in the policy
+fallback.mode_stop = Stop the run
+fallback.needs_primary = every profile of this role would be a fallback; keep at least one that starts the stage.
+fallback.none = None
+fallback.not_independent = this fallback shares the writer’s vendor; a reviewer must be independent, so it could never run. Choose a fallback from another vendor.
+fallback.on_failure = When a call fails
+fallback.save = Save fallbacks
+fallback.saving = Saving fallbacks…
+fallback.slot = Fallback
+fallback.title = Fallback vendors
+fallback.unverified = not verified
 lang.en = English
 lang.label = Language
 lang.ru = Русский
