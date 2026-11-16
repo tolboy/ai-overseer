@@ -2941,6 +2941,9 @@ public final class Main {
                                            --draft-only stops after writing the contract, so
                                            its browser scenarios can be written before any
                                            vendor is paid to satisfy them
+                                           --mode quick|bug|task|refactor writes a task mode
+                                           into the contract this run drafts; a contract
+                                           someone wrote keeps its own mode
                                            --prepare off|auto|always (default auto) dispatches
                                            a read-only planner to draft the contract; Overseer
                                            validates what it returns. auto only when the task

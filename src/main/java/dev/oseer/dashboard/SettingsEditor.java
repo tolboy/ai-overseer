@@ -97,7 +97,13 @@ public final class SettingsEditor {
         Map<String, Object> changed = map(request.get("changes"));
         Map<String, Object> replacements = new LinkedHashMap<>();
         if (target.equals("task")) {
-            requireKeys(changed, Set.of("use", "limits"));
+            requireKeys(changed, Set.of("use", "limits", "mode"));
+            if (changed.containsKey("mode")) {
+                Object mode = changed.get("mode");
+                if (mode != null && !(mode instanceof String text && TaskSpec.MODES.contains(text)))
+                    throw new IllegalArgumentException("mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES));
+                replacements.put("mode", mode);
+            }
             if (changed.containsKey("use")) {
                 RunOverride overlay = RunOverride.fromMap(map(changed.get("use")));
                 Map<String, Object> use = new LinkedHashMap<>();
@@ -174,9 +180,15 @@ public final class SettingsEditor {
         }
         String candidate = YamlSettingsEdit.replace(source.text(), replacements);
         if (target.equals("task")) {
-            TaskSpec parsed = TaskSpec.parse(candidate, path.toString());
-            loaded = new ConfigLoader.Loaded(loaded.root(), loaded.projectFile(), loaded.taskFile(),
-                    loaded.project(), parsed, parsed.resolve(loaded.project(), path.toString()));
+            // A mode can make a valid task invalid (bug without reproduce, refactor without a
+            // baseline); say why in the preview instead of failing as "settings unavailable".
+            try {
+                TaskSpec parsed = TaskSpec.parse(candidate, path.toString());
+                loaded = new ConfigLoader.Loaded(loaded.root(), loaded.projectFile(), loaded.taskFile(),
+                        loaded.project(), parsed, parsed.resolve(loaded.project(), path.toString()));
+            } catch (dev.oseer.config.ConfigException invalid) {
+                throw new IllegalArgumentException(invalid.getMessage());
+            }
         } else {
             Policy parsed = Policy.parse(candidate, path.toString());
             user = new UserConfig(user.home(), parsed, user.profiles(), user.problems(), true, user.connections());

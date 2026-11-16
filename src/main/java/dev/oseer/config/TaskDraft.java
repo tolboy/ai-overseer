@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -22,6 +23,52 @@ public final class TaskDraft {
     @SuppressWarnings("serial")
     public static final class TaskConflict extends IOException {
         public TaskConflict(String message) { super(message); }
+    }
+
+    /**
+     * Writes {@code mode:} into a contract this invocation just drafted, or confirms an
+     * existing contract already has that mode. Returns null when the contract carries the
+     * mode, or a sentence saying why it does not; the file is left as it was then.
+     *
+     * A contract a person wrote is never changed here: one without a mode, or with another,
+     * is a different intent and is refused by name, like a different goal or scope.
+     */
+    public static String applyMode(Written drafted, String mode) throws IOException {
+        if (mode == null) return null;
+        if (!TaskSpec.MODES.contains(mode)) return "mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES);
+        Path file = drafted.file();
+        String text = Files.readString(file, StandardCharsets.UTF_8);
+        TaskSpec existing;
+        try {
+            existing = TaskSpec.parse(text, file.toString());
+        } catch (RuntimeException invalid) {
+            return "task '" + drafted.id() + "' cannot be validated: " + invalid.getMessage();
+        }
+        if (mode.equals(existing.mode())) return null;
+        if (existing.mode() != null) {
+            return "task '" + drafted.id() + "' at " + file + " has mode: " + existing.mode()
+                    + ", not " + mode + "; change the contract or drop --mode";
+        }
+        if (drafted.existed()) {
+            return "task '" + drafted.id() + "' at " + file + " has no mode; add `mode: " + mode
+                    + "` to the contract or drop --mode";
+        }
+        List<String> lines = new java.util.ArrayList<>(text.lines().toList());
+        int at = -1;
+        for (int index = 0; index < lines.size(); index++) {
+            if (lines.get(index).startsWith("risk:")) { at = index + 1; break; }
+            if (lines.get(index).startsWith("goal:")) at = index + 1;
+        }
+        if (at < 0) return "task '" + drafted.id() + "' has no top-level goal to place mode after";
+        lines.add(at, "mode: " + mode);
+        String candidate = String.join("\n", lines) + (text.endsWith("\n") ? "\n" : "");
+        try {
+            TaskSpec.parse(candidate, file.toString());
+        } catch (RuntimeException invalid) {
+            return "mode: " + mode + " does not fit the drafted contract: " + invalid.getMessage();
+        }
+        dev.oseer.execution.ModelCheck.atomicWrite(file, candidate);
+        return null;
     }
 
     public Written write(Path projectRoot, String id, String goal, String scope, String risk)

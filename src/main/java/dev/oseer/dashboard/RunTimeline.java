@@ -76,7 +76,7 @@ public final class RunTimeline {
         List<Map<String, Object>> steps;
         if (summary != null && summary.get("steps") instanceof List<?>) {
             result.put("state", "finished");
-            for (String key : List.of("ok", "reason", "risk", "next_action", "total_cost_usd", "unpriced_calls",
+            for (String key : List.of("ok", "reason", "risk", "mode", "next_action", "total_cost_usd", "unpriced_calls",
                     "role_runs", "attempts_used", "open_blocking_findings", "candidate_review_passed",
                     "continued_from", "decision_state", "decision_kind", "decision")) {
                 copyScalar(result, summary, key);

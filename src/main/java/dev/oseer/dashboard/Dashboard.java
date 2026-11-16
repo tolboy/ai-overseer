@@ -740,7 +740,7 @@ public final class Dashboard implements AutoCloseable {
             $('next-preview').disabled=true;$('next-reset').disabled=true;if(!task){$('next-status').textContent='Создайте задачу через Overseer, затем перечитайте настройки.';return}
             $('next-status').textContent='Читаю задачу…';try{const response=await fetch('/api/next-run?task='+encodeURIComponent(task),{cache:'no-store'}),data=await response.json();if(generation!==nextGeneration)return;
             if(!response.ok)throw Error(data.message??data.error);nextData=data;
-            $('next-contract').textContent=data.goal+'\\nРиск: '+data.risk+' · scope: '+data.scope.join(', ')+'\\nПроверки: '+data.acceptance.join('; ')+
+            $('next-contract').textContent=data.goal+'\\nРежим: '+(data.mode??'не задан')+' · риск: '+data.risk+' · scope: '+data.scope.join(', ')+'\\nПроверки: '+data.acceptance.join('; ')+
             '\\nVisual QA: '+(data.visual_qa?'обязательна':'не требуется')+' · review assurance: '+data.review_assurance+'\\nTask use: '+JSON.stringify(data.task_use);
             fillLimits(data);await loadPersonal(task);if(generation!==nextGeneration)return;
             for(const s of data.stages){const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=s.stage+(s.role?' · '+s.role:'');field.append(legend);

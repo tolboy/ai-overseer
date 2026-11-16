@@ -4,6 +4,9 @@ package dev.oseer.dashboard;
 final class DashboardControls {
     private DashboardControls() {}
     static final String BUDGET_HTML = """
+            <fieldset><legend>Режим задачи</legend><div class="next-fields">
+            <label>Режим<select id="task-mode" aria-describedby="task-mode-help"><option value="">Не задан</option><option value="quick">quick — мелкая правка</option><option value="bug">bug — исправление ошибки</option><option value="task">task — обычная задача</option><option value="refactor">refactor — без изменения поведения</option></select></label>
+            </div><p id="task-mode-help" class="muted">Режим заполняет только то, что задача не задала явно, и добавляет требование, где оно нужно. Сохраняется в файл задачи через Apply.</p></fieldset>
             <fieldset><legend>Бюджеты задачи</legend><div class="next-fields">
             <label>Вызовы · 1–50<input id="limit-max_role_runs" type="number" min="1" max="50" step="1" required></label>
             <label>Стоимость USD · 0 = без денежного лимита<input id="limit-max_cost_usd" type="number" min="0" max="10000" step="any" required></label>
@@ -56,12 +59,15 @@ final class DashboardControls {
             async function settingsPost(path,request){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Overseer-Token':token},body:JSON.stringify(request)});const result=await response.json();
             if(!response.ok)throw Error(response.status===409?'Конфликт настроек ('+(result.error??'config_conflict')+'). Перечитайте и заново проверьте diff.':result.message??result.error);return result}
             function clearTaskEdit(){taskEdit=null;$('task-apply').disabled=true;$('task-edit-diff').textContent='';$('task-edit-file').textContent='';$('task-save-status').textContent=''}
-            function fillLimits(d){for(const key of limitKeys)$('limit-'+key).value=d[key]??''}
+            const modeHelp={'':'Режим не задан: действуют значения задачи и проекта.',quick:'quick: риск low (платное ревью обычно пропускается политикой), одна попытка исправления, до 3 вызовов ролей — если задача не задала иное.',bug:'bug: нужен reproduce — команда, которая падает на неизменённом коде и проходит после исправления. Без неё задача не пройдёт проверку.',task:'task: без пресета, как без режима.',refactor:'refactor: поведение не меняется — нужен defaults.baseline_checks в project.yaml; риск не ниже medium, чтобы изменение прошло ревью.'};
+            function drawModeHelp(){$('task-mode-help').textContent=modeHelp[$('task-mode').value]??''}
+            function fillLimits(d){for(const key of limitKeys)$('limit-'+key).value=d[key]??'';$('task-mode').value=d.mode??'';drawModeHelp()}
+            $('task-mode').addEventListener('change',()=>{drawModeHelp();clearNext();$('next-status').textContent='Режим изменён. Нажмите «Проверить состав и бюджет», затем Apply в файл задачи.';$('next-preview').disabled=false});
             for(const key of limitKeys)$('limit-'+key).addEventListener('input',()=>{clearNext();$('next-status').textContent='Бюджет изменён. Повторите preview перед сохранением.'});
             function taskChanges(){const use=Object.create(null),limits=Object.create(null);
             for(const field of $('next-stages').querySelectorAll('[data-next-stage]'))for(const control of field.querySelectorAll('[data-next-kind]')){const value=control.value.trim();if(value)(use[control.dataset.nextKind]??=Object.create(null))[field.dataset.nextStage]=value}
             for(const key of limitKeys){const input=$('limit-'+key);if(!input.reportValidity())throw Error('Проверьте бюджет: '+key);const v=input.value===''?null:key==='cost_cap'?input.value:Number(input.value);if(v!==nextData[key])limits[key]=v}
-            return {use,limits}}
+            const changes={use,limits},mode=$('task-mode').value||null;if(mode!==(nextData.mode??null))changes.mode=mode;return changes}
             function previewText(p){const plan=p.budget_plan;return 'Минимум вызовов: '+plan.minimum_success_calls+' · cap: '+plan.requested_cap+' · резерв: '+plan.repair_reserve+
             (plan.recovery_branches.length?'\\nИсправления:\\n'+plan.recovery_branches.map(b=>b.stage+': ещё '+b.calls_required_here+' вызовов · '+(b.repair_allowed_under_cap?'помещается':'не помещается')).join('\\n'):'')}
             function problemText(p){return (p.problems||[]).map(p=>(p.stage?p.stage+': ':'')+(p.code??p.stop_reason??'отказ')+' · '+(p.message??'')).join('\\n')}

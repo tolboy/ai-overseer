@@ -45,9 +45,20 @@ public final class DoCommand {
     public record Options(Path project, String goal, String scope, String risk, String taskId,
                           String runId, String baseRef, boolean inPlace, boolean dryRun,
                           boolean conductor, boolean autoRejectGates, boolean initRepo,
-                          boolean draftOnly, String isolation, String prepare) {
+                          boolean draftOnly, String isolation, String prepare, String mode) {
         public Options {
             prepare = Preparation.parseMode(prepare);
+            if (mode != null && !TaskSpec.MODES.contains(mode)) {
+                throw new IllegalArgumentException("--mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES));
+            }
+        }
+
+        public Options(Path project, String goal, String scope, String risk, String taskId,
+                       String runId, String baseRef, boolean inPlace, boolean dryRun,
+                       boolean conductor, boolean autoRejectGates, boolean initRepo,
+                       boolean draftOnly, String isolation, String prepare) {
+            this(project, goal, scope, risk, taskId, runId, baseRef, inPlace, dryRun,
+                    conductor, autoRejectGates, initRepo, draftOnly, isolation, prepare, null);
         }
 
         public Options(Path project, String goal, String scope, String risk, String taskId,
@@ -168,7 +179,7 @@ public final class DoCommand {
     static final java.util.Set<String> VALUE_FLAGS = java.util.Set.of(
             "--goal", "--goal-file", "--project", "--scope", "--risk", "--task-id", "--run-id",
             "--base-ref", "--isolation", "--prepare", "--wait-for-gate", "--use", "--effort",
-            "--host");
+            "--host", "--mode");
     static final java.util.Set<String> SWITCH_FLAGS = java.util.Set.of(
             "--in-place", "--no-worktree", "--dry-run", "--conductor", "--auto-reject-gates",
             "--init-repo", "--draft-only", "--quiet", "--watch", "--no-orca-gate",
@@ -233,7 +244,7 @@ public final class DoCommand {
                 // got two generic scenarios and no acceptance for the behaviour it asked for,
                 // and the operator had to write the contract by hand. A task that already has
                 // a contract is not replanned, and a policy with no planner role drafts as before.
-                option(args, "--prepare", "auto"));
+                option(args, "--prepare", "auto"), option(args, "--mode", null));
     }
 
     public Outcome run(Options options, UserConfig user) throws Exception {
@@ -546,6 +557,10 @@ public final class DoCommand {
                 return fail("task_conflict", requested, root, taskId, conflict.getMessage());
             }
         }
+        // A task mode chosen on the command line is written into the contract this run drafted,
+        // before the contract is loaded, so the loop and the record see the same preset.
+        String modeProblem = TaskDraft.applyMode(drafted, options.mode());
+        if (modeProblem != null) return fail("task_mode_conflict", requested, root, taskId, modeProblem);
         ConfigLoader.Loaded loaded = loader.load(root, taskId);
 
         // A compiled contract is the most consequential thing a run produces before it spends

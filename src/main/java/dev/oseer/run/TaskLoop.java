@@ -928,6 +928,7 @@ public final class TaskLoop {
                 root.relativize(loaded.taskFile()).toString().replace('\\', '/'),
                 task.acceptanceFingerprint()));
         summary.put("risk", task.risk());
+        if (loaded.task().mode() != null) summary.put("mode", loaded.task().mode());
         summary.put("dry_run", dryRun);
         summary.put("prepare", prior.mode());
         summary.put("max_fix_attempts", task.maxFixAttempts());

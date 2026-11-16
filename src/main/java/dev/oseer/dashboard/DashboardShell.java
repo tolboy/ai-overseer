@@ -158,7 +158,7 @@ final class DashboardShell {
             const verdict=d.state==='finished'?(d.ok===true?'готов к решению':'остановлен'+(d.reason?': '+d.reason:'')):statusText[d.state]??d.state;state.textContent=verdict;state.className='chip '+(d.state==='running'?'running':d.ok===true?'passed':d.ok===false?'failed':'unknown');
             const facts=el('run-detail-facts');facts.replaceChildren();const fact=(k,v)=>{const s=make('span',k+' ');s.append(make('b',v));facts.append(s)};const t=d.totals||{};
             fact('Время',duration(t.duration_ms)+(t.duration_complete?'':' (неполное)'));fact('Стоимость',money(t.cost_usd_known)+(t.unpriced_steps?' + '+t.unpriced_steps+' без цены':''));
-            if(d.risk)fact('Риск',d.risk);if(d.role_runs!=null)fact('Вызовы ролей',String(d.role_runs));if(d.open_blocking_findings!=null)fact('Блокеры',String(d.open_blocking_findings));
+            if(d.mode)fact('Режим',d.mode);if(d.risk)fact('Риск',d.risk);if(d.role_runs!=null)fact('Вызовы ролей',String(d.role_runs));if(d.open_blocking_findings!=null)fact('Блокеры',String(d.open_blocking_findings));
             const dr=d.decision_record;if(dr)fact('Решение',(dr.state??'—')+(dr.decision?' · '+dr.decision:'')+(dr.actor?' · '+dr.actor:''));
             const stages=el('run-detail-stages');stages.replaceChildren();for(const s of d.workflow||[]){const c=make('span',s.stage+(s.state?' · '+(statusText[s.state]??s.state):''),'chip '+(s.state??''));if(s.reason)c.title=s.reason;stages.append(c)}
             const base=el('run-detail-baseline');base.replaceChildren();const b=d.baseline||{};
