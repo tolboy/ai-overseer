@@ -807,3 +807,16 @@ Evidence quality remains a reviewer obligation; external observation TTL remains
 The joined report includes protocol failures, the last repair receipt and severity laundering.
 Successful human-gate summaries include an explicit approve command. Existing user prompts
 and schemas are never overwritten by setup; adopt the new optional fields deliberately.
+
+## Dashboard launcher
+
+`RunLauncher` (package `dev.oseer.dashboard`) turns a browser form into the argument vector a
+person would type and runs `java -cp <dashboard class path> dev.oseer.Main <args>` in the
+project directory, with the dashboard's environment and `OSEER_CONFIG_HOME`. A start names a
+preview: the same arguments run with `--dry-run` under a throwaway run id, whose directories
+are removed afterwards; the preview is bound to a SHA-256 over the arguments, the project's
+HEAD and every `*.yaml` under the configuration home and the project's `.oseer` (two levels),
+and lives fifteen minutes. A decision answer is `oseer approve --no-start` followed, for a
+continuing answer, by `oseer run <task> --continue <run>` with the engine's next run id and
+any `--use` override. Jobs are in memory (fifty kept); their stdout JSON and stderr narration
+are in `<home>/ui-jobs/<job>/`. Closing the dashboard cancels live jobs.

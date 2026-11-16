@@ -30,6 +30,25 @@ that exists in code but has never been run live says so.
 
 ### Added
 
+- Dashboard **Launch** tab: start `oseer do` / `oseer run` from the browser against any git
+  repository top, with goal, task, risk, mode, preparation, call cap, spend threshold,
+  draft-only, in-place, per-stage profile and effort pins and the Orca gate switch. A dry-run
+  preview (cast, bound, estimate) is the plan approval; the start needs it, a confirmation,
+  and an unchanged HEAD, policy, profiles and task. Jobs run as child processes of the
+  dashboard (one per project, cancel by SIGTERM), with a live view: stage now, vendor,
+  elapsed, failed attempts with HTTP status, failovers, redacted narration. Pending
+  decisions are answered there, optionally switching a stage's profile for the
+  continuation; ready runs can be landed. Token, JSON and same-origin checks on every
+  mutating endpoint; `--no-launcher` turns it off. Run live on a test project.
+- `oseer do --max-role-runs N --max-cost-usd X` write the budget into the contract that
+  invocation drafts.
+- English and Russian dashboard and decision-page text from message bundles, with a
+  language switcher; English is the default for a browser that does not ask for Russian.
+- Per-role fallback vendors in standby (`fallback_standby`), configurable in the browser;
+  a transient model-check failure with an answering standby and `on_vendor_failure: auto`
+  no longer stops the run.
+- `oseer doctor` and the dashboard name credential references the process cannot resolve.
+
 - Dashboard tabs with an **Обзор** page (waiting decisions, active agents, last run, known
   cost and unpriced calls, the next run's cast) and a per-run **timeline**: stages with
   role, vendor, model, effort, duration, cost or "unpriced", baseline and gate commands

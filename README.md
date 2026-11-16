@@ -305,15 +305,15 @@ still waiting for you. A button there opens that decision's page, or puts it bac
 the run that asked has stopped waiting, so a question left unanswered never needs
 `oseer decide` typed in the worktree.
 
-The same panel has a **Следующий запуск** form: select a task and role profiles,
+The same panel has a **Next run** form: select a task and role profiles,
 inspect model/effort/runner and the call budget, then copy a CLI dry-run, run command
 or task `use:` block. Save task choices and budgets, or personal fallback/retry policy,
 through a reviewed diff and versioned **Apply**. Stale settings require a reload.
-The **Аналитика результатов** section separates vendor success, workflow readiness and
+The **Analytics** section separates vendor success, workflow readiness and
 human acceptance, with cost/token coverage, retries, failovers and continuation context.
 See [the setup guide](docs/SETUP.md#build-the-next-run-in-the-dashboard).
 
-The page is organised in tabs. **Обзор** answers "what needs me and who works next": the
+The page is organised in tabs. **Overview** answers "what needs me and who works next": the
 decisions waiting, the agents active now, the last run and its known cost (unpriced calls
 are counted, never guessed), the cast of the next run — role, vendor, model, effort,
 rotation position, verified or not — and the recent runs as one strip of stages each.
@@ -321,8 +321,26 @@ Selecting a run opens its **timeline**: every stage with its role, vendor, model
 duration, cost or "unpriced", the baseline and gate commands (each failing command marked
 as a regression or as already red at the baseline), and links to that stage's evidence —
 prompts, redacted raw output, artifacts, gate reports and screenshots. A running run
-refreshes every two seconds. The page still dispatches nothing: runs start from the CLI.
-**Роли и вендоры** edits the roster in the browser; a save that would leave review
+refreshes every two seconds.
+**Launch** starts work from the browser: point it at a git repository's top, describe a
+goal (`oseer do`) or pick a task contract (`oseer run`), set risk, mode, planner
+preparation, the call cap and the spend threshold, pin a profile or an effort per stage,
+and preview. The preview is a dry run of exactly the command that will start — cast,
+bound, estimate — and **Start** needs that preview and a confirmation; it is refused if
+the project's HEAD, the policy, a profile or the task changed in between. The job runs as
+a child process of the dashboard; the tab shows the stage running now, its vendor, the
+elapsed time and the redacted narration tail, and when the run stops for a person it
+offers the decision's options — including "retry with another profile for this stage" —
+and, once a run is ready, **land** (a push or pull request needs a second confirmation).
+The CLI stays the interface for scripts and integration; `oseer dashboard --no-launcher`
+serves the page without it.
+The page speaks English or Russian (the switcher in the header; the choice is kept in a
+cookie, the first visit follows the browser). If the server process cannot resolve a
+credential the roster needs, the page and `oseer doctor` name the references (never the
+values). **Roles and vendors** sets per-role **fallback vendors** held in standby: they
+run only when a call fails with a network error, a timeout, a rate limit or HTTP 5xx, and
+the switch is recorded in the ledger and the timeline.
+**Roles and vendors** edits the roster in the browser; a save that would leave review
 without a vendor independent of the writer is refused with the reason, before anything
 is written.
 
