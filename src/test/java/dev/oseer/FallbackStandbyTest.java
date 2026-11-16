@@ -108,6 +108,7 @@ public final class FallbackStandbyTest implements Suite {
         UserConfig after = UserConfig.load(home);
         check.eq("no fallbacks remain", List.of(), after.policy().roles().get("reviewer").apiFallbackProfiles());
         check.eq("and standby is gone with them", false, after.policy().roles().get("reviewer").fallbackStandby());
+        check.eq("dropped standby fallbacks leave the rotation too", List.of("reader-a"), after.policy().roles().get("reviewer").profiles());
         check.eq("inherit removes the role's own failure mode", null, after.policy().roles().get("reviewer").vendorFailureMode());
 
         // A roster save that drops a fallback keeps the policy valid.

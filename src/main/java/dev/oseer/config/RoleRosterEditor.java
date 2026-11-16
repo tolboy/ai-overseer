@@ -167,6 +167,10 @@ public final class RoleRosterEditor {
         }
         var spec=user.policy().roles().get(role);
         var profiles=new ArrayList<String>(spec.profiles());
+        // A standby fallback the operator drops leaves the roster too; otherwise it would
+        // silently join the rotation as a primary once fallback_standby no longer hides it.
+        if(spec.fallbackStandby())
+            for(String old:spec.apiFallbackProfiles())if(!fallbacks.contains(old))profiles.remove(old);
         for(String name:fallbacks)if(!profiles.contains(name))profiles.add(name);
         if(!fallbacks.isEmpty() && profiles.stream().allMatch(fallbacks::contains))
             return refused(400,"fallback_needs_primary");
