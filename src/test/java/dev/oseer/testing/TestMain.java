@@ -62,6 +62,7 @@ public final class TestMain {
                 new dev.oseer.MessagesTest(),
                 new dev.oseer.FallbackStandbyTest(),
                 new dev.oseer.CredentialAuditTest(),
+                new dev.oseer.RunLauncherTest(),
                 new dev.oseer.ConfigViewTest(),
                 new dev.oseer.NextRunTest(),
                 new dev.oseer.SettingsEditorTest(),

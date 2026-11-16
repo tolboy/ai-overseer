@@ -64,6 +64,7 @@ final class DashboardShell {
             <div id="connection" role="status">{{t:shell.connecting}}</div></div></div>
             <nav class="tabs" role="tablist" aria-label="{{t:shell.dashboard_sections}}">
             <button role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">{{t:shell.overview}}</button>
+            <button role="tab" id="tab-launch" aria-controls="panel-launch" aria-selected="false" tabindex="-1">{{t:launch.tab}}</button>
             <button role="tab" id="tab-runs" aria-controls="panel-runs" aria-selected="false" tabindex="-1">{{t:dash.runs}}</button>
             <button role="tab" id="tab-next" aria-controls="panel-next" aria-selected="false" tabindex="-1">{{t:dash.next_run}}</button>
             <button role="tab" id="tab-roles" aria-controls="panel-roles" aria-selected="false" tabindex="-1">{{t:shell.roles_and_vendors}}</button>
@@ -105,11 +106,11 @@ final class DashboardShell {
             (()=>{'use strict';document.documentElement.classList.add('js');
             const el=id=>document.getElementById(id),pageToken=document.querySelector('meta[name=oseer-token]').content;
             const make=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n};
-            const panels=['overview','runs','next','roles','analytics','connections'];
+            const panels=['overview','launch','runs','next','roles','analytics','connections'];
             const legacy={'next-run':'next','personal-settings':'roles','analytics':'analytics','runs':'runs','model-settings':'roles','api-auth-settings':'connections'};
             function show(name,focus){if(!panels.includes(name))name='overview';for(const p of panels){const on=p===name;el('panel-'+p).hidden=!on;const tab=el('tab-'+p);tab.setAttribute('aria-selected',on);tab.tabIndex=on?0:-1;if(on&&focus)tab.focus()}
             if(name==='connections'){const d=el('api-auth-settings');if(d)d.open=true}}
-            function route(){const hash=decodeURIComponent(location.hash.slice(1));if(hash.startsWith('run/')){show('runs');openRun(hash.slice(4));return}
+            function route(){const hash=decodeURIComponent(location.hash.slice(1));if(hash.startsWith('run/')){show('runs');const [rid,jid]=hash.slice(4).split('@');openRun(rid,jid);return}
             if(hash.startsWith('tab-')){show(hash.slice(4));return}const target=hash&&document.getElementById(hash);
             if(legacy[hash]){show(legacy[hash]);if(target)target.scrollIntoView()}else if(target){const panel=target.closest('.panel');show(panel?panel.id.slice(6):'overview');target.scrollIntoView()}else show('overview')}
             for(const p of panels)el('tab-'+p).addEventListener('click',()=>{history.replaceState(null,'','#tab-'+p);show(p)});
@@ -148,8 +149,8 @@ final class DashboardShell {
             const verdict=make('div');verdict.append(make('span',r.ok===true?'{{t:shell.ready_for_decision}}':r.ok===false?'{{t:shell.stopped}}':'—',r.ok===true?'chip passed':r.ok===false?'chip failed':'chip'),make('div',r.reason??'','sub'));
             const open=make('button','{{t:dash.timeline}}');open.type='button';open.addEventListener('click',()=>{location.hash='run/'+encodeURIComponent(r.run_id)});
             li.append(id,verdict,strip(r.steps),open);list.append(li)}}
-            let detailRun=null,detailTimer=null,detailGeneration=0;
-            function evidenceLink(dir,file){return '/evidence/'+encodeURIComponent(detailRun)+'/'+encodeURIComponent(dir)+'/'+file.path.split('/').map(encodeURIComponent).join('/')+'?t='+encodeURIComponent(pageToken)}
+            let detailRun=null,detailJob=null,detailTimer=null,detailGeneration=0;
+            function evidenceLink(dir,file){return '/evidence/'+encodeURIComponent(detailRun)+'/'+encodeURIComponent(dir)+'/'+file.path.split('/').map(encodeURIComponent).join('/')+'?t='+encodeURIComponent(pageToken)+(detailJob?'&job='+encodeURIComponent(detailJob):'')}
             const evidenceText={prompt:'{{t:shell.prompt}}',stdout:'{{t:shell.agent_output}}',stderr:'stderr',artifact:'{{t:shell.artifact}}',report:'{{t:shell.report}}',log:'{{t:shell.log}}',screenshot:'{{t:shell.screenshot}}'};
             function drawEvidence(parent,dir,files){if(!dir||!files||!files.length)return;const box=make('div',null,'evidence');let shots=0;
             for(const f of files){const a=make('a');a.href=evidenceLink(dir,f);a.target='_blank';a.rel='noopener';
@@ -181,12 +182,12 @@ final class DashboardShell {
             if(!(d.steps||[]).length)list.append(make('li','{{t:shell.no_steps_yet}}','unknown'));
             el('run-detail-status').textContent=(d.state==='running'?'{{t:shell.refreshes_every_2_seconds}} ':'')+'{{t:next.read}} '+new Date(d.observed_at).toLocaleTimeString()}
             async function loadRun(){const generation=detailGeneration,id=detailRun;if(!id)return;
-            try{const r=await fetch('/api/runs/'+encodeURIComponent(id),{cache:'no-store'});if(generation!==detailGeneration)return;if(!r.ok){el('run-detail-status').textContent=r.status===404?'{{t:shell.run_not_found}}':'{{t:shell.run_data_unavailable}}';return}
+            try{const r=await fetch('/api/runs/'+encodeURIComponent(id)+(detailJob?'?job='+encodeURIComponent(detailJob):''),{cache:'no-store'});if(generation!==detailGeneration)return;if(!r.ok){el('run-detail-status').textContent=r.status===404?'{{t:shell.run_not_found}}':'{{t:shell.run_data_unavailable}}';return}
             const d=await r.json();if(generation!==detailGeneration)return;drawDetail(d);if(d.state==='running')detailTimer=setTimeout(loadRun,2000)}
             catch(e){el('run-detail-status').textContent='{{t:shell.cannot_reach_the_dashboard}}';detailTimer=setTimeout(loadRun,4000)}}
-            function openRun(id){if(!id)return;clearTimeout(detailTimer);detailGeneration++;detailRun=id;const box=el('run-detail');box.hidden=false;el('run-detail-steps').replaceChildren();el('run-detail-status').textContent='{{t:shell.loading}}';loadRun();box.focus({preventScroll:true});box.scrollIntoView({block:'start'})}
+            function openRun(id,job){if(!id)return;clearTimeout(detailTimer);detailGeneration++;detailRun=id;detailJob=job||null;const box=el('run-detail');box.hidden=false;el('run-detail-steps').replaceChildren();el('run-detail-status').textContent='{{t:shell.loading}}';loadRun();box.focus({preventScroll:true});box.scrollIntoView({block:'start'})}
             el('run-detail-close').addEventListener('click',()=>{clearTimeout(detailTimer);detailGeneration++;detailRun=null;el('run-detail').hidden=true;history.replaceState(null,'','#tab-runs')});
-            window.overseerOpenRun=id=>{location.hash='run/'+encodeURIComponent(id)};
+            window.overseerOpenRun=(id,job)=>{location.hash='run/'+encodeURIComponent(id)+(job?'@'+encodeURIComponent(job):'')};
             function drawCredentialWarning(){const box=document.getElementById('credential-warning');const rows=data.credential_warnings||[];box.hidden=!rows.length;document.getElementById('credential-warning-list').textContent=rows.map(r=>r.credential_ref+' ('+r.connection+' · '+r.state+' · '+(r.profiles||[]).join(', ')+')').join('; ')}
             window.overseerShellDraw=()=>{if(!data)return;drawCredentialWarning();drawKpis();drawCast();drawRecent()};
             route()})();

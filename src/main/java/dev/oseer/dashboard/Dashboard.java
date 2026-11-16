@@ -1,6 +1,7 @@
 package dev.oseer.dashboard;
 
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpExchange;
 import dev.oseer.config.Profile;
 import dev.oseer.config.ConfigFileStore;
 import dev.oseer.config.UserConfig;
@@ -53,6 +54,7 @@ public final class Dashboard implements AutoCloseable {
 
     private final HttpServer server;
     private final String token;
+    private volatile RunLauncher launcher;
     private final ExecutorService requests;
     private static final int MAX_SETTINGS_BODY = 16 * 1024;
 
@@ -95,7 +97,7 @@ public final class Dashboard implements AutoCloseable {
         new SecureRandom().nextBytes(secret);
         token = Base64.getUrlEncoder().withoutPadding().encodeToString(secret);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        requests = Executors.newFixedThreadPool(4, task -> {
+        requests = Executors.newFixedThreadPool(8, task -> {
             Thread thread = new Thread(task, "oseer-dashboard-request");
             thread.setDaemon(true);
             return thread;
@@ -114,7 +116,8 @@ public final class Dashboard implements AutoCloseable {
             if (!authority.equals(host) || (origin != null && !origin.equals("http://" + authority))) {
                 status = 403; body = "{}";
             } else if ("POST".equals(exchange.getRequestMethod())
-                    && (path.startsWith("/api/connections/") || path.startsWith("/api/models/"))) {
+                    && (path.startsWith("/api/connections/") || path.startsWith("/api/models/")
+                        || path.startsWith("/api/launch/"))) {
                 String suppliedToken = exchange.getRequestHeaders().getFirst("X-Overseer-Token");
                 String suppliedType = exchange.getRequestHeaders().getFirst("Content-Type");
                 if (suppliedToken == null || !MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),
@@ -123,7 +126,7 @@ public final class Dashboard implements AutoCloseable {
                 } else if (suppliedType == null || !"application/json".equalsIgnoreCase(suppliedType.split(";", 2)[0].trim())) {
                     status = 415; body = Json.write(Map.of("ok", false, "code", "settings_json_required"));
                 } else {
-                    int bodyLimit="/api/models/save-jev-policy".equals(path)?160*1024:MAX_SETTINGS_BODY;
+                    int bodyLimit="/api/models/save-jev-policy".equals(path)||path.startsWith("/api/launch/")?160*1024:MAX_SETTINGS_BODY;
                     byte[] input = exchange.getRequestBody().readNBytes(bodyLimit + 1);
                     if (input.length > bodyLimit) {
                         status = 413; body = Json.write(Map.of("ok", false, "code", "settings_body_too_large"));
@@ -141,7 +144,24 @@ public final class Dashboard implements AutoCloseable {
                         if (payload == null) {
                             status = 400; body = Json.write(Map.of("ok", false, "code", "settings_json_invalid"));
                         } else {
-                            if (path.startsWith("/api/models/")) {
+                            if (path.startsWith("/api/launch/")) {
+                                RunLauncher runs = launcher;
+                                if (runs == null) {
+                                    status = 404; body = Json.write(Map.of("ok", false, "code", "launcher_disabled"));
+                                } else try {
+                                    body = Json.write(switch (path) {
+                                        case "/api/launch/inspect" -> runs.inspect(payload);
+                                        case "/api/launch/preview" -> runs.preview(payload);
+                                        case "/api/launch/start" -> runs.start(payload);
+                                        case "/api/launch/answer" -> runs.answer(payload);
+                                        case "/api/launch/land" -> runs.land(payload);
+                                        case "/api/launch/cancel" -> runs.cancel(payload);
+                                        default -> throw new RunLauncher.Refused(404, "launch_unknown", "no such action");
+                                    });
+                                } catch (RunLauncher.Refused refused) {
+                                    status = refused.status(); body = Json.write(refused.toMap());
+                                }
+                            } else if (path.startsWith("/api/models/")) {
                                 var outcome = models.apply(path.substring("/api/models/".length()), payload);
                                 status = outcome.status(); body = Json.write(outcome.report());
                             } else {
@@ -237,8 +257,22 @@ public final class Dashboard implements AutoCloseable {
                 }
             } else if ("/favicon.ico".equals(path)) {
                 status = 204; body = "";
+            } else if ("/api/launch/jobs".equals(path)) {
+                RunLauncher runs = launcher;
+                body = Json.write(Map.of("enabled", runs != null, "jobs", runs == null ? List.of() : runs.jobs()));
+            } else if (path.startsWith("/api/launch/jobs/")) {
+                RunLauncher runs = launcher;
+                try {
+                    if (runs == null) throw new RunLauncher.Refused(404, "launcher_disabled", "the launcher is off");
+                    body = Json.write(runs.job(path.substring("/api/launch/jobs/".length())));
+                } catch (RunLauncher.Refused refused) { status = refused.status(); body = Json.write(refused.toMap()); }
             } else if (path.startsWith("/api/runs/")) {
-                try { body = Json.write(RunTimeline.read(project, path.substring("/api/runs/".length()))); }
+                // A launcher job names its own project; any other project is not readable here.
+                Path runProject = jobProject(exchange, project);
+                try {
+                    if (runProject == null) throw new RunTimeline.NotFound();
+                    body = Json.write(RunTimeline.read(runProject, path.substring("/api/runs/".length())));
+                }
                 catch (RunTimeline.NotFound missing) { status = 404; body = Json.write(Map.of("error", "run_not_found")); }
                 catch (Exception unavailable) { status = 503; body = Json.write(Map.of("error", "Run unavailable")); }
             } else if (path.startsWith("/evidence/")) {
@@ -254,7 +288,9 @@ public final class Dashboard implements AutoCloseable {
                     status = 404; body = "{}";
                 } else {
                     try {
-                        RunTimeline.Evidence evidence = RunTimeline.evidence(project, parts[0], parts[1], parts[2]);
+                        Path runProject = jobProject(exchange, project);
+                        if (runProject == null) throw new RunTimeline.NotFound();
+                        RunTimeline.Evidence evidence = RunTimeline.evidence(runProject, parts[0], parts[1], parts[2]);
                         contentType = evidence.contentType(); binary = evidence.bytes(); body = "";
                     } catch (RunTimeline.NotFound missing) { status = 404; body = "{}"; }
                     catch (Exception unavailable) { status = 503; body = "{}"; }
@@ -315,7 +351,30 @@ public final class Dashboard implements AutoCloseable {
 
     public void start() { server.start(); }
     public String url() { return "http://127.0.0.1:" + server.getAddress().getPort() + "/"; }
-    @Override public void close() { server.stop(0); requests.shutdownNow(); }
+    @Override public void close() {
+        server.stop(0);
+        requests.shutdownNow();
+        RunLauncher runs = launcher;
+        if (runs != null) runs.close();
+    }
+
+    /**
+     * Lets the browser start, continue and cancel runs. Off unless the caller turns it on:
+     * {@code oseer dashboard} does; an embedded dashboard stays read-only.
+     */
+    public Dashboard enableLauncher(RunLauncher runs) {
+        this.launcher = runs;
+        return this;
+    }
+
+    /** {@code ?job=} reads the timeline of a launcher job's project; nothing else widens it. */
+    private Path jobProject(HttpExchange exchange, Path project) {
+        String raw = exchange.getRequestURI().getRawQuery();
+        String job = form(raw == null ? "" : raw).get("job");
+        if (job == null || job.isBlank()) return project;
+        RunLauncher runs = launcher;
+        return runs == null ? null : runs.projectOf(job);
+    }
 
     public static Map<String, Object> snapshot(Path project, UserConfig user) throws IOException {
         Map<String, Object> state = new LinkedHashMap<>();
@@ -650,7 +709,7 @@ public final class Dashboard implements AutoCloseable {
             .cards{display:flex;flex-wrap:wrap;gap:12px}.card{background:#19232c;border:1px solid #30404d;border-radius:8px;padding:12px;flex:1;min-width:140px;overflow-wrap:anywhere}.card strong{display:block;font-size:21px}
             nav{display:flex;flex-wrap:wrap;gap:16px;margin:20px 0}a{color:#9ee9c6}.editor details{margin:12px 0}.editor summary{cursor:pointer}
             @media(max-width:700px){.next-fields{grid-template-columns:1fr}#next-run{padding:10px}#next-run fieldset{padding:8px}}
-            {{SHELL_CSS}}</style>
+            {{SHELL_CSS}}{{LAUNCH_CSS}}</style>
             <meta name="oseer-token" content="{{TOKEN}}"><meta name="oseer-actions" content="{{ACTIONS}}">
             <meta name="oseer-settings-token" content="{{SETTINGS_TOKEN}}">
             {{SHELL_HEADER}}
@@ -659,6 +718,7 @@ public final class Dashboard implements AutoCloseable {
             <h2>{{t:dash.awaiting_your_decision}}</h2><p class="muted">{{t:dash.the_button_opens_the_decision}}</p>
             <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.run_task}}</th><th>{{t:dash.question}}</th><th>{{t:dash.options}}</th><th>{{t:dash.asked}}</th><th>{{t:dash.page}}</th><th></th></tr></thead><tbody id="pending"></tbody></table><div id="pending-empty" class="empty" hidden>{{t:dash.no_open_decisions}}</div></div>
             </div>
+            <div class="panel" id="panel-launch" role="tabpanel" aria-labelledby="tab-launch">{{LAUNCH_HTML}}</div>
             <div class="panel" id="panel-runs" role="tabpanel" aria-labelledby="tab-runs">{{SHELL_RUN_DETAIL}}
             <h2>{{t:dash.runs}}</h2><p class="muted">{{t:dash.each_run_has_its_own}}</p>
             <p id="dry-hidden" class="muted"></p>
@@ -797,6 +857,7 @@ public final class Dashboard implements AutoCloseable {
             async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error('unavailable');data=await response.json();draw();$('connection').textContent='{{t:dash.data_updated}} '+new Date(data.observed_at).toLocaleTimeString();$('connection').className=''}catch(e){$('connection').textContent='{{t:dash.disconnected_showing_last_received_data}}';$('connection').className='bad'}finally{setTimeout(refresh,2000)}}refresh();
             {{SETTINGS_SCRIPT}}
             {{SHELL_SCRIPT}}
+            {{LAUNCH_SCRIPT}}
             </script></html>
             """.replace("{{BUDGET_HTML}}", DashboardControls.BUDGET_HTML)
             .replace("{{PERSONAL_HTML}}", DashboardControls.HTML.substring(0, DashboardControls.HTML.indexOf("<section id=\"analytics\"")))
@@ -806,5 +867,8 @@ public final class Dashboard implements AutoCloseable {
             .replace("{{SHELL_OVERVIEW}}", DashboardShell.OVERVIEW)
             .replace("{{SHELL_RUN_DETAIL}}", DashboardShell.RUN_DETAIL)
             .replace("{{SETTINGS_SCRIPT}}", DashboardControls.SCRIPT)
-            .replace("{{SHELL_SCRIPT}}", DashboardShell.SCRIPT);
+            .replace("{{SHELL_SCRIPT}}", DashboardShell.SCRIPT)
+            .replace("{{LAUNCH_CSS}}", RunLauncherUi.CSS)
+            .replace("{{LAUNCH_HTML}}", RunLauncherUi.HTML)
+            .replace("{{LAUNCH_SCRIPT}}", RunLauncherUi.SCRIPT);
 }

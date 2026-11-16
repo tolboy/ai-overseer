@@ -211,12 +211,16 @@ public final class Main {
                 url -> new OrcaClient(new ProcessRunner()).invoke(project, Duration.ofSeconds(20),
                         List.of("tab", "create", "--worktree", "path:" + project, "--url", url)).ok());
         try (var dashboard = new dev.oseer.dashboard.Dashboard(project, port, opener)) {
+            boolean launches = !hasFlag(args, "--no-launcher");
+            if (launches) dashboard.enableLauncher(new dev.oseer.dashboard.RunLauncher(UserConfig.defaultHome(), project));
             dashboard.start();
             // Decision answers stay on the decision page, through the same path as `oseer approve`.
             // Connection files are edited here through the same service as `oseer connections`.
             System.out.println(Json.write(Map.of("ok", true, "url", dashboard.url(),
                     "project", project.toString(), "read_only", false,
-                    "actions", List.of("open_decision_page", "manage_connections", "manage_models", "check_models"))));
+                    "actions", launches
+                            ? List.of("open_decision_page", "manage_connections", "manage_models", "check_models", "launch_runs")
+                            : List.of("open_decision_page", "manage_connections", "manage_models", "check_models"))));
             try {
                 var unresolved = dev.oseer.execution.CredentialAudit.unresolved(UserConfig.load(),
                         new dev.oseer.execution.CredentialResolver());
@@ -2882,11 +2886,13 @@ public final class Main {
 
                   oseer setup                 create a starter ~/.oseer (never overwrites)
                   oseer doctor                verify Java, vendor profiles and live Orca readiness
-                  oseer dashboard [--project DIR] [--port N] [--open-orca]
-                                               serve a local role/settings view; stays running
-                                               until Ctrl+C. Its one action reopens the page of
-                                               a pending decision; an answer given there that
-                                               continues the loop runs it from this process
+                  oseer dashboard [--project DIR] [--port N] [--open-orca] [--no-launcher]
+                                               serve the local browser UI on 127.0.0.1; stays
+                                               running until Ctrl+C. Its Launch tab previews and
+                                               starts do/run, answers decisions, lands and cancels
+                                               as child processes of this server (--no-launcher
+                                               turns that off); an answer given on a decision page
+                                               that continues the loop runs it from this process
                   oseer profiles              which profiles load, which are eligible, and why not
                   oseer connections list      configured API endpoints and credential presence (no inference)
                   oseer connections add ID --provider openrouter|gonkarouter|joingonka --env VARIABLE
