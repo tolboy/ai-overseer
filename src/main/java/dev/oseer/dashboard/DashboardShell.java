@@ -120,7 +120,7 @@ final class DashboardShell {
             addEventListener('hashchange',route);
             const statusText={passed:'{{t:shell.passed}}',failed:'{{t:shell.failed}}',running:'{{t:shell.in_progress}}',skipped:'{{t:shell.skipped}}',unknown:'{{t:next.unknown}}',completed:'{{t:shell.completed}}',pending:'{{t:shell.still_open}}',finished:'{{t:shell.completed_2}}',stopped:'{{t:shell.stopped_without_results}}',no_summary:'{{t:shell.no_results}}'};
             const roleText={implementer:'{{t:shell.implementer}}',reviewer:'{{t:shell.review}}',planner:'{{t:shell.planning}}',plan_reviewer:'{{t:shell.plan_review}}',visual_qa:'{{t:shell.visual_qa}}'};
-            const money=v=>v==null?'—':'$'+Number(v).toFixed(Number(v)<1?4:2);
+            const money=v=>costText(v,0);
             function duration(ms){if(ms==null)return '—';if(ms<1000)return Math.round(ms)+' {{t:shell.ms}}';if(ms<10000)return (ms/1000).toFixed(1).replace('.',',')+' {{t:next.s}}';const s=Math.round(ms/1000);if(s<60)return s+' {{t:next.s}}';const m=Math.floor(s/60);if(m<60)return m+' {{t:shell.min}} '+(s%60)+' {{t:next.s}}';return Math.floor(m/60)+' {{t:shell.h}} '+(m%60)+' {{t:shell.min}}'}
             function stepStatus(s){return s.status??(s.ok===true?'passed':s.ok===false?'failed':'unknown')}
             function primaryOf(rows){const byStage=new Map();for(const r of rows){if(!byStage.has(r.stage))byStage.set(r.stage,[]);byStage.get(r.stage).push(r)}return byStage}
@@ -164,7 +164,7 @@ final class DashboardShell {
             const causes=(d.stop_causes||[]).map(c=>[c.stage,c.profile,c.http_status?'HTTP '+c.http_status:null,c.code].filter(Boolean).join(' · ')).join(' → ');
             const verdict=d.state==='finished'?(d.ok===true?'{{t:shell.ready_for_decision}}':'{{t:shell.stopped}}: '+(causes||d.reason||'—')):statusText[d.state]??d.state;state.textContent=verdict;state.className='chip '+(d.state==='running'?'running':d.ok===true?'passed':d.ok===false?'failed':'unknown');
             const facts=el('run-detail-facts');facts.replaceChildren();const fact=(k,v)=>{const s=make('span',k+' ');s.append(make('b',v));facts.append(s)};const t=d.totals||{};
-            fact('{{t:dash.time}}',duration(t.duration_ms)+(t.duration_complete?'':' {{t:shell.incomplete}}'));fact('{{t:dash.cost}}',money(t.cost_usd_known)+(t.unpriced_steps?' + '+t.unpriced_steps+' {{t:dash.unpriced}}':''));
+            fact('{{t:dash.time}}',duration(t.duration_ms)+(t.duration_complete?'':' {{t:shell.incomplete}}'));fact('{{t:dash.cost}}',costText(t.cost_usd_known,t.unpriced_steps));
             if(d.mode)fact('{{t:next.mode}}',d.mode);if(d.risk)fact('{{t:dash.risk}}',d.risk);if(d.role_runs!=null)fact('{{t:shell.role_calls}}',String(d.role_runs));if(d.open_blocking_findings!=null)fact('{{t:dash.blockers}}',String(d.open_blocking_findings));
             const dr=d.decision_record;if(dr)fact('{{t:dash.decision}}',(dr.state??'—')+(dr.decision?' · '+dr.decision:'')+(dr.actor?' · '+dr.actor:''));
             const stages=el('run-detail-stages');stages.replaceChildren();for(const s of d.workflow||[]){const c=make('span',s.stage+(s.state?' · '+(statusText[s.state]??s.state):''),'chip '+(s.state??''));if(s.reason)c.title=s.reason;stages.append(c)}

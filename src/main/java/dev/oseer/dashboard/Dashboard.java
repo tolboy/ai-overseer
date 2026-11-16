@@ -771,12 +771,13 @@ public final class Dashboard implements AutoCloseable {
             <p id="problems" class="bad"></p>
             <script>
             const $=id=>document.getElementById(id); let data;
+            function costText(usd,unpriced){const n=Number(unpriced||0);const amount=usd==null||usd===''?'—':'$'+Number(usd).toFixed(Number(usd)<1?4:2);return n>0?amount+' (+'+n+' {{t:dash.unpriced}})':amount}
             function cell(tr,value){const td=document.createElement('td');td.textContent=value??'—';tr.append(td)}
             function table(id,rows){const body=$(id);body.replaceChildren();for(const values of rows){const tr=document.createElement('tr');values.forEach(v=>cell(tr,v));body.append(tr)}}
             function line(parent,text){const div=document.createElement('div');div.textContent=text;parent.append(div)}
             let openRuns=new Set();
             function timeline(run){const details=document.createElement('details');details.className='timeline';details.dataset.run=run.run_id??'';if(openRuns.has(details.dataset.run))details.open=true;const summary=document.createElement('summary');summary.textContent='{{t:dash.timeline}}';details.append(summary);
-            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');text+=' · '+(s.ok===true?'ok':s.ok===false?'fail':'—')+(s.code?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+s.cost_usd;if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
+            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');text+=' · '+(s.ok===true?'ok':s.ok===false?'fail':'—')+(s.code?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+costText(s.cost_usd,0);if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
             for(const c of run.review_coverage||[]){line(details,'coverage '+(c.stage??'')+' · '+(c.role??'')+(c.assurance!=null?' · '+c.assurance:''))}
             for(const p of run.pending_stages||[]){line(details,'pending '+(p.stage??'')+' · '+(p.reason??''))}
             for(const f of run.failovers||[]){line(details,f.kind==='switched'?('failover '+(f.stage??'')+' · '+(f.from_profiles||[]).join(', ')+' → '+(f.profile??'')):f.kind==='exhausted'?('{{t:dash.quota_exhausted}} '+(f.stage??'')+' · '+(f.exhausted_profiles||[]).join(', ')):('{{t:dash.awaiting_substitution_approval}} '+(f.stage??'')+' · '+(f.from_profile??'')+' → '+(f.to_profile??'')))}
@@ -845,9 +846,9 @@ public final class Dashboard implements AutoCloseable {
             function drawRuns(){openRuns=new Set([...document.querySelectorAll('#runs details[open]')].map(d=>d.dataset.run));const body=$('runs');body.replaceChildren();const runs=data.runs||[];
             for(const r of runs){const tr=document.createElement('tr');const chain=r.chain||{},decision=r.decision||{},gate=r.orca_gate||{};
             const cost=chain.cost_usd??r.total_cost_usd,unpriced=chain.unpriced_calls??r.unpriced_calls;
-            let costText=cost==null?'—':String(cost);if(unpriced)costText+=' · '+unpriced+' {{t:dash.unpriced}}';
+            const costLabel=costText(cost,unpriced);
             const outcome=(r.ok===true?'ok':r.ok===false?'{{t:conn.no}}':'—')+(r.reason?' · '+r.reason:'');
-            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'{{t:conn.yes}}':r.candidate_review_passed===false?'{{t:conn.no}}':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costText,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
+            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'{{t:conn.yes}}':r.candidate_review_passed===false?'{{t:conn.no}}':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costLabel,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
             const td=document.createElement('td');td.append(timeline(r));tr.append(td);const first=tr.firstChild,button=document.createElement('button');button.type='button';button.className='linkish';button.textContent=first.textContent;button.title='{{t:dash.open_run_timeline}}';button.addEventListener('click',()=>window.overseerOpenRun&&overseerOpenRun(r.run_id));first.replaceChildren(button);body.append(tr)}
             $('runs-empty').hidden=runs.length>0;$('dry-hidden').textContent=data.dry_runs_hidden?('{{t:dash.hidden_dry_run_entries}} '+data.dry_runs_hidden):''}
             const states={running:'{{t:dash.in_progress}}',completed:'{{t:dash.completed}}',failed:'{{t:dash.error_2}}',needs_you:'{{t:dash.answer_needed}}',dry_run:'Dry run',unknown_controller_stopped:'{{t:dash.controller_stopped_agent_unchecked}}'};

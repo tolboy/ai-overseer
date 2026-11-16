@@ -114,6 +114,9 @@ public final class DashboardTest implements Suite {
             check.eq("dashboard reachable over loopback", 200, page.statusCode());
             check.contains("UI treats configured fields as text", page.body(), "td.textContent");
             check.contains("runs section is on the page", page.body(), "Запуски");
+            check.contains("one cost formatter for every cost on the page", page.body(), "function costText(usd,unpriced)");
+            check.that("no cost is printed raw or with its own rounding",
+                    !page.body().contains("String(cost)") && !page.body().contains("cost_usd_known).toFixed"));
             check.contains("connections section is on the page", page.body(), "id=\"connection-editor-title\">Ключи и адреса API</h2>");
             check.contains("authorization is not inferred from key presence", page.body(), "не подтверждает авторизацию");
             check.contains("coding requires a separately verified harness", page.body(), "OpenCode после отдельной проверки профиля");
