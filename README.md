@@ -313,6 +313,19 @@ The **Аналитика результатов** section separates vendor succe
 human acceptance, with cost/token coverage, retries, failovers and continuation context.
 See [the setup guide](docs/SETUP.md#build-the-next-run-in-the-dashboard).
 
+The page is organised in tabs. **Обзор** answers "what needs me and who works next": the
+decisions waiting, the agents active now, the last run and its known cost (unpriced calls
+are counted, never guessed), the cast of the next run — role, vendor, model, effort,
+rotation position, verified or not — and the recent runs as one strip of stages each.
+Selecting a run opens its **timeline**: every stage with its role, vendor, model, effort,
+duration, cost or "unpriced", the baseline and gate commands (each failing command marked
+as a regression or as already red at the baseline), and links to that stage's evidence —
+prompts, redacted raw output, artifacts, gate reports and screenshots. A running run
+refreshes every two seconds. The page still dispatches nothing: runs start from the CLI.
+**Роли и вендоры** edits the roster in the browser; a save that would leave review
+without a vendor independent of the writer is refused with the reason, before anything
+is written.
+
 ```text
 run   chapter-hearth-4
 task  chapter-with-a-reason   risk=medium   scope=src, scripts

@@ -234,6 +234,32 @@ The form does not execute commands. Model variants come from declared profiles;
 custom effort does not prove model support or receive a verification stamp. The
 versioned `oseer roster` commands remain available for CLI edits.
 
+### Follow a run in the dashboard
+
+The **Запуски** tab lists runs; the run id opens its timeline, also reachable as
+`#run/<run-id>` in the address bar. The **Обзор** tab links the latest and the still-open
+runs. The timeline polls while a run has no summary yet and stops when it finishes.
+Evidence links serve only files a stage wrote under its own directory, by an allowlist
+(prompts, raw stdout/stderr, artifacts, gate and visual-QA reports, screenshots), with
+the page token, without following symlinks, and with credential-shaped text redacted.
+`/api/state` still carries no raw output.
+
+### Choose a task mode
+
+The **Следующий запуск** form has a **Режим задачи** select. It saves `mode:` into the
+task file through the same reviewed diff and **Apply** as budgets, and a mode the task
+cannot satisfy is explained in the preview instead. From the command line,
+`oseer do "<goal>" --mode quick|bug|task|refactor` writes the mode into the contract that
+run drafts; a contract someone wrote keeps its own mode and a different one is refused.
+See [the specification](../spec/SPEC.md#oseertasksidyaml--a-task) for what each mode sets.
+
+### Scan a new project first
+
+`oseer init --scan` prints what `init` would infer — build system, check commands, scopes
+and the files that led to each — as JSON, and writes nothing. It recognises package.json,
+Gradle, Maven, Cargo, Makefile, Go modules and Python projects (pytest when the project
+names it, otherwise unittest).
+
 ### Read results in the dashboard
 
 **Аналитика результатов** reads local `evidence.jsonl`, task summaries and decisions.

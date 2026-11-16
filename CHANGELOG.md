@@ -30,6 +30,18 @@ that exists in code but has never been run live says so.
 
 ### Added
 
+- Dashboard tabs with an **Обзор** page (waiting decisions, active agents, last run, known
+  cost and unpriced calls, the next run's cast) and a per-run **timeline**: stages with
+  role, vendor, model, effort, duration, cost or "unpriced", baseline and gate commands
+  attributed as regression or already red, and allowlisted, redacted evidence links.
+  Offline, token-gated, read-only; tested offline, shown against recorded runs.
+- Task `mode: quick|bug|task|refactor`, selectable in the dashboard's next-run form and
+  with `oseer do --mode`.
+- `oseer init --scan`, and Go and Python check detection in `init`.
+- The browser roster editor refuses a save that leaves a role requiring an independent
+  vendor with no candidate outside the implementer's vendor
+  (`reviewer_not_independent`).
+
 - Catalog refresh uses non-inference CLI metadata where supported, with source dates,
   explicit stale/unknown states and cache update instructions elsewhere. Removed or
   unknown models keep their manual configuration; refresh never changes roles, effort
