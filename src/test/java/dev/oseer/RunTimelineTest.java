@@ -22,6 +22,19 @@ public final class RunTimelineTest implements Suite {
     public String name() { return "run-timeline"; }
 
     public void run(Check check) throws Exception {
+        // The headline names what went wrong, attempt by attempt, not only the run's reason.
+        var failedStep = new java.util.LinkedHashMap<String, Object>();
+        failedStep.put("stage", "review"); failedStep.put("status", "failed"); failedStep.put("profile", "fallback");
+        failedStep.put("code", "role_api_output_truncated");
+        failedStep.put("failed_attempts", java.util.List.of(
+                java.util.Map.of("profile", "primary", "http_status", 502L, "code", "role_api_provider_error"),
+                java.util.Map.of("profile", "fallback", "http_status", 200L, "code", "role_api_output_truncated")));
+        var causes = dev.oseer.dashboard.RunTimeline.stopCauses(java.util.List.of(
+                new java.util.LinkedHashMap<>(java.util.Map.of("stage", "implement", "status", "passed")), failedStep));
+        check.eq("both attempts are causes, the last one once", 2, causes.size());
+        check.eq("the first cause carries its HTTP status", 502L, causes.get(0).get("http_status"));
+        check.eq("the last cause is the truncation", "role_api_output_truncated", causes.get(1).get("code"));
+        check.eq("no failed step, no causes", 0, dev.oseer.dashboard.RunTimeline.stopCauses(java.util.List.of()).size());
         Path root = Files.createTempDirectory("oseer-run-timeline-");
         Path runs = root.resolve(".oseer/runs");
         String id = "run-alpha";
@@ -115,7 +128,7 @@ public final class RunTimelineTest implements Suite {
         check.eq("baseline commands are read from its report", 1, ((List<?>) baseline.get("commands")).size());
         List<?> workflow = (List<?>) timeline.get("workflow");
         check.eq("completed stage", "completed", ((Map<?, ?>) workflow.get(0)).get("state"));
-        check.eq("pending stage", "pending", ((Map<?, ?>) workflow.get(1)).get("state"));
+        check.eq("a stage that ran and did not pass is failed, not still open", "failed", ((Map<?, ?>) workflow.get(1)).get("state"));
         check.eq("inapplicable stage", "skipped", ((Map<?, ?>) workflow.get(2)).get("state"));
         Map<?, ?> totals = (Map<?, ?>) timeline.get("totals");
         check.eq("one unpriced step is counted", 1L, ((Number) totals.get("unpriced_steps")).longValue());

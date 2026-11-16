@@ -107,6 +107,20 @@ public final class RunTimeline {
         result.put("baseline", baseline(summary, runsRoot));
         attribute(steps, (Map<?, ?>) result.get("baseline"));
         result.put("steps", steps);
+        // A stage that ran and did not pass is failed, not "still open": the summary lists it
+        // among pending stages with did_not_pass, which read as waiting in the timeline.
+        if (result.get("workflow") instanceof List<?> stages) {
+            for (Object item : stages) {
+                if (item instanceof Map<?, ?> raw && "pending".equals(raw.get("state")) && "did_not_pass".equals(raw.get("reason"))) {
+                    @SuppressWarnings("unchecked") Map<String, Object> row = (Map<String, Object>) raw;
+                    row.put("state", "failed");
+                }
+            }
+        }
+        if (Boolean.FALSE.equals(result.get("ok"))) {
+            List<Map<String, Object>> causes = stopCauses(steps);
+            if (!causes.isEmpty()) result.put("stop_causes", causes);
+        }
 
         long duration = 0L; boolean durationKnown = !steps.isEmpty();
         double cost = 0.0; long unpriced = 0L;
@@ -125,6 +139,37 @@ public final class RunTimeline {
         result.put("decision_record", decision(directory, runsRoot));
         result.put("observed_at", Instant.now().toString());
         return result;
+    }
+
+    /**
+     * What actually went wrong at the last failed step, attempt by attempt: a 502 then a
+     * truncated fallback is two causes, and the run's own reason (for example
+     * {@code vendor_protocol_failed}) names neither.
+     */
+    public static List<Map<String, Object>> stopCauses(List<Map<String, Object>> steps) {
+        Map<String, Object> failed = null;
+        for (Map<String, Object> step : steps) if ("failed".equals(step.get("status"))) failed = step;
+        List<Map<String, Object>> causes = new ArrayList<>();
+        if (failed == null) return causes;
+        if (failed.get("failed_attempts") instanceof List<?> attempts) {
+            for (Object item : attempts) {
+                if (!(item instanceof Map<?, ?> attempt)) continue;
+                Map<String, Object> cause = new LinkedHashMap<>();
+                cause.put("stage", failed.get("stage"));
+                for (String key : List.of("profile", "vendor", "http_status", "code")) if (attempt.get(key) != null) cause.put(key, attempt.get(key));
+                causes.add(cause);
+            }
+        }
+        Object code = failed.get("code"), profile = failed.get("profile");
+        boolean covered = causes.stream().anyMatch(c -> java.util.Objects.equals(c.get("code"), code)
+                && java.util.Objects.equals(c.get("profile"), profile));
+        if (code != null && !covered) {
+            Map<String, Object> cause = new LinkedHashMap<>();
+            cause.put("stage", failed.get("stage"));
+            for (String key : List.of("profile", "vendor", "http_status", "code")) if (failed.get(key) != null) cause.put(key, failed.get(key));
+            causes.add(cause);
+        }
+        return causes;
     }
 
     private static List<Map<String, Object>> summarySteps(List<?> source, Path runsRoot, String runId) throws IOException {
