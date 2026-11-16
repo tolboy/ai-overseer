@@ -30,6 +30,7 @@ public final class TestMain {
                 new dev.oseer.ServiceBindingTest(),
                 new dev.oseer.ServiceMigrationTest(),
                 new dev.oseer.RoleRosterEditorTest(),
+                new dev.oseer.RosterIndependenceTest(),
                 new dev.oseer.DecisionRoutingTest(),
                 new dev.oseer.DecisionCompatibilityTest(),
                 new dev.oseer.ModelCatalogUiTest(),

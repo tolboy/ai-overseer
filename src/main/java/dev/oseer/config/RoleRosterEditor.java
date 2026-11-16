@@ -23,6 +23,8 @@ public final class RoleRosterEditor {
                 if(lock==null)return refused(409,"settings_busy");
                 return save(payload);
             }
+        } catch(NotIndependent shared) {
+            return new Outcome(400,Map.of("ok",false,"code","reviewer_not_independent","role",shared.role,"writer_vendor",shared.vendor));
         } catch(Changed conflict) { return refused(409,"settings_changed_reload"); }
         catch(Unbound unavailable) { return refused(400,"cli_model_binding_required"); }
         catch(dev.oseer.execution.EffortCapabilities.Unsupported unsupported) { return refused(400,"effort_unsupported"); }
@@ -39,6 +41,7 @@ public final class RoleRosterEditor {
         if(user.policy()==null || !user.policy().roles().containsKey(role) || !Set.of("first","rotate").contains(strategy))throw new Invalid();
         if(!(payload.get("slots") instanceof List<?> slots) || slots.isEmpty() || slots.size()>64)throw new Invalid();
         var names=new ArrayList<String>();var pending=new ArrayList<String>();
+        var effective=new LinkedHashMap<String,Profile>();
         var updates=new LinkedHashMap<Path,String>();
         var oldBytes=new LinkedHashMap<Path,byte[]>();
         var expected=new LinkedHashMap<Path,String>();expected.put(policyFile,text(payload,"revision"));
@@ -106,8 +109,10 @@ public final class RoleRosterEditor {
                 if(next.verified())throw new Invalid();
                 updates.put(file,yaml);
             }
+            effective.put(name,edited?Profile.parse(yaml,file.toString()):old);
             if(edited || !old.verified())pending.add(name);
         }
+        requireIndependence(user,role,names,effective);
         String policy=Files.readString(policyFile);
         policy=replace(policy,List.of("roles",role,"profiles"),Json.write(names));
         policy=replace(policy,List.of("roles",role,"strategy"),Json.write(strategy));
@@ -127,11 +132,41 @@ public final class RoleRosterEditor {
         return new Outcome(200,Map.of("ok",true,"code","role_composition_saved","role",role,"pending_verification",pending,
                 "profiles",names,"revisions",revisions,"policy_revision",ModelSettingsService.revision(policyFile)));
     }
+    /**
+     * A judging role that must be independent of the writer keeps at least one candidate from
+     * another vendor than the implementer the next run starts with. The resolver refuses a
+     * same-vendor reader at run time anyway; refusing the save says so where the choice is
+     * made instead of as `independent_review_unavailable` after the writer was paid.
+     * Only the roles this save changes are judged, so an unrelated edit is never blocked by
+     * an existing configuration.
+     */
+    static void requireIndependence(UserConfig user,String role,List<String> names,Map<String,Profile> edited){
+        var roles=new LinkedHashMap<String,List<String>>();
+        for(var entry:user.policy().roles().entrySet())roles.put(entry.getKey(),entry.getValue().profiles());
+        roles.put(role,names);
+        var profiles=new LinkedHashMap<String,Profile>(user.profiles());profiles.putAll(edited);
+        List<String> writers=roles.getOrDefault("implementer",List.of());
+        if(writers.isEmpty() || profiles.get(writers.get(0))==null)return;
+        String writer=profiles.get(writers.get(0)).independenceVendor();
+        if(writer==null)return;
+        for(var spec:user.policy().roles().values()){
+            if(spec.role().equals("implementer") || !spec.requireIndependentVendor())continue;
+            if(!role.equals("implementer") && !role.equals(spec.role()))continue;
+            List<String> readers=roles.getOrDefault(spec.role(),List.of());
+            if(readers.isEmpty())continue;
+            boolean independent=readers.stream().map(profiles::get).anyMatch(p->p!=null && !writer.equals(p.independenceVendor()));
+            if(!independent)throw new NotIndependent(spec.role(),writer);
+        }
+    }
     private static String replace(String yaml,List<String> path,String value){return ModelSettingsService.replaceValue(yaml,path,value);}
     private static void keys(Map<String,Object> map,Set<String> allowed){if(map==null || !allowed.containsAll(map.keySet()))throw new Invalid();}
     private static String text(Map<String,Object> map,String key){if(!(map.get(key) instanceof String value) || value.isBlank() || value.length()>512 || value.chars().anyMatch(c->c<32))throw new Invalid();return value;}
     private static void expect(Path file,String revision)throws Exception{if(!ModelSettingsService.revision(file).equals(revision))throw new Changed();}
     private static Outcome refused(int status,String code){return new Outcome(status,Map.of("ok",false,"code",code));}
+    static final class NotIndependent extends RuntimeException {
+        final String role,vendor;
+        NotIndependent(String role,String vendor){super(null,null,false,false);this.role=role;this.vendor=vendor;}
+    }
     private static final class Invalid extends RuntimeException {}
     private static final class Changed extends RuntimeException {}
     private static final class Unbound extends RuntimeException {}
