@@ -194,7 +194,7 @@ final class RunLauncherUi {
             fact('{{t:launch.state}}',stateText[v.state]??v.state);fact('{{t:launch.stage_now}}',current?(current.stage??current.step??'—')+(current.status?' · '+current.status:''):v.state==='running'?'{{t:launch.starting}}':'—');
             fact('{{t:launch.vendor_now}}',current?[current.profile,current.vendor].filter(Boolean).join(' · ')||'—':'—');
             fact('{{t:launch.elapsed}}',dur(v.elapsed_ms));
-            if(t&&t.totals)fact('{{t:launch.cost}}',costText(t.totals.cost_usd_known,t.totals.unpriced_steps));
+            if(t&&t.totals)fact('{{t:launch.cost}}',costText(t.totals.cost_usd_known,t.totals.unpriced_calls??t.totals.unpriced_steps));
             g('launch-cancel').disabled=v.state!=='running';g('launch-open-run').disabled=!v.run_id||!t;
             const res=v.state==='running'?{}:(v.result||{});g('launch-job-status').textContent=[v.note,res.code,res.reason,res.next_action,res.message,res.next].filter(Boolean).join(' · ');
             const list=g('launch-steps');list.replaceChildren();for(const s of steps){const li=mk('li',[s.stage??s.step,s.status,[s.profile,s.vendor].filter(Boolean).join('/'),s.duration_ms!=null?dur(s.duration_ms):null,s.code,s.http_status?'HTTP '+s.http_status:null].filter(Boolean).join(' · '));

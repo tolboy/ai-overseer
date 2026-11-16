@@ -128,13 +128,17 @@ public final class RunTimeline {
             if (step.get("duration_ms") instanceof Number number) duration += number.longValue();
             else if (!"skipped".equals(step.get("status")) && !Boolean.TRUE.equals(step.get("reused"))) durationKnown = false;
             if (step.get("cost_usd") instanceof Number number) cost += number.doubleValue();
-            if (Boolean.TRUE.equals(step.get("unpriced"))) unpriced++;
+            if (step.get("unpriced_calls") instanceof Number n) unpriced += n.longValue();
+            else if (Boolean.TRUE.equals(step.get("unpriced"))) unpriced++;
         }
         Map<String, Object> totals = new LinkedHashMap<>();
         totals.put("duration_ms", duration);
         totals.put("duration_complete", durationKnown);
         totals.put("cost_usd_known", Math.round(cost * 1_000_000d) / 1_000_000d);
-        totals.put("unpriced_steps", unpriced);
+        // The engine's own count wins when the run recorded one; the run list reads the same.
+        if (result.get("unpriced_calls") instanceof Number recorded) unpriced = recorded.longValue();
+        totals.put("unpriced_calls", unpriced);
+        totals.put("unpriced_steps", steps.stream().filter(step -> Boolean.TRUE.equals(step.get("unpriced"))).count());
         result.put("totals", totals);
         result.put("decision_record", decision(directory, runsRoot));
         result.put("observed_at", Instant.now().toString());
@@ -190,15 +194,19 @@ public final class RunTimeline {
             // Model, effort, duration and the number of vendor attempts come from the attempts
             // the role made, not from the profile: a failover or a retry changes them.
             if (step.get("vendor_attempts") instanceof List<?> attempts && !attempts.isEmpty()) {
-                long millis = 0L; boolean known = true; int count = 0;
+                long millis = 0L; boolean known = true; int count = 0; long unpricedCalls = 0L;
                 Map<?, ?> last = null;
                 for (Object raw : attempts) {
                     if (!(raw instanceof Map<?, ?> attempt)) continue;
                     count++; last = attempt;
+                    // Counted per vendor call, as the engine counts unpriced_calls: a failed
+                    // attempt with no price is unpriced even when a later attempt reported one.
+                    if (!(attempt.get("cost_usd") instanceof Number)) unpricedCalls++;
                     if (attempt.get("duration_millis") instanceof Number number) millis += number.longValue();
                     else known = false;
                 }
                 row.put("vendor_attempts", count);
+                if (unpricedCalls > 0) row.put("unpriced_calls", unpricedCalls);
                 if (known && count > 0) row.put("duration_ms", millis);
                 List<Map<String, Object>> failures = failedAttempts(attempts);
                 if (!failures.isEmpty()) row.put("failed_attempts", failures);
@@ -221,6 +229,8 @@ public final class RunTimeline {
                     && (row.get("vendor_attempts") instanceof Integer n ? n > 0 : step.get("profile") != null)) {
                 row.put("unpriced", true);
             }
+            if (row.get("unpriced_calls") instanceof Long n && n > 0) row.put("unpriced", true);
+            else if (Boolean.TRUE.equals(row.get("unpriced"))) row.put("unpriced_calls", 1L);
             if (step.get("role_failovers") instanceof List<?> switches && !switches.isEmpty()) {
                 List<Map<String, Object>> visible = new ArrayList<>();
                 for (Object raw : switches) {

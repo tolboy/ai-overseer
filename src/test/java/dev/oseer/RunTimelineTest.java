@@ -109,6 +109,7 @@ public final class RunTimelineTest implements Suite {
         check.eq("requested model is kept beside it", "m-1", role.get("model_requested"));
         check.eq("effort is the requested effort", "high", role.get("effort"));
         check.eq("attempt count is shown", 2, ((Number) role.get("vendor_attempts")).intValue());
+        check.eq("unpriced calls are counted per vendor attempt", 2L, ((Number) role.get("unpriced_calls")).longValue());
         check.eq("a vendor call without a price is unpriced, not free", true, role.get("unpriced"));
         check.eq("only input and output tokens are shown", Map.of("input", 10L, "output", 20L), role.get("tokens"));
         check.eq("role evidence directory comes from the artifact path", id + "--implementer-0", role.get("evidence_dir"));
@@ -132,6 +133,9 @@ public final class RunTimelineTest implements Suite {
         check.eq("inapplicable stage", "skipped", ((Map<?, ?>) workflow.get(2)).get("state"));
         Map<?, ?> totals = (Map<?, ?>) timeline.get("totals");
         check.eq("one unpriced step is counted", 1L, ((Number) totals.get("unpriced_steps")).longValue());
+        Object recorded = timeline.get("unpriced_calls");
+        check.eq("unpriced calls agree with the run's own count when it has one",
+                recorded instanceof Number n ? n.longValue() : 1L, ((Number) totals.get("unpriced_calls")).longValue());
         String json = Json.write(timeline);
         check.that("raw output paths and prose are not in the projection", !json.contains("SECRET_RAW_MARKER"));
         check.that("the person's note stays on the decision page", !json.contains("PRIVATE_NOTE_MARKER"));
