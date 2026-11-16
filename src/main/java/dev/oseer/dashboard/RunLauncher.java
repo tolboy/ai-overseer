@@ -220,7 +220,21 @@ public final class RunLauncher implements AutoCloseable {
         Path real;
         try { real = path.toRealPath(); } catch (IOException e) { throw new Refused(400, "project_missing", "no such directory: " + path); }
         String top = git(real, "rev-parse", "--show-toplevel");
-        if (top == null) throw new Refused(400, "project_not_git", "not a git repository: " + real);
+        if (top == null) {
+            // Inside .git (or another folder git will not treat as a work tree) rev-parse has no
+            // top; the nearest parent that is a work tree still names the folder to pick.
+            for (Path parent = real.getParent(); parent != null; parent = parent.getParent()) {
+                if (!Files.exists(parent.resolve(".git"))) continue;
+                String enclosing = git(parent, "rev-parse", "--show-toplevel");
+                if (enclosing == null) break;
+                try {
+                    Path topPath = Path.of(enclosing).toRealPath();
+                    if (real.startsWith(topPath)) throw new Refused(400, "project_not_repo_root", topPath.toString());
+                } catch (IOException ignored) { }
+                break;
+            }
+            throw new Refused(400, "project_not_git", "not a git repository: " + real);
+        }
         try {
             Path topPath = Path.of(top).toRealPath();
             if (!topPath.equals(real)) {

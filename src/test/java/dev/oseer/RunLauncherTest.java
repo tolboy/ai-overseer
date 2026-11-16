@@ -62,6 +62,13 @@ public final class RunLauncherTest implements Suite {
             check.eq("a subdirectory is refused by code", "project_not_repo_root", refused.code());
             check.eq("the refusal names only the top folder, the page says the rest", repo.toRealPath().toString(), refused.getMessage());
         }
+        for (String inner : List.of(".git", ".git/refs")) {
+            try { launcher.inspect(Map.of("project", repo.resolve(inner).toString())); check.that(inner + " is refused", false); }
+            catch (RunLauncher.Refused refused) {
+                check.eq(inner + " is refused like any folder inside the repository", "project_not_repo_root", refused.code());
+                check.eq(inner + " names the top folder", repo.toRealPath().toString(), refused.getMessage());
+            }
+        }
         try { launcher.inspect(Map.of("project", repo.resolve(".oseer/tasks").toString())); check.that("a folder inside .oseer is refused", false); }
         catch (RunLauncher.Refused refused) {
             check.eq("a folder inside .oseer is called Overseer's own", "project_inside_oseer", refused.code());
