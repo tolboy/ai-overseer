@@ -81,6 +81,19 @@ public final class TaskModeTest implements Suite {
         check.contains("a mode the fresh draft cannot satisfy is refused", TaskDraft.applyMode(person, "bug"), "reproduce");
         check.eq("and the draft is left as it was", before, Files.readString(person.file()));
 
+        // `oseer do --max-role-runs/--max-cost-usd` caps a contract it drafted, the launcher's budget fields.
+        var capped = new TaskDraft().write(root, "capped", "Make the link green", "code", "medium");
+        check.eq("a fresh draft takes the budgets", null, TaskDraft.applyBudgets(capped, 3L, 0.25));
+        TaskSpec cappedSpec = TaskSpec.parse(Files.readString(capped.file()), "capped.yaml");
+        check.eq("the call cap is written", 3L, (long) cappedSpec.budget().maxRoleRuns());
+        check.eq("the spend threshold is written", 0.25, cappedSpec.budget().maxCostUsd());
+        check.eq("the same budgets again are accepted", null, TaskDraft.applyBudgets(
+                new TaskDraft.Written(capped.file(), "capped", true), 3L, 0.25));
+        check.contains("other budgets on a written contract are refused", TaskDraft.applyBudgets(
+                new TaskDraft.Written(capped.file(), "capped", true), 9L, null), "has its own budgets");
+        check.contains("a call cap out of range is refused", TaskDraft.applyBudgets(capped, 0L, null), "1..50");
+        check.eq("no budgets is a no-op", null, TaskDraft.applyBudgets(person, null, null));
+
         // The browser selects a mode through the same reviewed, versioned task edit as budgets.
         Path sandbox = Files.createTempDirectory("oseer-task-mode-ui-");
         Path project = sandbox.resolve("project"), home = sandbox.resolve("home");

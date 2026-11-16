@@ -2966,6 +2966,8 @@ public final class Main {
                                            --mode quick|bug|task|refactor writes a task mode
                                            into the contract this run drafts; a contract
                                            someone wrote keeps its own mode
+                                           --max-role-runs N and --max-cost-usd X write the call
+                                           cap and the spend threshold into that drafted contract
                                            --prepare off|auto|always (default auto) dispatches
                                            a read-only planner to draft the contract; Overseer
                                            validates what it returns. auto only when the task

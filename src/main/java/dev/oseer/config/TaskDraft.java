@@ -71,6 +71,45 @@ public final class TaskDraft {
         return null;
     }
 
+    /**
+     * Writes the call cap and the spend threshold into a contract this invocation just
+     * drafted, the way {@link #applyMode} writes a mode. A contract someone wrote keeps its
+     * own budgets: a different value is refused by name, an equal one is accepted.
+     */
+    public static String applyBudgets(Written drafted, Long maxRoleRuns, Double maxCostUsd) throws IOException {
+        if (maxRoleRuns == null && maxCostUsd == null) return null;
+        if (maxRoleRuns != null && (maxRoleRuns < 1 || maxRoleRuns > 50)) return "max_role_runs must be 1..50";
+        if (maxCostUsd != null && (maxCostUsd < 0 || maxCostUsd > 10000)) return "max_cost_usd must be 0..10000";
+        Path file = drafted.file();
+        String text = Files.readString(file, StandardCharsets.UTF_8);
+        TaskSpec existing;
+        try {
+            existing = TaskSpec.parse(text, file.toString());
+        } catch (RuntimeException invalid) {
+            return "task '" + drafted.id() + "' cannot be validated: " + invalid.getMessage();
+        }
+        boolean same = (maxRoleRuns == null || maxRoleRuns == existing.budget().maxRoleRuns())
+                && (maxCostUsd == null || Double.compare(maxCostUsd, existing.budget().maxCostUsd()) == 0);
+        if (same) return null;
+        if (drafted.existed()) {
+            return "task '" + drafted.id() + "' at " + file + " has its own budgets; change the contract or drop "
+                    + "--max-role-runs/--max-cost-usd";
+        }
+        String candidate = text.endsWith("\n") ? text : text + "\n";
+        if (!candidate.lines().anyMatch(line -> line.startsWith("budgets:"))) {
+            candidate += "budgets:\n";
+        }
+        if (maxRoleRuns != null) candidate = ModelSettingsService.replaceValue(candidate, List.of("budgets", "max_role_runs"), Long.toString(maxRoleRuns));
+        if (maxCostUsd != null) candidate = ModelSettingsService.replaceValue(candidate, List.of("budgets", "max_cost_usd"), Double.toString(maxCostUsd));
+        try {
+            TaskSpec.parse(candidate, file.toString());
+        } catch (RuntimeException invalid) {
+            return "the budgets do not fit the drafted contract: " + invalid.getMessage();
+        }
+        dev.oseer.execution.ModelCheck.atomicWrite(file, candidate);
+        return null;
+    }
+
     public Written write(Path projectRoot, String id, String goal, String scope, String risk)
             throws IOException {
         return write(projectRoot, id, goal, scope, risk, false);
