@@ -22,6 +22,8 @@ final class RunLauncherUi {
             #launch-target.ok{color:#9ee9c6}#launch-job .now{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0}
             #launch-job .now span{background:#19232c;border:1px solid #30404d;border-radius:8px;padding:8px 12px}#launch-job .now b{display:block;font-size:17px}
             #launch-steps li{margin:4px 0}#launch-steps .code{color:#ffb4a8}#launch-steps .switch{color:#ffd479}
+            #launch-waiting{position:fixed;right:20px;bottom:20px;z-index:20;background:#ffd479;color:#1b1400;border:0;border-radius:20px;padding:10px 16px;font-weight:600;box-shadow:0 4px 14px #0008}
+            #launch-decision{border-color:#ffd479}
             @media(max-width:700px){.launch-stage{grid-template-columns:1fr}}
             """;
 
@@ -85,15 +87,11 @@ final class RunLauncherUi {
             </section>
             <h3>{{t:launch.jobs}}</h3>
             <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:launch.job}}</th><th>{{t:launch.state}}</th><th>{{t:launch.run}}</th><th>{{t:launch.elapsed}}</th><th></th></tr></thead><tbody id="launch-jobs"></tbody></table></div>
-            <p id="launch-jobs-empty" class="muted">{{t:launch.no_jobs}}</p>
+            <p id="launch-jobs-empty" class="muted" hidden>{{t:launch.no_jobs}}</p>
             <div class="launch-grid"><label>{{t:launch.attach_run}}<input id="launch-attach-run" autocomplete="off" placeholder="run-…"></label></div>
             <button type="button" id="launch-attach">{{t:launch.attach}}</button> <span id="launch-attach-status" role="status"></span>
             <section id="launch-job" hidden aria-labelledby="launch-job-title">
             <h3 id="launch-job-title"></h3>
-            <div class="now" id="launch-now" aria-live="polite"></div>
-            <button type="button" id="launch-cancel">{{t:launch.cancel}}</button>
-            <button type="button" id="launch-open-run">{{t:launch.open_timeline}}</button>
-            <p id="launch-job-status" role="status" aria-live="polite"></p>
             <fieldset id="launch-decision" hidden><legend>{{t:launch.decision}}</legend>
             <p id="launch-decision-reason"></p>
             <div class="launch-grid">
@@ -106,6 +104,10 @@ final class RunLauncherUi {
             <button type="button" id="launch-answer">{{t:launch.answer}}</button>
             <p id="launch-answer-status" role="status" aria-live="polite"></p>
             </fieldset>
+            <div class="now" id="launch-now" aria-live="polite"></div>
+            <button type="button" id="launch-cancel">{{t:launch.cancel}}</button>
+            <button type="button" id="launch-open-run">{{t:launch.open_timeline}}</button>
+            <p id="launch-job-status" role="status" aria-live="polite"></p>
             <fieldset id="launch-land" hidden><legend>{{t:launch.land}}</legend>
             <p class="muted">{{t:launch.land_help}}</p>
             <label class="check"><input type="checkbox" id="launch-land-commit"> {{t:launch.land_commit}}</label>
@@ -118,6 +120,7 @@ final class RunLauncherUi {
             <h4>{{t:launch.steps}}</h4><ol id="launch-steps"></ol>
             <h4>{{t:launch.narration}}</h4><pre id="launch-tail" tabindex="0"></pre>
             </section>
+            <button type="button" id="launch-waiting" hidden>{{t:launch.waiting_for_you}} →</button>
             </section>
             """;
 
@@ -175,7 +178,7 @@ final class RunLauncherUi {
             async function jobs(){try{const r=await fetch('/api/launch/jobs',{cache:'no-store'});const d=await r.json();g('launch-disabled').hidden=d.enabled!==false;g('launch-form').hidden=d.enabled===false;
             const body=g('launch-jobs');body.replaceChildren();for(const j of d.jobs||[]){const tr=mk('tr');for(const v of [j.label,stateText[j.state]??j.state,j.run_id??'—',dur(j.elapsed_ms)])tr.append(mk('td',v));
             const td=mk('td');const b=mk('button','{{t:launch.open}}');b.type='button';b.addEventListener('click',()=>openJob(j.id));td.append(b);tr.append(td);body.append(tr)}
-            g('launch-jobs-empty').hidden=(d.jobs||[]).length>0}catch(e){}finally{setTimeout(jobs,3000)}}
+            g('launch-jobs-empty').hidden=(d.jobs||[]).length>0||!!job}catch(e){}finally{setTimeout(jobs,3000)}}
             function openJob(id){job=id;clearTimeout(jobTimer);g('launch-job').hidden=false;g('launch-steps').replaceChildren();g('launch-tail').textContent='';pollJob();g('launch-job').scrollIntoView({block:'start'})}
             async function pollJob(){const id=job;if(!id)return;let v;try{const r=await fetch('/api/launch/jobs/'+encodeURIComponent(id),{cache:'no-store'});if(!r.ok)throw Error();v=await r.json()}catch(e){g('launch-job-status').textContent='{{t:launch.unreachable}}';jobTimer=setTimeout(pollJob,4000);return}
             if(id!==job)return;jobView=v;let timeline=null;if(v.run_id&&(v.narration||[]).length){try{const r=await fetch('/api/runs/'+encodeURIComponent(v.run_id)+'?job='+encodeURIComponent(id),{cache:'no-store'});if(r.ok)timeline=await r.json()}catch(e){}}
@@ -183,7 +186,7 @@ final class RunLauncherUi {
             function drawJob(v,t){g('launch-job-title').textContent=v.label+' · '+v.id;const now=g('launch-now');now.replaceChildren();
             const steps=(t&&t.steps)||[];const current=steps.find(s=>s.status==='running')??steps[steps.length-1];
             const fact=(k,val)=>{const s=mk('span',k);s.append(mk('b',val));now.append(s)};
-            fact('{{t:launch.state}}',stateText[v.state]??v.state);fact('{{t:launch.stage_now}}',current?(current.stage??current.step??'—')+(current.status?' · '+current.status:''):'—');
+            fact('{{t:launch.state}}',stateText[v.state]??v.state);fact('{{t:launch.stage_now}}',current?(current.stage??current.step??'—')+(current.status?' · '+current.status:''):v.state==='running'?'{{t:launch.starting}}':'—');
             fact('{{t:launch.vendor_now}}',current?[current.profile,current.vendor].filter(Boolean).join(' · ')||'—':'—');
             fact('{{t:launch.elapsed}}',dur(v.elapsed_ms));
             if(t&&t.totals)fact('{{t:launch.cost}}',costText(t.totals.cost_usd_known,t.totals.unpriced_steps));
@@ -193,8 +196,10 @@ final class RunLauncherUi {
             for(const f of s.failed_attempts||[])li.append(mk('div','{{t:timeline.attempt_failed}} '+[f.profile,f.vendor,f.http_status?'HTTP '+f.http_status:null,f.code].filter(Boolean).join(' · '),'code'));
             for(const f of s.failovers||[])li.append(mk('div','{{t:timeline.switched}} '+[(f.from_profile??'—')+' → '+(f.to_profile??'—'),f.cause].filter(Boolean).join(' · '),'switch'));list.append(li)}
             const tail=g('launch-tail');const atEnd=tail.scrollTop+tail.clientHeight>=tail.scrollHeight-8;tail.textContent=(v.narration||[]).join('\\n');if(atEnd)tail.scrollTop=tail.scrollHeight;
-            const d=v.decision;g('launch-decision').hidden=!d;if(d){g('launch-decision-reason').textContent=(d.kind??'')+' · '+(d.reason??'');const c=g('launch-choice');const keep=c.value;c.replaceChildren();for(const o of d.options||[])c.append(new Option(o,o));if((d.options||[]).includes(keep))c.value=keep}
+            const d=v.decision;g('launch-decision').hidden=!d;if(d){g('launch-decision-reason').textContent=(d.kind??'')+' · '+(d.reason??'');const c=g('launch-choice');const keep=c.value;c.replaceChildren();for(const o of d.options||[])c.append(new Option(o,o));if((d.options||[]).includes(keep))c.value=keep}waitingLink();
             g('launch-land').hidden=!(v.run_id&&v.state!=='running'&&!d&&t&&t.ok===true)}
+            function waitingLink(){const f=g('launch-decision'),b=g('launch-waiting');if(f.hidden||g('launch-job').hidden){b.hidden=true;return}const box=f.getBoundingClientRect();b.hidden=box.top<innerHeight&&box.bottom>0}
+            addEventListener('scroll',waitingLink,{passive:true});g('launch-waiting').addEventListener('click',()=>{g('launch-decision').scrollIntoView({block:'start',behavior:'smooth'});g('launch-choice').focus({preventScroll:true})});
             g('launch-attach').addEventListener('click',async()=>{const s=g('launch-attach-status');s.className='';try{const j=await api('attach',{project:g('launch-project').value,run_id:g('launch-attach-run').value.trim()});s.textContent='';openJob(j.id)}catch(e){s.className='bad';s.textContent=e.message}});
                         g('launch-cancel').addEventListener('click',async()=>{if(!job)return;try{await api('cancel',{job});pollJob()}catch(e){g('launch-job-status').textContent=e.message}});
             g('launch-open-run').addEventListener('click',()=>{if(jobView&&jobView.run_id)window.overseerOpenRun(jobView.run_id,job)});

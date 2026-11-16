@@ -115,6 +115,13 @@ public final class DashboardTest implements Suite {
             check.contains("UI treats configured fields as text", page.body(), "td.textContent");
             check.contains("runs section is on the page", page.body(), "Запуски");
             check.contains("one cost formatter for every cost on the page", page.body(), "function costText(usd,unpriced)");
+            String launchPage = page.body();
+            check.that("a waiting decision comes before the job facts",
+                    launchPage.indexOf("id=\"launch-decision\"") < launchPage.indexOf("id=\"launch-now\"")
+                            && launchPage.indexOf("id=\"launch-job-title\"") < launchPage.indexOf("id=\"launch-decision\""));
+            check.contains("a waiting decision has a link that follows the reader", launchPage, "id=\"launch-waiting\" hidden");
+            check.contains("the empty-jobs note starts hidden instead of flashing", launchPage, "id=\"launch-jobs-empty\" class=\"muted\" hidden");
+            check.that("the empty-jobs note stays hidden while a job is open", launchPage.contains("length>0||!!job"));
             check.that("no cost is printed raw or with its own rounding",
                     !page.body().contains("String(cost)") && !page.body().contains("cost_usd_known).toFixed"));
             check.contains("connections section is on the page", page.body(), "id=\"connection-editor-title\">Ключи и адреса API</h2>");
