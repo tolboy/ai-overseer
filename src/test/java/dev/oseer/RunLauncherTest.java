@@ -136,6 +136,8 @@ public final class RunLauncherTest implements Suite {
         Map<String, Object> stopsPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "stops")));
         Map<String, Object> stopped = waitFor(launcher, String.valueOf(launcher.start(Map.of("preview_id", stopsPlan.get("preview_id"), "confirm", true)).get("id")));
         check.eq("a run that stops for a person is stopped, not failed", "stopped", stopped.get("state"));
+        check.eq("a job list row says whether it waits for a person", Boolean.class,
+                launcher.jobs().get(0).get("waiting") == null ? null : launcher.jobs().get(0).get("waiting").getClass());
 
         // One job per project; cancel stops it.
         Map<String, Object> slowPlan = launcher.preview(Map.of("kind", "run", "params", Map.of("task", "slow")));

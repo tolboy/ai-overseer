@@ -804,7 +804,10 @@ public final class RunLauncher implements AutoCloseable {
         return found;
     }
 
-    /** The list row reads no files; the full view adds the narration tail and the decision. */
+    /**
+     * The list row reads no step files; the full view adds the narration tail and the decision.
+     * A stopped job with a run says whether a person is awaited, for the tab badge.
+     */
     static Map<String, Object> summaryOf(Job job) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", job.id);
@@ -817,6 +820,7 @@ public final class RunLauncher implements AutoCloseable {
         row.put("started_at", job.started.toString());
         row.put("ended_at", job.ended == null ? null : job.ended.toString());
         row.put("elapsed_ms", elapsed(job));
+        row.put("waiting", "stopped".equals(job.state) && job.runId != null && pending(job.project, job.runId) != null);
         return row;
     }
 

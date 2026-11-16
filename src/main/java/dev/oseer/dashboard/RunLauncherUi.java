@@ -172,13 +172,18 @@ final class RunLauncherUi {
             g('launch-plan-status').textContent='{{t:launch.expires}} '+new Date(plan.expires_at).toLocaleTimeString();g('launch-plan').scrollIntoView({block:'start'})}
             catch(e){s.className='bad';s.textContent=e.message}finally{g('launch-preview').disabled=false}});
             g('launch-confirm').addEventListener('change',()=>{g('launch-start').disabled=!(plan&&g('launch-confirm').checked)});
-            g('launch-start').addEventListener('click',async()=>{const s=g('launch-plan-status');if(!plan)return;g('launch-start').disabled=true;
+            g('launch-start').addEventListener('click',async()=>{askToNotify();const s=g('launch-plan-status');if(!plan)return;g('launch-start').disabled=true;
             try{const started=await api('start',{preview_id:plan.preview_id,confirm:g('launch-confirm').checked});discard();openJob(started.id)}
             catch(e){s.className='bad';s.textContent=e.message;if(e.code==='preview_stale'||e.code==='preview_unknown')plan=null}});
             async function jobs(){try{const r=await fetch('/api/launch/jobs',{cache:'no-store'});const d=await r.json();g('launch-disabled').hidden=d.enabled!==false;g('launch-form').hidden=d.enabled===false;
             const body=g('launch-jobs');body.replaceChildren();for(const j of d.jobs||[]){const tr=mk('tr');for(const v of [j.label,stateText[j.state]??j.state,j.run_id??'—',dur(j.elapsed_ms)])tr.append(mk('td',v));
             const td=mk('td');const b=mk('button','{{t:launch.open}}');b.type='button';b.addEventListener('click',()=>openJob(j.id));td.append(b);tr.append(td);body.append(tr)}
-            g('launch-jobs-empty').hidden=(d.jobs||[]).length>0||!!job}catch(e){}finally{setTimeout(jobs,3000)}}
+            g('launch-jobs-empty').hidden=(d.jobs||[]).length>0||!!job;announce(d.jobs||[])}catch(e){}finally{setTimeout(jobs,3000)}}
+            const baseTitle=document.title,announced=new Set();let primed=false;
+            function announce(list){const waiting=list.filter(j=>j.waiting);document.title=(waiting.length?'('+waiting.length+') {{t:launch.waiting_for_you}} · ':'')+baseTitle;
+            for(const j of waiting){if(announced.has(j.id))continue;announced.add(j.id);if(primed&&'Notification'in window&&Notification.permission==='granted'){const n=new Notification('{{t:launch.waiting_for_you}}',{body:j.label+(j.run_id?' · '+j.run_id:''),tag:j.id});n.onclick=()=>{focus();openJob(j.id)}}}
+            for(const id of [...announced])if(!waiting.some(j=>j.id===id))announced.delete(id);primed=true}
+            function askToNotify(){if('Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}
             function openJob(id){job=id;clearTimeout(jobTimer);g('launch-job').hidden=false;g('launch-steps').replaceChildren();g('launch-tail').textContent='';pollJob();g('launch-job').scrollIntoView({block:'start'})}
             async function pollJob(){const id=job;if(!id)return;let v;try{const r=await fetch('/api/launch/jobs/'+encodeURIComponent(id),{cache:'no-store'});if(!r.ok)throw Error();v=await r.json()}catch(e){g('launch-job-status').textContent='{{t:launch.unreachable}}';jobTimer=setTimeout(pollJob,4000);return}
             if(id!==job)return;jobView=v;let timeline=null;if(v.run_id&&(v.narration||[]).length){try{const r=await fetch('/api/runs/'+encodeURIComponent(v.run_id)+'?job='+encodeURIComponent(id),{cache:'no-store'});if(r.ok)timeline=await r.json()}catch(e){}}
@@ -203,7 +208,7 @@ final class RunLauncherUi {
             g('launch-attach').addEventListener('click',async()=>{const s=g('launch-attach-status');s.className='';try{const j=await api('attach',{project:g('launch-project').value,run_id:g('launch-attach-run').value.trim()});s.textContent='';openJob(j.id)}catch(e){s.className='bad';s.textContent=e.message}});
                         g('launch-cancel').addEventListener('click',async()=>{if(!job)return;try{await api('cancel',{job});pollJob()}catch(e){g('launch-job-status').textContent=e.message}});
             g('launch-open-run').addEventListener('click',()=>{if(jobView&&jobView.run_id)window.overseerOpenRun(jobView.run_id,job)});
-            g('launch-answer').addEventListener('click',async()=>{const s=g('launch-answer-status');if(!jobView)return;const p={use:{}};const st=g('launch-switch-stage').value,pr=g('launch-switch-profile').value;if(st&&pr)p.use[st]=pr;
+            g('launch-answer').addEventListener('click',async()=>{askToNotify();const s=g('launch-answer-status');if(!jobView)return;const p={use:{}};const st=g('launch-switch-stage').value,pr=g('launch-switch-profile').value;if(st&&pr)p.use[st]=pr;
             try{const started=await api('answer',{project:jobView.project,run_id:jobView.run_id,decision:g('launch-choice').value,note:g('launch-note').value,confirm:g('launch-answer-confirm').checked,params:p});s.textContent='';g('launch-answer-confirm').checked=false;openJob(started.id)}
             catch(e){s.className='bad';s.textContent=e.message}});
             g('launch-land-go').addEventListener('click',async()=>{const s=g('launch-land-status');if(!jobView)return;

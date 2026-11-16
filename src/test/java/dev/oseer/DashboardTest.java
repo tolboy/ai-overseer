@@ -116,6 +116,8 @@ public final class DashboardTest implements Suite {
             check.contains("runs section is on the page", page.body(), "Запуски");
             check.contains("one cost formatter for every cost on the page", page.body(), "function costText(usd,unpriced)");
             String launchPage = page.body();
+            check.that("a waiting job badges the tab title", launchPage.contains("document.title=(waiting.length?"));
+            check.that("notifications are asked for on a click, not on load", launchPage.contains("addEventListener('click',async()=>{askToNotify();"));
             for (String leftover : List.of("Run / задача", "<th>Review</th>", "<th>Gate</th>", "'Dry run'", "Task use:", "Effort (custom)", "✓ pong", "'Ping'", "review assurance:"))
                 check.that("no untranslated leftover " + leftover + " on the Russian page", !launchPage.contains(leftover));
             check.that("a waiting decision comes before the job facts",
