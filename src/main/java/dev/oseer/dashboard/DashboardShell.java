@@ -82,7 +82,7 @@ final class DashboardShell {
             <div class="kpi"><small>{{t:shell.spending_across_listed_runs}}</small><b id="kpi-cost-value">—</b><small id="kpi-cost-note"></small></div>
             </div>
             <h2>{{t:shell.who_works_on_the_next}}</h2>
-            <p class="muted">{{t:shell.based_on_personal_policy_before}} <code>use:</code> {{t:shell.tasks_cli_flags_and_jev}}</p>
+            <p class="muted">{{t:shell.overview_lineup_note}}</p>
             <div class="cast" id="overview-cast"></div>
             <h2>{{t:shell.recent_runs}}</h2>
             <ol class="recent" id="overview-recent"></ol><p id="overview-recent-empty" class="empty" hidden>{{t:shell.no_runs_yet_start_with}} <code>oseer run &lt;task&gt; --dry-run</code>.</p>

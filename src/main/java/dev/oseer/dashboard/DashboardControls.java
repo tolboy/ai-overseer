@@ -76,7 +76,7 @@ final class DashboardControls {
             taskEdit={...request,preview_sha256:result.preview_sha256};const p=result.preview,e=result.exports;
             $('next-cast').textContent=p.would_run.map(plannedDispatch).join('\\n');$('next-budget').textContent=previewText(p);$('next-problems').textContent=problemText(p);
             $('task-edit-file').textContent=result.file;$('task-edit-diff').textContent=result.diff;$('task-apply').disabled=!result.apply_allowed;
-            $('next-dry-command').value=e?.dry_run_command??'';$('next-run-command').value=e?.run_command??'';$('next-yaml').value=e?.task_overlay??'';
+            $('next-dry-command').value=e?.dry_run_command??'';$('next-run-command').value=e?.run_command??'';const overlay=e?.task_overlay??'';$('next-yaml').value=/^\\s*(use:\\s*)?\\{\\}\\s*$/.test(overlay)?'':overlay;
             for(const button of document.querySelectorAll('[data-next-copy]'))button.disabled=!$(button.dataset.nextCopy).value;
             $('next-result').hidden=false;$('next-status').textContent=!p.settings_ok?'{{t:next.there_are_reasons_for_rejection}}':e?'{{t:next.lineup_and_budget_validated_you}}':'{{t:next.lineup_and_budget_validated_save}}';
             }catch(e){if(generation===nextGeneration)$('next-status').textContent=e.message}finally{if(nextData)$('next-preview').disabled=false}}
