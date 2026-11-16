@@ -97,7 +97,7 @@ public final class DecisionPage implements AutoCloseable {
             try {
                 handle(exchange);
             } catch (Exception failed) {
-                send(exchange, 500, HTML, page("Overseer · ошибка страницы решения",
+                send(exchange, 500, HTML, page("{{t:decision.overseer_decision_page_error}}",
                         "<p class=bad>" + escape(String.valueOf(failed.getMessage())) + "</p>"));
             }
         });
@@ -289,7 +289,7 @@ public final class DecisionPage implements AutoCloseable {
             try {
                 notice = previewer.open();
             } catch (Exception failed) {
-                notice = "не удалось запустить кандидата: " + failed.getMessage();
+                notice = "{{t:decision.could_not_start_candidate}} " + failed.getMessage();
             }
             send(exchange, 200, HTML, render(null, notice));
         } else if ("decide".equals(rest) && "POST".equals(method)) {
@@ -326,10 +326,10 @@ public final class DecisionPage implements AutoCloseable {
         Map<String, Object> summary = readSummary();
         StringBuilder html = new StringBuilder();
         boolean pending = decision != null && decision.state() == HumanDecision.State.PENDING;
-        html.append("<h1>").append(pending ? "Нужно ваше решение" : "Решение").append("</h1>");
+        html.append("<h1>").append(pending ? "{{t:decision.your_decision_is_needed}}" : "{{t:dash.decision}}").append("</h1>");
         html.append("<p class=muted>run <code>").append(escape(runId)).append("</code>");
         Object taskId = summary.get("task_id");
-        if (taskId != null) html.append(" · задача <code>").append(escape(String.valueOf(taskId))).append("</code>");
+        if (taskId != null) html.append(" {{t:decision.task}} <code>").append(escape(String.valueOf(taskId))).append("</code>");
         html.append("</p>");
 
         if (notice != null) html.append("<div class=note>").append(escape(notice)).append("</div>");
@@ -337,19 +337,19 @@ public final class DecisionPage implements AutoCloseable {
             if (Boolean.TRUE.equals(result.get("ok"))) {
                 Object recorded = result.get("decision") instanceof Map<?, ?> map ? map.get("decision") : null;
                 Object note = result.get("decision") instanceof Map<?, ?> map ? map.get("note") : null;
-                html.append("<div class=ok>Записано: <b>").append(escape(String.valueOf(recorded)))
-                        .append("</b>. Ничего не слито").append(". ")
+                html.append("<div class=ok>{{t:decision.recorded}} <b>").append(escape(String.valueOf(recorded)))
+                        .append("</b>{{t:decision.nothing_merged}}").append(". ")
                         .append(escape(afterDecision(String.valueOf(recorded),
                                 note != null && !String.valueOf(note).isBlank()))).append("</div>");
             } else {
-                html.append("<div class=bad>Не записано: <b>").append(escape(String.valueOf(result.get("code"))))
+                html.append("<div class=bad>{{t:decision.not_recorded}} <b>").append(escape(String.valueOf(result.get("code"))))
                         .append("</b> — ").append(escape(String.valueOf(result.get("message")))).append("</div>");
             }
         }
 
         Object reason = decision != null && decision.reason() != null ? decision.reason() : summary.get("reason");
         Object why = summary.get("decision_reason");
-        html.append("<h2>Итог прогона</h2><p><b>").append(escape(outcomeLine(String.valueOf(reason)))).append("</b>");
+        html.append("<h2>{{t:decision.run_outcome}}</h2><p><b>").append(escape(outcomeLine(String.valueOf(reason)))).append("</b>");
         if (why != null && !String.valueOf(why).equals(String.valueOf(reason))) {
             html.append("<br><span class=muted>").append(escape(String.valueOf(why))).append("</span>");
         }
@@ -363,20 +363,20 @@ public final class DecisionPage implements AutoCloseable {
         html.append(browserChecks(scenarios, !shots.isEmpty()));
 
         if (previewer != null && pending) {
-            html.append("<h2>Проверить самому</h2><form method=post action=try>")
-                    .append("<button>Открыть кандидата в браузере Orca<small>запустит его той же командой, "
-                            + "что и проверка, и откроет вкладкой в этом worktree; остановится вместе "
-                            + "с этой страницей</small></button></form>");
+            html.append("<h2>{{t:decision.verify_manually}}</h2><form method=post action=try>")
+                    .append("<button>{{t:decision.open_candidate_in_orca_browser}}<small>{{t:decision.will_start_it_with_the}} "
+                            + "{{t:decision.as_the_check_and_open}} "
+                            + "{{t:decision.with_this_page}}</small></button></form>");
         }
 
         if (summary.get("model_check") instanceof Map<?, ?> checked
                 && !Boolean.TRUE.equals(checked.get("ok"))) {
-            html.append("<h2>Проверка перед запуском остановилась</h2><p><code>")
+            html.append("<h2>{{t:decision.pre_run_check_stopped}}</h2><p><code>")
                     .append(escape(String.valueOf(checked.get("code")))).append("</code></p>");
             html.append("<p>").append("check_strict_cost_unproven".equals(checked.get("code"))
-                    ? "Денежное резервирование для диагностических запросов пока не поддерживается. Для запуска с прежним строгим лимитом можно явно отключить автоматическую проверку в личных настройках."
-                    : "Восстановите вход CLI или доступ к API-модели, затем повторите проверку.")
-                    .append(" Новые рабочие вызовы не выполнялись.</p>");
+                    ? "{{t:decision.budget_reservations_for_diagnostic_requests}}"
+                    : "{{t:decision.restore_cli_sign_in_or}}")
+                    .append(" {{t:decision.no_new_execution_calls_were}}</p>");
             if (checked.get("results") instanceof List<?> rows) for (Object row : rows) {
                 if (row instanceof Map<?, ?> item && !Boolean.TRUE.equals(item.get("ok")))
                     html.append("<p class=bad>").append(escape(String.valueOf(item.get("profile"))))
@@ -385,13 +385,13 @@ public final class DecisionPage implements AutoCloseable {
             }
         }
         if (pending) {
-            html.append("<h2>Ваше решение</h2><form method=post action=decide>")
+            html.append("<h2>{{t:decision.your_decision}}</h2><form method=post action=decide>")
                     .append("<input type=hidden name=expected value='")
                     .append(escape(decision.updatedAt().toString())).append("'>")
-                    .append("<label>Заметка (для «Отклонить» — что исправить; она уйдёт исполнителю)"
+                    .append("<label>{{t:decision.note_for_reject_what_to}}"
                         + "<textarea name=note rows=3></textarea></label>");
             if (decision.options().contains("waive")) {
-                html.append("<label>Id замечания для «Принять пробел» (только contract_gap)"
+                html.append("<label>{{t:decision.finding_id_for_accept_gap}}"
                         + "<input name=finding autocomplete=off></label>");
             }
             html.append("<div class=buttons>");
@@ -403,11 +403,11 @@ public final class DecisionPage implements AutoCloseable {
             }
             html.append("</div></form>");
         } else if (decision != null) {
-            html.append("<h2>Решение принято</h2><p><b>").append(escape(String.valueOf(decision.decision())))
+            html.append("<h2>{{t:decision.decision_recorded}}</h2><p><b>").append(escape(String.valueOf(decision.decision())))
                     .append("</b> · ").append(escape(String.valueOf(decision.actor()))).append(" · ")
                     .append(escape(String.valueOf(decision.updatedAt()))).append("</p>");
         } else {
-            html.append("<p class=bad>У этого прогона нет ожидающего решения.</p>");
+            html.append("<p class=bad>{{t:decision.this_run_has_no_pending}}</p>");
         }
 
         String goal = goal(summary);
@@ -415,14 +415,14 @@ public final class DecisionPage implements AutoCloseable {
 
         List<String> changed = changedFiles(summary);
         if (!changed.isEmpty()) {
-            html.append("<h2>Изменённые файлы</h2><ul>");
+            html.append("<h2>{{t:decision.changed_files}}</h2><ul>");
             for (String file : changed) html.append("<li><code>").append(escape(file)).append("</code></li>");
             html.append("</ul>");
         }
 
         if (!shots.isEmpty()) {
-            html.append("<h2 id=shots>Скриншоты</h2><p class=muted>В том порядке, в каком их снял браузер. "
-                    + "Что на снимке проверено — во всплывающей подсказке.</p><div class=shots>");
+            html.append("<h2 id=shots>{{t:decision.screenshots}}</h2><p class=muted>{{t:decision.in_the_order_the_browser}} "
+                    + "{{t:decision.the_tooltip_shows_what_was}}</p><div class=shots>");
             for (int index = 0; index < shots.size(); index++) {
                 Shot shot = shots.get(index);
                 html.append("<figure");
@@ -432,7 +432,7 @@ public final class DecisionPage implements AutoCloseable {
             }
             html.append("</div>");
         }
-        return page("Overseer · решение", html.toString());
+        return page("{{t:decision.overseer_decision}}", html.toString());
     }
 
     /**
@@ -448,10 +448,10 @@ public final class DecisionPage implements AutoCloseable {
     static String findings(Map<String, Object> summary) {
         List<Map<String, Object>> open = openFindings(summary);
         if (open.isEmpty()) return "";
-        StringBuilder html = new StringBuilder("<h2>Замечания проверяющих (").append(open.size())
-                .append(")</h2><div class=note>Проверки прошли, но проверяющие оставили замечания, "
-                        + "которые петлю не остановили (останавливает только P1). Прочитайте их до решения: "
-                        + "«Отклонить» с заметкой вернёт работу исполнителю вместе с ними.</div>");
+        StringBuilder html = new StringBuilder("<h2>{{t:decision.reviewer_findings}}").append(open.size())
+                .append(")</h2><div class=note>{{t:decision.checks_passed_but_reviewers_left}} "
+                        + "{{t:decision.that_did_not_stop_the}} "
+                        + "{{t:decision.reject_with_a_note_sends}}</div>");
         for (Map<String, Object> finding : open) {
             html.append("<div class=finding><div><span class=sev>").append(escape(String.valueOf(finding.get("severity"))))
                     .append("</span> ").append(escape(category(finding.get("category")))).append(" · ")
@@ -461,8 +461,8 @@ public final class DecisionPage implements AutoCloseable {
             }
             html.append("</div><p>")
                     .append(escape(String.valueOf(finding.get("message")))).append("</p>");
-            for (String[] field : List.of(new String[] {"expected", "Ожидалось"}, new String[] {"actual", "На деле"},
-                    new String[] {"suggestion", "Предложение"})) {
+            for (String[] field : List.of(new String[] {"expected", "{{t:decision.expected}}"}, new String[] {"actual", "{{t:decision.actual}}"},
+                    new String[] {"suggestion", "{{t:decision.suggestion}}"})) {
                 Object value = finding.get(field[0]);
                 if (value instanceof String text && !text.isBlank()) {
                     html.append("<p class=muted><b>").append(field[1]).append(":</b> ").append(escape(text)).append("</p>");
@@ -536,16 +536,16 @@ public final class DecisionPage implements AutoCloseable {
 
     private static String category(Object category) {
         return switch (String.valueOf(category)) {
-            case "product_defect" -> "дефект продукта";
-            case "contract_gap" -> "пробел в приёмке задачи";
-            case "evidence_gap" -> "не хватает доказательств";
+            case "product_defect" -> "{{t:decision.product_defect}}";
+            case "contract_gap" -> "{{t:decision.gap_in_task_acceptance_criteria}}";
+            case "evidence_gap" -> "{{t:decision.insufficient_evidence}}";
             default -> String.valueOf(category);
         };
     }
 
     private String stages(Map<String, Object> summary) {
         if (!(summary.get("steps") instanceof List<?> steps) || steps.isEmpty()) return "";
-        StringBuilder rows = new StringBuilder("<h2>Этапы</h2><table><tr><th>Этап</th><th>Кто</th><th>Итог</th></tr>");
+        StringBuilder rows = new StringBuilder("<h2>{{t:decision.stages}}</h2><table><tr><th>{{t:decision.stage}}</th><th>{{t:decision.who}}</th><th>{{t:decision.result}}</th></tr>");
         for (Object item : steps) {
             if (!(item instanceof Map<?, ?> step)) continue;
             Object stage = step.get("stage") != null ? step.get("stage") : step.get("step");
@@ -553,14 +553,14 @@ public final class DecisionPage implements AutoCloseable {
                     : step.get("profile") + (step.get("vendor") == null ? "" : " · " + step.get("vendor"));
             long blockers = step.get("blocking_findings") instanceof Number count ? count.longValue() : 0;
             boolean failedVerdict = "fail".equals(step.get("verdict"));
-            String outcome = blockers > 0 || failedVerdict ? "не прошёл"
+            String outcome = blockers > 0 || failedVerdict ? "{{t:decision.failed}}"
                     : Boolean.TRUE.equals(step.get("ok")) ? "ok"
-                    : Boolean.FALSE.equals(step.get("ok")) ? "не прошёл" : "—";
+                    : Boolean.FALSE.equals(step.get("ok")) ? "{{t:decision.failed}}" : "—";
             if (step.get("code") != null && !"ok".equals(step.get("code")) && blockers == 0 && !failedVerdict) {
                 outcome += " · " + step.get("code");
             }
-            if (step.get("reused_from") != null) outcome += " · взято из " + step.get("reused_from");
-            if (blockers > 0) outcome += " · блокирующих замечаний: " + blockers;
+            if (step.get("reused_from") != null) outcome += " {{t:decision.taken_from}} " + step.get("reused_from");
+            if (blockers > 0) outcome += " {{t:decision.blocking_findings}} " + blockers;
             rows.append("<tr><td>").append(escape(String.valueOf(stage))).append("</td><td>")
                     .append(escape(who)).append("</td><td>").append(escape(outcome)).append("</td></tr>");
         }
@@ -642,7 +642,7 @@ public final class DecisionPage implements AutoCloseable {
             own = split[0].strip();
             added = split.length > 1 ? split[1].strip() : "";
         }
-        StringBuilder html = new StringBuilder("<h2>Цель</h2><p>").append(lines(own)).append("</p>");
+        StringBuilder html = new StringBuilder("<h2>{{t:decision.goal}}</h2><p>").append(lines(own)).append("</p>");
         if (added.isEmpty()) return html.toString();
         List<String> paragraphs = new ArrayList<>();
         for (String paragraph : added.split("\\R\\s*\\R")) {
@@ -650,11 +650,11 @@ public final class DecisionPage implements AutoCloseable {
         }
         boolean deliverable = paragraphs.stream().anyMatch(paragraph -> paragraph.startsWith("Deliverable:"));
         html.append("<details><summary>")
-                .append(deliverable ? "Уточнения к цели и ожидаемый результат" : "Подробнее о цели")
+                .append(deliverable ? "{{t:decision.goal_details_and_expected_outcome}}" : "{{t:decision.more_about_the_goal}}")
                 .append("</summary>");
         for (String paragraph : paragraphs) {
             if (paragraph.startsWith("Deliverable:")) {
-                html.append("<p><b>Результат:</b> ")
+                html.append("<p><b>{{t:decision.result_2}}</b> ")
                         .append(lines(paragraph.substring("Deliverable:".length()).strip())).append("</p>");
             } else {
                 html.append(clauses(paragraph));
@@ -747,7 +747,7 @@ public final class DecisionPage implements AutoCloseable {
             String viewport = viewport(scenario);
             Path base = inRun(scenario.get("screenshot"), files);
             Frame frame = base == null ? null
-                    : frames.computeIfAbsent(base, key -> new Frame()).taken(viewport + " · страница открыта");
+                    : frames.computeIfAbsent(base, key -> new Frame()).taken(viewport + " {{t:decision.page_opened}}");
             int clicks = 0;
             for (Map<String, Object> step : steps(scenario)) {
                 boolean failed = Boolean.FALSE.equals(step.get("ok"));
@@ -760,7 +760,7 @@ public final class DecisionPage implements AutoCloseable {
                 // the press, so every scenario that presses first at step 1 shares one picture.
                 Path shot = inRun(step.get("screenshot_after"), files);
                 frame = shot == null ? null : frames.computeIfAbsent(shot, key -> new Frame())
-                        .taken(viewport + " · после " + clicks + "-го нажатия " + target(step));
+                        .taken(viewport + " {{t:decision.after}} " + clicks + "{{t:decision.click_s}} " + target(step));
                 if (frame != null && failed) frame.checked(stepText(step), true);
             }
         }
@@ -769,8 +769,8 @@ public final class DecisionPage implements AutoCloseable {
             if (shots.size() >= MAX_SHOTS) return shots;
             Frame frame = entry.getValue();
             shots.add(new Shot(entry.getKey(), String.join("; ", frame.taken)
-                    + (frame.failed ? " · ✗ проверка не прошла" : ""),
-                    frame.checked.isEmpty() ? "" : "Проверено на снимке:\n" + String.join("\n", frame.checked)));
+                    + (frame.failed ? " {{t:decision.check_failed}}" : ""),
+                    frame.checked.isEmpty() ? "" : "{{t:decision.checked_in_screenshot}}\n" + String.join("\n", frame.checked)));
         }
         for (Path file : files) {
             if (shots.size() >= MAX_SHOTS) break;
@@ -813,25 +813,25 @@ public final class DecisionPage implements AutoCloseable {
             viewports.add(viewport(scenario));
         }
         int total = scenarios.size();
-        StringBuilder html = new StringBuilder("<h2>Что проверил браузер</h2><p>");
+        StringBuilder html = new StringBuilder("<h2>{{t:decision.what_the_browser_checked}}</h2><p>");
         if (failed.isEmpty()) {
             html.append("<b class=pass>✓ ").append(total).append(' ')
-                    .append(plural(total, "проверка", "проверки", "проверок"))
-                    .append(total == 1 ? ": прошла" : ": все прошли").append("</b>");
+                    .append(plural(total, "{{t:shell.check}}", "{{t:decision.checks}}", "{{t:decision.checks_2}}"))
+                    .append(total == 1 ? "{{t:decision.passed}}" : "{{t:decision.all_passed}}").append("</b>");
         } else {
-            html.append("<b class=bad-inline>✗ ").append(failed.size()).append(" из ").append(total).append(' ')
-                    .append(plural(total, "проверки", "проверок", "проверок"))
-                    .append(plural(failed.size(), " не прошла", " не прошли", " не прошли")).append("</b>");
+            html.append("<b class=bad-inline>✗ ").append(failed.size()).append(" {{t:decision.of}} ").append(total).append(' ')
+                    .append(plural(total, "{{t:decision.checks}}", "{{t:decision.checks_2}}", "{{t:decision.checks_2}}"))
+                    .append(plural(failed.size(), " {{t:decision.failed_2}}", " {{t:decision.failed_3}}", " {{t:decision.failed_3}}")).append("</b>");
         }
         html.append(" <span class=muted>· ").append(escape(String.join(", ", viewports)));
-        if (shotsBelow) html.append(" · <a href='#shots'>скриншоты ниже</a>");
+        if (shotsBelow) html.append(" · <a href='#shots'>{{t:decision.screenshots_below}}</a>");
         html.append("</span></p>");
         if (!failed.isEmpty()) {
             html.append("<ul>");
             for (Map<String, Object> scenario : failed) html.append("<li>").append(scenarioLine(scenario)).append("</li>");
             html.append("</ul>");
         }
-        html.append("<details><summary>Все проверки по шагам</summary><ul>");
+        html.append("<details><summary>{{t:decision.all_checks_by_step}}</summary><ul>");
         for (Map<String, Object> scenario : scenarios) html.append("<li>").append(scenarioLine(scenario)).append("</li>");
         return html.append("</ul></details>").toString();
     }
@@ -842,7 +842,7 @@ public final class DecisionPage implements AutoCloseable {
         List<String> parts = new ArrayList<>();
         for (Map<String, Object> step : steps(scenario)) parts.add(stepText(step));
         String raw = String.valueOf(scenario.get("raw"));
-        if (parts.isEmpty() && raw.contains("no-console-errors")) parts.add("в консоли нет ошибок");
+        if (parts.isEmpty() && raw.contains("no-console-errors")) parts.add("{{t:decision.no_console_errors}}");
         StringBuilder line = new StringBuilder(ok ? "✓ " : "✗ ").append(escape(viewport(scenario))).append(": ")
                 .append(escape(String.join(" → ", parts)));
         if (!ok && scenario.get("why") != null) {
@@ -934,9 +934,9 @@ public final class DecisionPage implements AutoCloseable {
     static String stepText(Map<String, Object> step) {
         String assertion = String.valueOf(step.get("assertion"));
         String text = switch (assertion) {
-            case "click" -> "клик по " + target(step);
-            case "visible" -> target(step) + " виден";
-            case "hidden" -> target(step) + " скрыт";
+            case "click" -> "{{t:decision.click_on}} " + target(step);
+            case "visible" -> target(step) + " {{t:decision.visible}}";
+            case "hidden" -> target(step) + " {{t:decision.hidden}}";
             default -> target(step) + " " + assertion;
         };
         return text + (Boolean.TRUE.equals(step.get("ok")) ? " ✓" : Boolean.FALSE.equals(step.get("ok")) ? " ✗" : "");
@@ -1043,18 +1043,18 @@ public final class DecisionPage implements AutoCloseable {
         if (reason == null) return "";
         String prefix = "every stage that ran passed";
         if (!reason.startsWith(prefix)) return reason;
-        return "все этапы, которые выполнялись, прошли" + reason.substring(prefix.length())
-                .replace("project baseline reused from ", "базовая проверка проекта взята из ")
+        return "{{t:decision.all_stages_that_ran_passed}}" + reason.substring(prefix.length())
+                .replace("project baseline reused from ", "{{t:decision.project_baseline_check_taken_from}} ")
                 .replace(" were not re-run: they passed this exact tree on run ",
-                        " не запускались снова: они уже прошли это же дерево в прогоне ")
+                        " {{t:decision.were_not_rerun_they_already}} ")
                 .replace(" and neither the source nor the contract has changed since",
-                        ", исходники и контракт с тех пор не менялись")
-                .replace(". WARNING: ", ". Внимание: ")
+                        "{{t:decision.source_files_and_contract_have}}")
+                .replace(". WARNING: ", "{{t:decision.warning}} ")
                 .replace(" last judged an earlier tree; code changed after that and was not judged again",
-                        " в последний раз судили более раннее дерево; код после этого менялся и заново не судился")
-                .replace(". Review assurance: ", ". Независимость проверки: ")
-                .replace(". The declared workflow did not finish: ", ". Объявленный процесс не закончен: ")
-                .replace(" never completed", " так и не завершились");
+                        " {{t:decision.last_reviewed_an_earlier_tree}}")
+                .replace(". Review assurance: ", "{{t:decision.review_independence}} ")
+                .replace(". The declared workflow did not finish: ", "{{t:decision.declared_workflow_is_incomplete}} ")
+                .replace(" never completed", " {{t:decision.never_completed}}");
     }
 
     /**
@@ -1081,46 +1081,46 @@ public final class DecisionPage implements AutoCloseable {
 
     static String label(String option) {
         return switch (option) {
-            case "accept" -> "Принять";
-            case "reject" -> "Отклонить";
-            case "retry" -> "Повторить";
-            case "abort" -> "Прекратить";
-            case "advance" -> "Дальше";
-            case "waive" -> "Принять пробел";
-            case "switch" -> "Переключить вендора";
-            case "apply" -> "Применить правку";
-            case "replan" -> "Перепланировать";
-            case "proceed" -> "Продолжить с этим планом";
+            case "accept" -> "{{t:decision.accept}}";
+            case "reject" -> "{{t:decision.reject}}";
+            case "retry" -> "{{t:decision.retry}}";
+            case "abort" -> "{{t:decision.stop}}";
+            case "advance" -> "{{t:decision.continue}}";
+            case "waive" -> "{{t:decision.accept_gap}}";
+            case "switch" -> "{{t:decision.switch_vendor}}";
+            case "apply" -> "{{t:decision.apply_change}}";
+            case "replan" -> "{{t:decision.replan}}";
+            case "proceed" -> "{{t:decision.continue_with_this_plan}}";
             default -> option;
         };
     }
 
     static String hint(String option) {
         return switch (option) {
-            case "accept" -> "кандидат принят; ничего не сливается, слияние — отдельный шаг";
-            case "reject" -> "с заметкой — вернуть исполнителю на доработку; без заметки — закрыть без продолжения";
-            case "retry" -> "запустить снова; вердикты по неизменному дереву сохранятся";
-            case "abort" -> "закрыть задачу без продолжения";
-            case "advance" -> "причина устранена, начать следующий прогон";
-            case "waive" -> "закрыть остановку, где остались только пробелы контракта; дефект продукта так не закрывается";
-            case "switch" -> "перейти на предложенного вендора и продолжить";
-            case "apply" -> "применить предложенную правку контракта и продолжить";
-            case "replan" -> "снова запустить планировщика; писатели не получают отклонённый контракт";
-            case "proceed" -> "принять этот контракт несмотря на возражение и запустить писателей";
+            case "accept" -> "{{t:decision.candidate_accepted_nothing_is_merged}}";
+            case "reject" -> "{{t:decision.with_a_note_return_to}}";
+            case "retry" -> "{{t:decision.run_again_verdicts_for_the}}";
+            case "abort" -> "{{t:decision.close_the_task_without_continuing}}";
+            case "advance" -> "{{t:decision.cause_resolved_start_the_next}}";
+            case "waive" -> "{{t:decision.clear_a_stop_where_only}}";
+            case "switch" -> "{{t:decision.switch_to_the_suggested_vendor}}";
+            case "apply" -> "{{t:decision.apply_the_suggested_contract_change}}";
+            case "replan" -> "{{t:decision.rerun_the_planner_writers_do}}";
+            case "proceed" -> "{{t:decision.accept_this_contract_despite_the}}";
             default -> "";
         };
     }
 
     private static String afterDecision(String choice, boolean withNote) {
         if ("reject".equals(choice) && withNote) {
-            return "Overseer возвращает работу исполнителю с вашей заметкой; ход виден во вкладке нарратива.";
+            return "{{t:decision.overseer_returns_work_to_the}}";
         }
         return switch (choice) {
             case "retry", "advance", "switch", "apply", "replan", "proceed" ->
-                    "Overseer продолжает петлю; ход виден во вкладке нарратива.";
-            case "accept" -> "Дальше — проверить diff и при желании `oseer land`.";
-            case "waive" -> "Пробел контракта принят; ничего не выложено.";
-            default -> "Вкладку можно закрыть.";
+                    "{{t:decision.overseer_continues_the_loop_progress}}";
+            case "accept" -> "{{t:decision.next_check_the_diff_and}} `oseer land`.";
+            case "waive" -> "{{t:decision.contract_gap_accepted_nothing_has}}";
+            default -> "{{t:decision.you_can_close_this_tab}}";
         };
     }
 
@@ -1153,7 +1153,7 @@ public final class DecisionPage implements AutoCloseable {
     }
 
     private static String page(String title, String body) {
-        return "<!doctype html><html lang=ru><meta charset=utf-8>"
+        return "<!doctype html><html lang={{t:meta.html_lang}}><meta charset=utf-8>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'><title>" + escape(title) + "</title>"
                 + "<style>:root{color-scheme:dark;font:15px/1.5 system-ui;background:#11171d;color:#e5edf4}"
                 + "body{max-width:1100px;margin:28px auto;padding:0 20px}h1{font-size:28px;margin:0 0 4px}"
@@ -1177,7 +1177,7 @@ public final class DecisionPage implements AutoCloseable {
     }
 
     private static void send(HttpExchange exchange, int status, String type, String body) throws IOException {
-        send(exchange, status, type, body.getBytes(StandardCharsets.UTF_8));
+        send(exchange, status, type, Messages.render(body, Messages.language(exchange)).getBytes(StandardCharsets.UTF_8));
     }
 
     private static void send(HttpExchange exchange, int status, String type, byte[] body) throws IOException {

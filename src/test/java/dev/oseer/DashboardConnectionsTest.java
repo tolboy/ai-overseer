@@ -139,7 +139,7 @@ public final class DashboardConnectionsTest implements Suite {
         return payload;
     }
     private Map<String, Object> action(String revision) { return Map.of("id", "test", "revision", revision); }
-    private HttpRequest.Builder request(String path) { return HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(10)); }
+    private HttpRequest.Builder request(String path) { return HttpRequest.newBuilder(URI.create(base + path)).header("Accept-Language", "ru").timeout(Duration.ofSeconds(10)); }
     private HttpResponse<String> get(String path) throws Exception { return client.send(request(path).build(), HttpResponse.BodyHandlers.ofString()); }
     private HttpResponse<String> post(String operation, Map<String, Object> payload) throws Exception { return post(operation, payload, token, null); }
     private HttpResponse<String> post(String operation, Map<String, Object> payload, String suppliedToken, String origin) throws Exception {

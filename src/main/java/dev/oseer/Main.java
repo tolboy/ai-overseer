@@ -1693,7 +1693,7 @@ public final class Main {
      */
     /**
      * The decision page for a run that is already waiting: the `do` that stopped at it has
-     * exited, timed out, or ran outside the supervisor. Opens "Overseer · решение" in this
+     * exited, timed out, or ran outside the supervisor. Opens the Overseer decision page in this
      * worktree's Orca browser and waits for the answer exactly as `do` does, continuing the
      * loop on retry, advance, switch or apply.
      */
@@ -2473,7 +2473,7 @@ public final class Main {
                 described.put("orca_tab_opened", shown);
                 result.put("decision_page", described);
                 narration.line(shown
-                        ? "      decide in Orca: the \"Overseer · решение\" tab in this worktree has a button "
+                        ? "      decide in Orca: the Overseer decision tab in this worktree has a button "
                                 + "for each option (or open " + page.url() + ")"
                         : "      decide here: " + page.url());
 
@@ -2977,7 +2977,7 @@ public final class Main {
                                                --wait-for-gate N  after the loop, wait up to
                                                N minutes (1..1440, default 60) for the
                                                answer. Inside an Orca worktree the decision
-                                               opens as a "Overseer · решение" browser tab
+                                               opens as an Overseer decision browser tab
                                                with a button per option; the page, oseer
                                                approve and the Orca gate all count, and a
                                                retry, advance, switch or apply answered
@@ -3036,7 +3036,7 @@ public final class Main {
                                                id of the same task (writers carry; verdicts
                                                do not). --no-start records it and prints the
                                                command instead.
-                  oseer decide <run-id>       open the decision as a "Overseer · решение" tab in this
+                  oseer decide <run-id>       open the decision as a Overseer decision tab in this
                                worktree's Orca browser, with a button per option, and
                                wait for the answer (--wait-minutes N, default 60;
                                --no-open prints the URL instead). The same checks as

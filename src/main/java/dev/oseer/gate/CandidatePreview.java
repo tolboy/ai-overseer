@@ -43,7 +43,7 @@ public final class CandidatePreview implements AutoCloseable {
         if (url == null) {
             TaskSpec.VisualQa visual = contract();
             if (visual == null) {
-                return "у задачи нет visual_qa: Overseer не знает, как запустить кандидата";
+                return "{{t:preview.task_has_no_visual_qa}}";
             }
             String address = visual.url() != null && !visual.url().isBlank()
                     ? visual.url() : "http://127.0.0.1:4173/";
@@ -51,24 +51,24 @@ public final class CandidatePreview implements AutoCloseable {
             String start = declared ? visual.start() : VisualQaRunner.defaultStart(root);
             if (!VisualQaRunner.httpOk(address)) {
                 if (start == null) {
-                    return "по адресу " + address + " никто не отвечает, а команда запуска не задана";
+                    return "{{t:preview.at_address}} " + address + " {{t:preview.nothing_responds_and_no_start}}";
                 }
                 server = VisualQaRunner.startServer(root, start, log);
                 if (!VisualQaRunner.waitForHttp(address, Duration.ofSeconds(45))) {
                     close();
-                    return "запустил `" + start + "`, но " + address + " так и не ответил; вывод в " + log;
+                    return "{{t:preview.started}} `" + start + "`{{t:preview.but}} " + address + " {{t:preview.never_responded_output_in}} " + log;
                 }
             } else if (declared) {
                 // The harness refuses this case; so does the preview. A stranger's app on the
                 // port would be tried in place of the candidate.
-                return "по адресу " + address + " уже отвечает какой-то сервер, а задача запускает свой: "
-                        + "остановите чужой сервер, и кнопка запустит кандидата";
+                return "{{t:preview.at_address}} " + address + " {{t:preview.a_server_is_already_responding}} "
+                        + "{{t:preview.stop_the_other_server_and}}";
             }
             url = address;
         }
         boolean shown = opener.open(url);
-        return shown ? "кандидат открыт во вкладке браузера Orca: " + url
-                : "кандидат запущен: откройте " + url;
+        return shown ? "{{t:preview.candidate_opened_in_an_orca}} " + url
+                : "{{t:preview.candidate_started_open}} " + url;
     }
 
     private TaskSpec.VisualQa contract() {

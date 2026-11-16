@@ -110,7 +110,7 @@ public final class DashboardTest implements Suite {
 
         try (var dashboard = new Dashboard(root, 0); var client = HttpClient.newHttpClient()) {
             dashboard.start();
-            var page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).build(), HttpResponse.BodyHandlers.ofString());
+            var page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("dashboard reachable over loopback", 200, page.statusCode());
             check.contains("UI treats configured fields as text", page.body(), "td.textContent");
             check.contains("runs section is on the page", page.body(), "Запуски");
@@ -128,18 +128,18 @@ public final class DashboardTest implements Suite {
             }
             check.contains("run timeline is a details element", page.body(), "createElement('details')");
             check.that("page script never assigns innerHTML from data", !page.body().contains("innerHTML"));
-            var state = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).build(), HttpResponse.BodyHandlers.ofString());
+            var state = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("state endpoint readable", 200, state.statusCode());
             check.that("API publishes no raw transcripts", !state.body().contains("secret transcript"));
             check.that("API publishes no summary goal", !state.body().contains("SECRET_GOAL_MARKER"));
             check.that("API publishes no finding message", !state.body().contains("SECRET_FINDING_MARKER"));
-            var crossOrigin = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state"))
+            var crossOrigin = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru")
                     .header("Origin", "https://example.invalid").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("other web origins cannot read state", 403, crossOrigin.statusCode());
-            var write = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state"))
+            var write = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/state")).header("Accept-Language", "ru")
                     .POST(HttpRequest.BodyPublishers.ofString("{}" )).build(), HttpResponse.BodyHandlers.ofString());
             check.eq("state projection remains read-only", 405, write.statusCode());
-            var file = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "profiles/test.yaml")).build(), HttpResponse.BodyHandlers.ofString());
+            var file = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "profiles/test.yaml")).header("Accept-Language", "ru").build(), HttpResponse.BodyHandlers.ofString());
             check.eq("dashboard cannot serve arbitrary config files", 404, file.statusCode());
         }
     }

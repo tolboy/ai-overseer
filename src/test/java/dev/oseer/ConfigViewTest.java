@@ -201,12 +201,12 @@ public final class ConfigViewTest implements Suite {
     private void servedOnDemand(Check check, Path project) throws Exception {
         try (var dashboard = new Dashboard(project, 0); var client = HttpClient.newHttpClient()) {
             dashboard.start();
-            HttpResponse<String> config = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/config"))
+            HttpResponse<String> config = client.send(HttpRequest.newBuilder(URI.create(dashboard.url() + "api/config")).header("Accept-Language", "ru")
                     .build(), HttpResponse.BodyHandlers.ofString());
             check.eq("the settings are served on their own route", 200, config.statusCode());
             check.contains("as the stage view", config.body(), "\"stages\"");
             check.contains("the connection diagnostics share the settings route", config.body(), "\"connections\"");
-            HttpResponse<String> page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).build(),
+            HttpResponse<String> page = client.send(HttpRequest.newBuilder(URI.create(dashboard.url())).header("Accept-Language", "ru").build(),
                     HttpResponse.BodyHandlers.ofString());
             check.contains("and the page has a place for them", page.body(), "Состав по стадиям");
         }

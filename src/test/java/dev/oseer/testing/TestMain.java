@@ -59,6 +59,7 @@ public final class TestMain {
                 new dev.oseer.DashboardTest(),
                 new dev.oseer.RunTimelineTest(),
                 new dev.oseer.TaskModeTest(),
+                new dev.oseer.MessagesTest(),
                 new dev.oseer.ConfigViewTest(),
                 new dev.oseer.NextRunTest(),
                 new dev.oseer.SettingsEditorTest(),

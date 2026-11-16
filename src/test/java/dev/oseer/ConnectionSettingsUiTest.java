@@ -11,7 +11,7 @@ public final class ConnectionSettingsUiTest implements Suite {
     @Override public String name() { return "connection-settings-ui"; }
 
     @Override public void run(Check check) {
-        String html = ConnectionSettingsUi.html();
+        String html = dev.oseer.dashboard.Messages.render(ConnectionSettingsUi.html(), "ru");
         check.contains("the editor has an accessible section label", html, "aria-labelledby=\"connection-editor-title\"");
         check.contains("the section offers connection creation", html, "Добавить подключение");
         check.contains("JoinGonka can be selected separately from GonkaRouter", html,
@@ -61,7 +61,7 @@ public final class ConnectionSettingsUiTest implements Suite {
                 "Нет связи с панелью. Изменения не подтверждены.");
         check.that("the default editor has no vault placeholder", !html.contains("{{OS_STORE"));
         check.that("the default editor has no password field", !html.contains("type=\"password\""));
-        String vault = ConnectionSettingsUi.html(true);
+        String vault = dev.oseer.dashboard.Messages.render(ConnectionSettingsUi.html(true), "ru");
         check.contains("a working vault can accept a write-only key", vault, "type=\"password\"");
         check.contains("the vault field is not an api-key parameter", vault, "name=\"secret\"");
         check.contains("the key is cleared before the reference is saved", vault, "secretInput.value=''");

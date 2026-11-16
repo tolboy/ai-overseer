@@ -13,7 +13,7 @@ import java.util.*;
 public final class ModelCatalogUiTest implements Suite {
     public String name(){return "model-catalog-ui";}
     public void run(Check check)throws Exception {
-        String html=ModelSettingsUi.html();
+        String html=dev.oseer.dashboard.Messages.render(ModelSettingsUi.html(),"ru");
         check.contains("panel exposes explicit classifier compatibility action",html,"verify-classifier");
         check.contains("compatibility confirmation includes the exact saved pin",html,"reported_model:p.reported_model,confirm:true");
         check.contains("classifier edits use optimistic concurrency",html,"revision:modelFormRevision");

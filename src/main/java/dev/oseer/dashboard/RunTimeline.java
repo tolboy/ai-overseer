@@ -155,6 +155,8 @@ public final class RunTimeline {
                 }
                 row.put("vendor_attempts", count);
                 if (known && count > 0) row.put("duration_ms", millis);
+                List<Map<String, Object>> failures = failedAttempts(attempts);
+                if (!failures.isEmpty()) row.put("failed_attempts", failures);
                 if (last != null) {
                     Object model = last.get("model_reported") != null ? last.get("model_reported") : last.get("model_requested");
                     if (model instanceof String text) row.put("model", text);
@@ -173,6 +175,17 @@ public final class RunTimeline {
             if ("role".equals(kind) && !row.containsKey("reused") && !(step.get("cost_usd") instanceof Number)
                     && (row.get("vendor_attempts") instanceof Integer n ? n > 0 : step.get("profile") != null)) {
                 row.put("unpriced", true);
+            }
+            if (step.get("role_failovers") instanceof List<?> switches && !switches.isEmpty()) {
+                List<Map<String, Object>> visible = new ArrayList<>();
+                for (Object raw : switches) {
+                    if (!(raw instanceof Map<?, ?> event)) continue;
+                    Map<String, Object> one = new LinkedHashMap<>();
+                    for (String key : List.of("from_profile", "to_profile", "from_vendor", "to_vendor", "cause", "authorized_by"))
+                        copyScalar(one, event, key);
+                    visible.add(one);
+                }
+                if (!visible.isEmpty()) row.put("failovers", visible);
             }
             String stepDirectory = stepDirectoryOf(step, runsRoot, runId);
             if (stepDirectory != null) {
@@ -422,6 +435,8 @@ public final class RunTimeline {
                 default -> "unknown";
             });
             if (view.get("duration_millis") instanceof Number number) row.put("duration_ms", number.longValue());
+            if (view.get("http_status") instanceof Number status) row.put("http_status", status.longValue());
+            else if (view.get("http_status") instanceof String status && status.matches("\\d{3}")) row.put("http_status", Long.parseLong(status));
             if ("running".equals(state) && view.get("controller_started_at") instanceof String started) row.put("started_at", started);
             if (!"running".equals(state) && !(view.get("cost_usd") instanceof Number) && view.get("vendor") != null) row.put("unpriced", true);
         } else {
@@ -585,4 +600,26 @@ public final class RunTimeline {
         Object value = source.get(key);
         if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) dest.put(key, value);
     }
+
+    /**
+     * Attempts that failed, with what the provider said in machine terms: the code, the HTTP
+     * status and the phase it failed in. Never the body or a message, which could quote a key.
+     */
+    static List<Map<String, Object>> failedAttempts(List<?> attempts) {
+        List<Map<String, Object>> failures = new ArrayList<>();
+        for (Object raw : attempts) {
+            if (!(raw instanceof Map<?, ?> attempt) || !Boolean.FALSE.equals(attempt.get("ok"))) continue;
+            Map<String, Object> one = new LinkedHashMap<>();
+            for (String key : List.of("profile", "vendor", "provider", "code", "failure_phase", "delivery"))
+                copyScalar(one, attempt, key);
+            Object status = attempt.get("http_status");
+            if (status instanceof Number number) one.put("http_status", number.longValue());
+            else if (status instanceof String text && text.matches("\\d{3}")) one.put("http_status", Long.parseLong(text));
+            if (attempt.get("duration_millis") instanceof Number number) one.put("duration_ms", number.longValue());
+            if (attempt.get("api_attempt_count") instanceof Number number) one.put("api_attempts", number.longValue());
+            failures.add(one);
+        }
+        return failures;
+    }
+
 }
