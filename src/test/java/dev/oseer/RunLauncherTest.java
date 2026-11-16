@@ -117,9 +117,9 @@ public final class RunLauncherTest implements Suite {
         Map<String, Object> started = launcher.start(Map.of("preview_id", fresh.get("preview_id"), "confirm", true));
         String job = String.valueOf(started.get("id"));
         Map<String, Object> done = waitFor(launcher, job);
-        check.eq("the job finishes", "finished", done.get("state"));
+        check.eq("the job finishes (" + done.get("note") + " exit " + done.get("exit_code") + ")", "finished", done.get("state"));
         check.eq("the job runs under the previewed run id", fresh.get("run_id"), done.get("run_id"));
-        check.eq("the job reports the engine's result", true, ((Map<?, ?>) done.get("result")).get("ok"));
+        check.eq("the job reports the engine's result", true, done.get("result") instanceof Map<?, ?> result ? result.get("ok") : null);
         check.that("the job's narration is redacted", !String.valueOf(done.get("narration")).contains("sk-abcdefghijklmnop"));
         check.that("a real start is not a dry run", !Files.readAllLines(log).getLast().contains("--dry-run"));
         check.contains("the Orca gate switch reaches the engine", Files.readAllLines(log).getLast(), "--no-orca-gate");

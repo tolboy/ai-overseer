@@ -430,16 +430,18 @@ public final class RunLauncher implements AutoCloseable {
                     argv = continuation(job, argv);
                     if (argv == null) break;
                 }
+                // One pair of files per step, each truncated on open: the same redirection the
+                // preview uses, which behaves alike on Windows and POSIX.
+                Path out = job.dir.resolve("stdout-" + job.step + ".json");
                 ProcessBuilder builder = new ProcessBuilder(concat(command, argv)).directory(job.project.toFile())
-                        .redirectOutput(ProcessBuilder.Redirect.appendTo(job.dir.resolve("stdout.json").toFile()))
-                        .redirectError(ProcessBuilder.Redirect.appendTo(job.dir.resolve("narration.log").toFile()));
+                        .redirectOutput(out.toFile())
+                        .redirectError(job.dir.resolve("narration-" + job.step + ".log").toFile());
                 builder.environment().put("OSEER_CONFIG_HOME", home.toString());
-                Files.writeString(job.dir.resolve("stdout.json"), "", StandardCharsets.UTF_8);
                 Process process = builder.start();
                 job.process = process;
                 int code = process.waitFor();
                 job.exit = code;
-                job.result = lastJson(job.dir.resolve("stdout.json"));
+                job.result = lastJson(out);
                 if (code != 0 && !(job.step < job.chain.size() - 1 && job.result != null && Boolean.TRUE.equals(job.result.get("ok")))) break;
             }
             // A run that stopped for a person exits non-zero but answers with its own JSON;
@@ -448,7 +450,8 @@ public final class RunLauncher implements AutoCloseable {
                     : job.result != null && job.result.get("ok") instanceof Boolean ? "stopped" : "failed";
         } catch (IOException | InterruptedException failure) {
             job.state = "failed";
-            job.note = failure.getClass().getSimpleName();
+            // The message names the executable or file that could not be opened; never output.
+            job.note = failure.getClass().getSimpleName() + ": " + failure.getMessage();
         } finally {
             job.ended = Instant.now();
             job.process = null;
@@ -736,7 +739,8 @@ public final class RunLauncher implements AutoCloseable {
 
     static Map<String, Object> viewOf(Job job) {
         Map<String, Object> view = summaryOf(job);
-        List<String> narration = tail(job.dir.resolve("narration.log"), 2000);
+        List<String> narration = new ArrayList<>();
+        for (int step = 0; step < Math.max(1, job.chain.size()); step++) narration.addAll(tail(job.dir.resolve("narration-" + step + ".log"), 2000));
         String narrated = narratedRun(narration);
         if (narrated != null && !narrated.contains("--")) job.runId = narrated;
         view.put("run_id", job.runId);
