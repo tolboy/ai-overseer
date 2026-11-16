@@ -745,7 +745,7 @@ public final class Dashboard implements AutoCloseable {
             <p id="task-edit-file" class="muted"></p><pre id="task-edit-diff"></pre>
             <button id="task-apply" type="button" disabled>{{t:dash.apply_to_task_file}}</button><p id="task-save-status" role="status"></p>
             <p class="muted">{{t:dash.preview_checks_settings_before_starting}}</p>
-            <label>CLI dry-run<textarea id="next-dry-command" readonly></textarea></label>
+            <label>{{t:dash.cli_dry_run}}<textarea id="next-dry-command" readonly></textarea></label>
             <button type="button" data-next-copy="next-dry-command">{{t:dash.copy_dry_run}}</button>
             <label>{{t:dash.cli_run}}<textarea id="next-run-command" readonly></textarea></label>
             <button type="button" data-next-copy="next-run-command">{{t:dash.copy_run_command}}</button>
@@ -758,7 +758,7 @@ public final class Dashboard implements AutoCloseable {
             <div class="panel" id="panel-roles" role="tabpanel" aria-labelledby="tab-roles">
             {{MODEL_SETTINGS}}
             {{PERSONAL_HTML}}
-            <h2>{{t:dash.lineup_by_stage}}</h2><p class="muted">{{t:dash.based_on_policy_before_task}} <code>use:</code> {{t:dash.can_pin_another_profile_and}} <code>review_assurance</code> {{t:dash.allow_a_same_vendor_pair}}</p>
+            <h2>{{t:dash.lineup_by_stage}}</h2><p class="muted">{{t:dash.lineup_note}} {{t:dash.allow_a_same_vendor_pair}}</p>
             <p><button id="reload-config" type="button">{{t:dash.reload_settings}}</button> <span id="config-status" class="muted"></span></p>
             <div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.candidate_vendor}}</th><th>{{t:dash.model_effort_channel}}</th><th>{{t:dash.eligibility_confirmed}}</th><th>{{t:dash.eligibility}}</th><th>{{t:dash.cost}}</th></tr></thead><tbody id="stages"></tbody></table></div>
             <h2>{{t:dash.limits}}</h2><div class="scroll" tabindex="0"><table><thead><tr><th>{{t:dash.parameter}}</th><th>{{t:dash.value}}</th><th>{{t:dash.source}}</th></tr></thead><tbody id="limits"></tbody></table></div>

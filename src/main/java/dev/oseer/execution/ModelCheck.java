@@ -99,7 +99,7 @@ public final class ModelCheck {
             row.put("checked_at", Instant.now().toString());
             row.put("next", next(String.valueOf(row.get("code"))));
             rows.add(row);
-            progress.accept("check " + name + " · " + (Boolean.TRUE.equals(row.get("ok")) ? "pong" : row.get("code")));
+            progress.accept("check " + name + " · " + (Boolean.TRUE.equals(row.get("ok")) ? "responds" : row.get("code")));
         }
         boolean ok = !rows.isEmpty() && rows.stream().allMatch(row -> Boolean.TRUE.equals(row.get("ok")));
         Map<String, Object> report = new LinkedHashMap<>();

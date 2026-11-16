@@ -118,6 +118,13 @@ public final class DashboardTest implements Suite {
             String launchPage = page.body();
             check.that("a waiting job badges the tab title", launchPage.contains("document.title=(waiting.length?"));
             check.that("notifications are asked for on a click, not on load", launchPage.contains("addEventListener('click',async()=>{askToNotify();"));
+            // Every Russian message, and the page's own markup outside scripts and code samples,
+            // is free of the English config words a Russian reader kept tripping over.
+            String visible = launchPage.replaceAll("(?s)<script.*?</script>", "").replaceAll("(?s)<code>.*?</code>", "");
+            for (String word : List.of("use:", "pong", "Pong", "dry-run", "Dry-run", "Dry run")) {
+                check.that("no Russian message says " + word, dev.oseer.dashboard.Messages.bundle("ru").values().stream().noneMatch(v -> v.contains(word)));
+                check.that("the rendered Russian page says no " + word + " outside code", !visible.contains(word));
+            }
             for (String leftover : List.of("Run / задача", "<th>Review</th>", "<th>Gate</th>", "'Dry run'", "Task use:", "Effort (custom)", "✓ pong", "'Ping'", "review assurance:"))
                 check.that("no untranslated leftover " + leftover + " on the Russian page", !launchPage.contains(leftover));
             check.that("a waiting decision comes before the job facts",
