@@ -454,4 +454,39 @@ public final class ModelCheck {
             atomicWrite(path, Json.write(states));
         }
     }
+
+    /** Check codes that say "not now" rather than "never": the ones a standby fallback covers. */
+    static final java.util.Set<String> TRANSIENT_CHECK_CODES = java.util.Set.of(
+            "role_api_rate_limited", "role_api_provider_error", "role_api_timeout", "role_api_network_error");
+
+    /**
+     * When every failed check is a transient failure of a profile whose role switches
+     * automatically to a standby fallback that answered this same check, the run can start:
+     * the failover it would need is already authorized by the policy. Returns one row per
+     * covered failure, or {@code null} when any failure is not covered and the run must stop.
+     */
+    public static List<Map<String, Object>> coveredByFallback(Map<String, Object> checked, dev.oseer.config.Policy policy) {
+        if (policy == null || !(checked.get("results") instanceof List<?> rows)) return null;
+        java.util.Set<String> answered = new java.util.HashSet<>();
+        for (Object raw : rows) if (raw instanceof Map<?, ?> row && Boolean.TRUE.equals(row.get("ok"))) answered.add(String.valueOf(row.get("profile")));
+        List<Map<String, Object>> covered = new ArrayList<>();
+        for (Object raw : rows) {
+            if (!(raw instanceof Map<?, ?> row) || Boolean.TRUE.equals(row.get("ok"))) continue;
+            String profile = String.valueOf(row.get("profile")), code = String.valueOf(row.get("code"));
+            if (!TRANSIENT_CHECK_CODES.contains(code)) return null;
+            boolean listed = false;
+            for (var spec : policy.roles().values()) {
+                if (!spec.profiles().contains(profile)) continue;
+                listed = true;
+                String standby = spec.apiFallbackProfiles().stream()
+                        .filter(name -> !name.equals(profile) && answered.contains(name)).findFirst().orElse(null);
+                if (standby == null || !"auto".equals(policy.vendorFailureModeFor(spec.role()))) return null;
+                Map<String, Object> row2 = new LinkedHashMap<>();
+                row2.put("role", spec.role()); row2.put("profile", profile); row2.put("code", code); row2.put("fallback", standby);
+                covered.add(row2);
+            }
+            if (!listed) return null;
+        }
+        return covered.isEmpty() ? null : covered;
+    }
 }

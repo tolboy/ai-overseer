@@ -1232,7 +1232,16 @@ public final class TaskLoop {
             if(!effortWarnings.isEmpty()){checked=new LinkedHashMap<>(checked);checked.put("effort_warnings",effortWarnings);}
             summary.put("model_check", checked);
             dev.oseer.execution.ModelCheck.atomicWrite(ledger.runDirectory().resolve("model-check.json"), Json.write(checked));
-            if (!Boolean.TRUE.equals(checked.get("ok"))) {
+            var covered = Boolean.TRUE.equals(checked.get("ok")) ? null
+                    : dev.oseer.execution.ModelCheck.coveredByFallback(checked, user.policy());
+            if (covered != null) {
+                // A transient failure with an answering standby fallback and on_vendor_failure:
+                // auto does not stop the run; the role fails over if the call fails again.
+                for (var row : covered) progress.line("warn  check " + row.get("profile") + " · " + row.get("code")
+                        + "; standby fallback " + row.get("fallback") + " answered, so " + row.get("role")
+                        + " fails over to it if the call fails again");
+                summary.put("model_check_covered_by_fallback", covered);
+            } else if (!Boolean.TRUE.equals(checked.get("ok"))) {
                 progress.line("check stopped the run; restore authentication/model access and check again");
                 return stop(ledger, summary, "model_check_failed", steps, 0, budget);
             }

@@ -93,6 +93,18 @@ public final class FallbackStandbyTest implements Suite {
                 resolver.resolve("reviewer", standby.policy(), standby.profiles(), RoleResolver.Writers.of("codex"), 0,
                         p -> !p.name().equals("reader-a"), Set.of(), Set.of(), Set.of()).selected().name());
 
+        // The pre-run model check does not stop a run whose failed primary has an answering standby.
+        java.util.function.BiFunction<String, String, Map<String, Object>> row = (name, code) -> {
+            var r = new LinkedHashMap<String, Object>(); r.put("profile", name); r.put("ok", code == null); if (code != null) r.put("code", code); return r; };
+        var limited = Map.<String, Object>of("ok", false, "results", List.of(row.apply("reader-a", "role_api_rate_limited"), row.apply("reader-b", null)));
+        var covered = dev.oseer.execution.ModelCheck.coveredByFallback(limited, standby.policy());
+        check.eq("a rate-limited primary with an answering standby is covered", "reader-b", covered == null ? null : covered.get(0).get("fallback"));
+        check.eq("an auth failure is never covered", null, dev.oseer.execution.ModelCheck.coveredByFallback(
+                Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_auth_failed"), row.apply("reader-b", null))), standby.policy()));
+        check.eq("a standby that also failed covers nothing", null, dev.oseer.execution.ModelCheck.coveredByFallback(
+                Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_rate_limited"), row.apply("reader-b", "role_api_rate_limited"),
+                        row.apply("reader-c", "role_api_provider_error"))), standby.policy()));
+
         String before = Files.readString(policy);
         var clash = editor.apply(fallbacks(home, "reviewer", List.of("same-reader"), "auto"));
         check.eq("a reviewer fallback from the writer's vendor is refused", 400, clash.status());
