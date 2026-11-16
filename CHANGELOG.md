@@ -40,6 +40,11 @@ that exists in code but has never been run live says so.
   decisions are answered there, optionally switching a stage's profile for the
   continuation; ready runs can be landed. Token, JSON and same-origin checks on every
   mutating endpoint; `--no-launcher` turns it off. Run live on a test project.
+  Jobs are recorded under `<home>/ui-jobs/<job>/job.json` (identity and outcome, no argv),
+  so a restarted dashboard lists them and re-attaches; a job that was running when the
+  dashboard stopped shows as stopped. A job waiting for a person badges the tab title and,
+  once the browser allows it, raises a notification; the decision sits at the top of the
+  job view with a sticky "Waiting for you" link.
 - `oseer do --max-role-runs N --max-cost-usd X` write the budget into the contract that
   invocation drafts.
 - English and Russian dashboard and decision-page text from message bundles, with a
@@ -48,6 +53,14 @@ that exists in code but has never been run live says so.
   a transient model-check failure with an answering standby and `on_vendor_failure: auto`
   no longer stops the run.
 - `oseer doctor` and the dashboard name credential references the process cannot resolve.
+- A role API answer cut off at its output limit (`role_api_output_truncated`) now fails over
+  to the role's declared fallback, within `failover.max_per_stage`, before a person is
+  asked. The same profile is not retried with a larger cap: the cap is part of the
+  verified profile.
+- Run timelines name the failed attempts that stopped a run (HTTP status, code) and mark a
+  stage that did not pass as failed. Previews and the run report print a model id that
+  already carries its vendor once, and the cast lists each role's standby fallbacks.
+- One cost format on every dashboard surface: `$0.0004 (+2 unpriced)`.
 
 - Dashboard tabs with an **Обзор** page (waiting decisions, active agents, last run, known
   cost and unpriced calls, the next run's cast) and a per-run **timeline**: stages with
