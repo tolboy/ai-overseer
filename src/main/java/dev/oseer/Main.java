@@ -267,6 +267,21 @@ public final class Main {
 
     private static int init(String[] args) throws Exception {
         String baseRef = option(args, "--base-ref", "origin/main");
+        if (hasFlag(args, "--scan")) {
+            // The first-run scan: what init would detect and write, and the files it went by.
+            ProjectInitializer.Scan scan = new ProjectInitializer().scan(Path.of("."));
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("writes", false);
+            result.put("detected_build", scan.detectedBuild());
+            result.put("checks", scan.checks());
+            result.put("scopes", scan.scopes());
+            result.put("greenfield", scan.greenfield());
+            result.put("detected_from", scan.evidence());
+            result.put("next", "oseer init writes these into .oseer/project.yaml; review them first");
+            System.out.println(Json.write(result));
+            return 0;
+        }
         ProjectInitializer.Result initialized = new ProjectInitializer().initialize(Path.of("."), baseRef);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", true);
@@ -2896,6 +2911,9 @@ public final class Main {
                                            verify_with so the probe is re-run.
                                            Also accepts --expected-sha256 HASH
                   oseer init [--base-ref REF] create a conservative project starter config
+                                           --scan prints what init would detect and write
+                                           (build, checks, scopes and the files it went by)
+                                           and writes nothing
                   oseer pilot prepare --spec FILE --output DIR
                                            write a self-contained offline pilot bundle from
                                            an explicit JSON spec: target project/task YAML,
