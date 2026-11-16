@@ -15,6 +15,7 @@ final class DashboardShell {
     static final String CSS = """
             :root{--bg:#0f151b;--panel:#151e26;--line:#2a3945;--muted:#97a9b8;--ink:#e6eef5;--ok:#7fd8ae;--bad:#ff9d87;--warn:#f0cf8d;--idle:#7e8f9d;--accent:#9ee9c6}
             body{max-width:1440px;margin:0 auto;padding:0 28px 48px;background:var(--bg)}
+            .banner-warning{background:#3d2f17;border:1px solid #a57b2c;border-radius:8px;padding:10px 14px;margin:10px 0}.banner-warning p{margin:4px 0 0}
             .topbar-side{display:flex;gap:14px;align-items:center;flex-wrap:wrap}.lang{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}.lang select{width:auto;padding:2px 6px}
             .topbar{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 0 0;margin-bottom:8px}
             .brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}.brand h1{font-size:22px;margin:0;letter-spacing:.2px}
@@ -69,6 +70,7 @@ final class DashboardShell {
             <button role="tab" id="tab-analytics" aria-controls="panel-analytics" aria-selected="false" tabindex="-1">{{t:shell.analytics}}</button>
             <button role="tab" id="tab-connections" aria-controls="panel-connections" aria-selected="false" tabindex="-1">{{t:shell.connections}}</button>
             </nav></header>
+            <div id="credential-warning" class="banner-warning" role="alert" hidden><b>{{t:cred.title}}</b> <span id="credential-warning-list"></span><p>{{t:cred.fix}}</p></div>
             """;
 
     static final String OVERVIEW = """
@@ -185,7 +187,8 @@ final class DashboardShell {
             function openRun(id){if(!id)return;clearTimeout(detailTimer);detailGeneration++;detailRun=id;const box=el('run-detail');box.hidden=false;el('run-detail-steps').replaceChildren();el('run-detail-status').textContent='{{t:shell.loading}}';loadRun();box.focus({preventScroll:true});box.scrollIntoView({block:'start'})}
             el('run-detail-close').addEventListener('click',()=>{clearTimeout(detailTimer);detailGeneration++;detailRun=null;el('run-detail').hidden=true;history.replaceState(null,'','#tab-runs')});
             window.overseerOpenRun=id=>{location.hash='run/'+encodeURIComponent(id)};
-            window.overseerShellDraw=()=>{if(!data)return;drawKpis();drawCast();drawRecent()};
+            function drawCredentialWarning(){const box=document.getElementById('credential-warning');const rows=data.credential_warnings||[];box.hidden=!rows.length;document.getElementById('credential-warning-list').textContent=rows.map(r=>r.credential_ref+' ('+r.connection+' · '+r.state+' · '+(r.profiles||[]).join(', ')+')').join('; ')}
+            window.overseerShellDraw=()=>{if(!data)return;drawCredentialWarning();drawKpis();drawCast();drawRecent()};
             route()})();
             """;
 }

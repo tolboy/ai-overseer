@@ -826,6 +826,8 @@ vendors.service_not_specified = Service not specified
 
     private static final String ADDED = """
 # Added by hand after the extraction, in the same format.
+cred.fix = Runs started from here stop at the model check. Restart oseer dashboard from the shell or launcher that exports these variables; only the names are shown here, never values.
+cred.title = This server cannot resolve credentials the roster needs:
 fallback.current = Now:
 fallback.help = A fallback waits in reserve: it runs only when a call to this role fails with a network error, a timeout, a rate limit or a provider error (HTTP 5xx). Overseer still checks verification, reviewer independence and the budget before switching, and records the switch in the ledger and the timeline.
 fallback.mode_auto = Switch automatically

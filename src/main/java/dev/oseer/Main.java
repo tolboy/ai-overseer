@@ -217,6 +217,16 @@ public final class Main {
             System.out.println(Json.write(Map.of("ok", true, "url", dashboard.url(),
                     "project", project.toString(), "read_only", false,
                     "actions", List.of("open_decision_page", "manage_connections", "manage_models", "check_models"))));
+            try {
+                var unresolved = dev.oseer.execution.CredentialAudit.unresolved(UserConfig.load(),
+                        new dev.oseer.execution.CredentialResolver());
+                if (!unresolved.isEmpty()) System.err.println("warning: this dashboard cannot resolve "
+                        + unresolved.stream().map(row -> String.valueOf(row.get("credential_ref"))).toList()
+                        + "; runs it starts stop at the model check. Start it from the shell or launcher"
+                        + " that exports them (see `oseer doctor`).");
+            } catch (RuntimeException unreadable) {
+                // The page shows configuration problems itself.
+            }
             if (hasFlag(args, "--open-orca")) {
                 var opened = new OrcaClient(new ProcessRunner()).invoke(project, Duration.ofSeconds(20),
                         List.of("tab", "create", "--worktree", "path:" + project, "--url", dashboard.url()));
@@ -1555,6 +1565,18 @@ public final class Main {
         userSummary.put("verified_profiles", eligible);
         userSummary.put("unverified_profiles", unverified);
         userSummary.put("problems", user.problems());
+        // A server started without the key launcher starts runs that fail at the first API
+        // call. Names only: a reference and who needs it, never a value.
+        List<Map<String, Object>> unresolvedCredentials = dev.oseer.execution.CredentialAudit.unresolved(
+                user, new dev.oseer.execution.CredentialResolver());
+        result.put("credentials_unresolved", unresolvedCredentials);
+        if (!unresolvedCredentials.isEmpty()) {
+            result.put("credentials_warning", "this process cannot resolve " + unresolvedCredentials.size()
+                    + " credential reference(s) the roster needs: " + unresolvedCredentials.stream()
+                    .map(row -> row.get("credential_ref") + " (" + row.get("connection") + ")").toList()
+                    + ". Runs started from here, including from `oseer dashboard`, stop at the model check."
+                    + " Start the process from the shell or launcher that exports them.");
+        }
         userSummary.put("dangling_policy_references", user.danglingProfileReferences());
         userSummary.put("connections", user.connections().values().stream()
                 .map(connection -> dev.oseer.config.ConnectionCommand.view(connection, System::getenv)).toList());

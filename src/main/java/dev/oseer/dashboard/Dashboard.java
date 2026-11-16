@@ -323,6 +323,12 @@ public final class Dashboard implements AutoCloseable {
         state.put("config_home", user.home().toString());
         state.put("observed_at", Instant.now().toString());
         state.put("problems", user.problems());
+        try {
+            state.put("credential_warnings", dev.oseer.execution.CredentialAudit.unresolved(
+                    user, new dev.oseer.execution.CredentialResolver()));
+        } catch (RuntimeException unreadable) {
+            state.put("credential_warnings", List.of());
+        }
         List<Map<String, Object>> plan = new ArrayList<>();
         if (user.policy() != null) for (var stage : user.policy().workflow().stages()) {
             if (stage.role() == null) continue;
