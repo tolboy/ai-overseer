@@ -488,11 +488,21 @@ public final class RunLauncher implements AutoCloseable {
 
     /** The dry run's own directory is scratch the operator did not ask for. */
     static void deleteDryRun(Path project, String runId) {
-        Path dir = project.resolve(".oseer/runs").resolve(runId);
-        if (!RunTimeline.RUN_ID.matcher(runId).matches() || !Files.isDirectory(dir)) return;
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) { } });
-        } catch (IOException ignored) { }
+        Path runs = project.resolve(".oseer/runs");
+        if (!runId.endsWith("-plan") || !RunTimeline.RUN_ID.matcher(runId).matches() || !Files.isDirectory(runs)) return;
+        List<Path> dirs;
+        try (Stream<Path> list = Files.list(runs)) {
+            // The run directory and its step directories, which sit beside it as RUN--STEP.
+            dirs = list.filter(p -> p.getFileName().toString().equals(runId)
+                    || p.getFileName().toString().startsWith(runId + "--")).toList();
+        } catch (IOException unreadable) {
+            return;
+        }
+        for (Path dir : dirs) {
+            try (Stream<Path> walk = Files.walk(dir)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) { } });
+            } catch (IOException ignored) { }
+        }
     }
 
     static HumanDecision pending(Path project, String runId) {

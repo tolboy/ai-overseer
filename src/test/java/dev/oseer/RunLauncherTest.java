@@ -31,7 +31,7 @@ public final class RunLauncherTest implements Suite {
             echo "plan  implement -> review" >&2
             echo "bound 3 vendor call(s)" >&2
             echo "vendor said api_key=sk-abcdefghijklmnop" >&2
-            case "$*" in *--dry-run*) ;; *slow*) sleep 30;; esac
+            case "$*" in *--dry-run*) mkdir -p ".oseer/runs/$rid" ".oseer/runs/$rid--implementer-0";; *slow*) sleep 30;; esac
             echo "home $OSEER_CONFIG_HOME" >&2
             echo '{"ok":true,"reason":"done","run_id":"'$rid'"}'
             """;
@@ -94,6 +94,9 @@ public final class RunLauncherTest implements Suite {
         check.contains("draft-only is passed", argv, "--draft-only");
         check.contains("the job never waits on a terminal gate", argv, "--no-wait-for-gate");
         check.that("the preview has an id to start", preview.get("preview_id") instanceof String);
+        try (var left = Files.list(repo.resolve(".oseer/runs"))) {
+            check.eq("the dry run leaves no run or step directories behind", List.of(), left.map(p -> p.getFileName().toString()).toList());
+        }
         check.contains("the plan shows the narrated bound", String.valueOf(preview.get("plan")), "bound 3 vendor call(s)");
         check.that("the plan masks a quoted key", !String.valueOf(preview.get("plan")).contains("sk-abcdefghijklmnop"));
         check.contains("the plan runs with the server's configuration home", String.valueOf(preview.get("plan")), home.toString());
