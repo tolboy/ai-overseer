@@ -83,6 +83,7 @@ public final class ModelSettingsService {
             route.put("fallbacks", role.apiFallbackProfiles()); route.put("fallback_standby", role.fallbackStandby());
             route.put("on_vendor_failure", role.vendorFailureMode() == null ? "inherit" : role.vendorFailureMode());
             route.put("require_independent_vendor", role.requireIndependentVendor());
+            route.put("not_independent", notIndependent(user, role));
             routes.add(route);
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -408,4 +409,20 @@ public final class ModelSettingsService {
     private static final class Invalid extends RuntimeException {}
     private static final class Changed extends RuntimeException {}
     private static final class UnboundModel extends RuntimeException {}
+
+    /**
+     * Profiles of a judging role that share the writer's vendor. The fallback editor offers
+     * them disabled: saving one is refused (fallback_not_independent), and a choice the page
+     * already knows it will refuse should not look like a choice.
+     */
+    public static List<String> notIndependent(UserConfig user, dev.oseer.config.Policy.RoleSpec spec) {
+        if (!spec.requireIndependentVendor() || "implementer".equals(spec.role())) return List.of();
+        var writers = user.policy().roles().get("implementer");
+        Profile writer = writers == null || writers.profiles().isEmpty() ? null : user.profiles().get(writers.profiles().get(0));
+        String writerVendor = writer == null ? null : writer.independenceVendor();
+        if (writerVendor == null) return List.of();
+        return user.profiles().values().stream()
+                .filter(p -> spec.role().equals(p.role()) && writerVendor.equals(p.independenceVendor()))
+                .map(Profile::name).sorted().toList();
+    }
 }

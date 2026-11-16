@@ -111,6 +111,14 @@ public final class FallbackStandbyTest implements Suite {
                 Map.of("ok", false, "results", List.of(row.apply("reader-a", "role_api_rate_limited"), row.apply("reader-b", "role_api_rate_limited"),
                         row.apply("reader-c", "role_api_provider_error"))), standby.policy()));
 
+        check.eq("the editor offers the writer-vendor reviewer as not independent", List.of("same-reader"),
+                dev.oseer.config.ModelSettingsService.notIndependent(standby, standby.policy().roles().get("reviewer")));
+        check.eq("the writer's own role has no independence rule", List.of(),
+                dev.oseer.config.ModelSettingsService.notIndependent(standby, standby.policy().roles().get("implementer")));
+        check.that("the page disables options it would refuse", dev.oseer.dashboard.ModelSettingsUi.html().contains("o.disabled=true;o.textContent+=' · {{t:fallback.not_independent_short}}'"));
+        check.that("a refused fallback save does not claim the role was saved",
+                dev.oseer.dashboard.ModelSettingsUi.html().contains("fallbackRefusals.has(r.role)?'':'{{t:models.saved_automatically}}'"));
+
         String before = Files.readString(policy);
         var clash = editor.apply(fallbacks(home, "reviewer", List.of("same-reader"), "auto"));
         check.eq("a reviewer fallback from the writer's vendor is refused", 400, clash.status());
