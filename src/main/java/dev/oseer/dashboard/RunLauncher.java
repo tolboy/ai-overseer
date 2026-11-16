@@ -222,12 +222,14 @@ public final class RunLauncher implements AutoCloseable {
         String top = git(real, "rev-parse", "--show-toplevel");
         if (top == null) throw new Refused(400, "project_not_git", "not a git repository: " + real);
         try {
-            if (!Path.of(top).toRealPath().equals(real)) {
+            Path topPath = Path.of(top).toRealPath();
+            if (!topPath.equals(real)) {
                 // The message is only the top folder: the page already says what is wrong, and a
                 // path inside .oseer gets its own code because that folder is Overseer's, not the project.
                 boolean internal = false;
-                for (Path part : Path.of(top).toRealPath().relativize(real)) if (".oseer".equals(part.toString())) internal = true;
-                throw new Refused(400, internal ? "project_inside_oseer" : "project_not_repo_root", top);
+                for (Path part : topPath.relativize(real)) if (".oseer".equals(part.toString())) internal = true;
+                // The real path, not git's spelling: git prints forward slashes on Windows.
+                throw new Refused(400, internal ? "project_inside_oseer" : "project_not_repo_root", topPath.toString());
             }
         } catch (IOException e) { throw new Refused(400, "project_not_git", "not a git repository: " + real); }
         return real;
