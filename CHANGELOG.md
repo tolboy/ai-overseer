@@ -24,6 +24,9 @@ that exists in code but has never been run live says so.
 - The API context no longer refuses committed env templates (`.env.example`, `.env.sample`,
   `.env.template`, `.env.dist`), which blocked every review of a change that documents a new
   variable; other `.env.*` files are still refused, and the refusal now names the file.
+- A `mode: review` run no longer checks the repairer's model before it starts (no repair
+  round runs), and its dry run no longer prints "if … sends the work back" repair costs. The
+  launch check had stopped a review with `model_check_failed` on a signed-out implementer.
 - `preflight_outside_scope` names the paths that are outside the scope, in the dry-run
   footer and on the gates line.
 - A dry run that saw a stage fail marks every later line "preview only: a real run stops

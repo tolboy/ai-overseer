@@ -1217,7 +1217,10 @@ public final class TaskLoop {
                     selected.add(chosen.name());
                     wouldWrite = withPreviewWriter(wouldWrite, chosen);
                 }
-                if (stage.fixWith() != null) {
+                // A review-only task runs no repair round, so the repairer is never dispatched.
+                // Checking it anyway stopped the first real review of an outside branch with
+                // model_check_failed on an implementer CLI that was signed out.
+                if (stage.fixWith() != null && !task.reviewOnly()) {
                     dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix", stage.fixWith(),
                             RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
                     if (fixer != null) {
@@ -1492,7 +1495,10 @@ public final class TaskLoop {
                     + (task.budget().maxCostUsd() == 0 ? " disables the money limit"
                     : task.budget().strictCostCap() ? " is a strict cap reserved against declared call bounds"
                     : " is a threshold on the spend vendors report, not a strict cap"));
-            for (Map<String, Object> branch : recoveryBranches(summary)) {
+            if (task.reviewOnly()) {
+                progress.line("      review mode: findings stop the run for a person; no repair round is paid for");
+            }
+            for (Map<String, Object> branch : task.reviewOnly() ? List.<Map<String, Object>>of() : recoveryBranches(summary)) {
                 progress.line("      if " + branch.get("stage") + " sends the work back: "
                         + branch.get("calls_to_repair_and_finish") + " call(s) to repair and "
                         + "finish — " + (Boolean.TRUE.equals(branch.get("reachable_under_cap"))
@@ -1950,7 +1956,8 @@ public final class TaskLoop {
                 }
                 written = withPreviewWriter(written, chosen);
             }
-            if (stage.fixWith() != null && ("fix".equals(stage.onFail()) || "fix".equals(stage.onFindings()))) {
+            if (stage.fixWith() != null && !task.reviewOnly()
+                    && ("fix".equals(stage.onFail()) || "fix".equals(stage.onFindings()))) {
                 dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix",
                         stage.fixWith(), RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
                 if (fixer != null) row.put("fix_profile", fixer.name());

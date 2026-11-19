@@ -7307,6 +7307,18 @@ public final class TaskLoopTest implements Suite {
                 read.summaryReport().get("writer_vendors"));
         check.eq("so the readings are independent", "independent", read.summaryReport().get("review_assurance"));
 
+        // The launch check asks only about models the run can dispatch: no repair round runs,
+        // so the implementer (signed out, in the run that found this) is not checked.
+        List<String> checkedProfiles = new java.util.ArrayList<>();
+        TaskLoop checked = new TaskLoop(new ProcessRunner()).withReadiness((u, root, profiles, strict, progress) -> {
+            profiles.forEach(profile -> checkedProfiles.add(profile.name()));
+            return Map.of("ok", true, "code", "check_stub", "results", List.of());
+        });
+        checked.run(new ConfigLoader().load(branch, "hello"), UserConfig.load(home), "ro-checked", false);
+        check.that("the launch check covers the readers", checkedProfiles.contains("ro-review-a"));
+        check.that("the launch check leaves out the implementer nobody will dispatch",
+                !checkedProfiles.contains("loop-impl"));
+
         // The author's own vendor still cannot read its branch.
         Files.writeString(home.resolve("policy.yaml"), Files.readString(home.resolve("policy.yaml"))
                 .replace("[ro-review-a, ro-review-b]", "[ro-review-author]"));
