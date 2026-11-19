@@ -19,6 +19,16 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- The dashboard run page no longer calls a stage the run never opened "still open"
+  after the run has stopped: the chip says not reached (or earlier candidate, when the
+  verdict is about a tree a later repair replaced) and uses the same status as the stage
+  card. A run that has not written a summary is on the runs list; a live controller is
+  in progress, and the latest-run card uses that same list, newest start first. A pending
+  decision overtaken by a continuation, or by a later run of the same task on the same
+  tree, is shown as superseded and is not counted as waiting; `decision.json` is left as
+  it was. A total of $0 with unpriced calls is cost unknown, and a call that timed out
+  after the request was sent is marked may be billed. Not yet run live against a vendor.
+  Suites `dashboard`, `run-timeline`.
 - A call that sits with no new bytes can stop before its wall clock. API profiles
   default to `limits.stall_seconds: 180` (set `0` to disable; a direct CLI stays on the
   wall clock until the key is set, because a thinking model can be silent). The failure

@@ -972,6 +972,11 @@ models.ping = Ping
 shell.overview_lineup_note = Based on personal policy, before task settings. A task’s use: block, CLI flags and Jev can select a different participant. See “Next run” for the exact task lineup; change participants and models in “Roles and vendors”.
 timeline.attempt_failed = attempt failed:
 timeline.switched = switched vendor:
+dash.cost_is_unknown = cost unknown
+dash.may_be_billed = may be billed
+dash.decision_superseded = superseded
+shell.not_reached = not reached
+shell.earlier_candidate = earlier candidate
 """;
 
     static final String TEXT = String.join("\n", CONN, DASH, DECISION, DIFF, MODELS, NEXT, PREVIEW, SHELL, VENDORS, ADDED);

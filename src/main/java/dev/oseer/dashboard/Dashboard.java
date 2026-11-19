@@ -25,9 +25,12 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
@@ -449,7 +452,7 @@ public final class Dashboard implements AutoCloseable {
                                     && summaryFile.toRealPath().startsWith(runsRoot)) {
                                 Map<String, Object> source = Json.parseObject(Files.readString(summaryFile));
                                 if (Boolean.TRUE.equals(source.get("dry_run"))) dryRunsHidden++;
-                                else runRows.add(publicRun(source, summaryFile, directory, runsRoot));
+                                else runRows.add(stampStart(publicRun(source, summaryFile, directory, runsRoot), directory));
                             }
                         } catch (RuntimeException | IOException invalid) { /* incomplete projection is not a result */ }
                     }
@@ -465,7 +468,13 @@ public final class Dashboard implements AutoCloseable {
                 }
             }
         }
-        runRows.sort(Comparator.comparing(row -> String.valueOf(row.get("updated_at")), Comparator.reverseOrder()));
+        // A run that has not written task-run.json is still a run. Leaving it out of this
+        // list is why an in-progress review showed up only under execution attempts.
+        foldOpenRuns(runRows, openRuns, attempts);
+        runRows.sort(Comparator.comparing(Dashboard::sortTime).reversed());
+        // Projection only: decision.json stays pending, so a person can still answer it.
+        // The list stops counting a question a later run of the same tree has overtaken.
+        markSuperseded(runRows);
         attempts.sort(Comparator.comparing(row -> String.valueOf(row.get("updated_at")), Comparator.reverseOrder()));
         state.put("runs", runRows.stream().limit(100).toList());
         // Every question still open, oldest first, with whether a page is up for it now. The
@@ -500,9 +509,11 @@ public final class Dashboard implements AutoCloseable {
         Map<String, Object> row = new LinkedHashMap<>();
         for (String key : List.of("run_id", "task_id", "ok", "reason", "next_action", "prepare", "risk",
                 "dry_run", "candidate_review_passed", "open_blocking_findings", "role_runs",
-                "total_cost_usd", "unpriced_calls", "attempts_used", "continued_from")) {
+                "total_cost_usd", "unpriced_calls", "attempts_used", "continued_from",
+                "candidate_fingerprint")) {
             copyScalar(row, source, key);
         }
+        if (mayBeBilled(source.get("steps"))) row.put("may_be_billed", true);
         List<String> writers = stringList(source.get("writer_vendors"));
         if (writers != null) row.put("writer_vendors", writers);
         if (source.get("chain") instanceof Map<?, ?> chain) {
@@ -676,14 +687,192 @@ public final class Dashboard implements AutoCloseable {
         if (source.get("agent_blocked_on") instanceof String && source.get("resolution") instanceof String fix) {
             row.put("resolution", fix);
         }
-        if ("running".equals(row.get("view_state"))) {
-            boolean controllerAlive = source.get("controller_pid") instanceof Number pid
-                    && ProcessHandle.of(pid.longValue()).filter(ProcessHandle::isAlive)
-                    .flatMap(p -> p.info().startInstant()).map(Instant::toString)
-                    .filter(start -> start.equals(source.get("controller_started_at"))).isPresent();
-            if (!controllerAlive) row.put("view_state", "unknown_controller_stopped");
+        if ("running".equals(row.get("view_state")) && !controllerAlive(source)) {
+            row.put("view_state", "unknown_controller_stopped");
         }
         return row;
+    }
+
+    /**
+     * The view says the role is still running. That holds while the process that wrote it
+     * is still that process.
+     *
+     * <p>The start time Linux exposes is in clock ticks, so it can disagree with the stamp
+     * the controller recorded by a few milliseconds. An exact string compare treated that
+     * tick as a dead controller, and the run then disappeared from the runs list. A recycled
+     * pid starts at a different moment, not a tick later.
+     */
+    static boolean controllerAlive(Map<String, Object> source) {
+        if (!(source.get("controller_pid") instanceof Number pid)) return false;
+        var handle = ProcessHandle.of(pid.longValue()).filter(ProcessHandle::isAlive);
+        if (handle.isEmpty()) return false;
+        if (!(source.get("controller_started_at") instanceof String recorded) || recorded.isBlank()) return false;
+        var observed = handle.get().info().startInstant();
+        if (observed.isEmpty()) return true;
+        try {
+            long skew = Math.abs(java.time.Duration.between(Instant.parse(recorded), observed.get()).toMillis());
+            return skew <= 2_000;
+        } catch (RuntimeException unreadable) {
+            return false;
+        }
+    }
+
+    private static Map<String, Object> stampStart(Map<String, Object> row, Path directory) {
+        Path reservation = directory.resolve("run.json");
+        try {
+            if (Files.isRegularFile(reservation, LinkOption.NOFOLLOW_LINKS) && Files.size(reservation) <= 64 * 1024) {
+                Map<String, Object> reserved = Json.parseObject(Files.readString(reservation));
+                if (reserved.get("reserved_at") instanceof String at && !at.isBlank()) row.put("started_at", at);
+            }
+        } catch (RuntimeException | IOException ignored) { /* a start time is optional; mtime still sorts */ }
+        return row;
+    }
+
+    private static void foldOpenRuns(List<Map<String, Object>> runs, List<Map<String, Object>> openRuns,
+                                      List<Map<String, Object>> attempts) {
+        Map<String, String> view = new HashMap<>();
+        for (Map<String, Object> attempt : attempts) {
+            if (!(attempt.get("workflow_run_id") instanceof String id) || id.isBlank()) continue;
+            String state = String.valueOf(attempt.get("view_state"));
+            if ("running".equals(state)) view.put(id, "running");
+            else view.putIfAbsent(id, state);
+        }
+        for (Map<String, Object> open : openRuns) {
+            if (!(open.get("run_id") instanceof String id)) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("run_id", id);
+            copyScalar(row, open, "task_id");
+            if (open.get("reserved_at") instanceof String at) row.put("started_at", at);
+            copyScalar(row, open, "updated_at");
+            String state = view.get(id);
+            if ("running".equals(state)) row.put("state", "running");
+            else if ("unknown_controller_stopped".equals(state)) row.put("state", "controller_stopped");
+            else row.put("state", "no_summary");
+            runs.add(row);
+        }
+    }
+
+    private static Instant sortTime(Map<String, Object> row) {
+        for (String key : List.of("started_at", "updated_at")) {
+            Instant parsed = instantOf(row.get(key));
+            if (parsed != null) return parsed;
+        }
+        return Instant.EPOCH;
+    }
+
+    private static Instant instantOf(Object value) {
+        if (!(value instanceof String text) || text.isBlank()) return null;
+        try { return Instant.parse(text); }
+        catch (RuntimeException unreadable) { return null; }
+    }
+
+    private static boolean mayBeBilled(Object steps) {
+        if (!(steps instanceof List<?> list)) return false;
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> step)) continue;
+            if (Boolean.TRUE.equals(step.get("may_be_billed"))) return true;
+            if (!(step.get("vendor_attempts") instanceof List<?> attempts)) continue;
+            for (Object raw : attempts) {
+                if (raw instanceof Map<?, ?> attempt && Boolean.TRUE.equals(attempt.get("may_be_billed"))) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A pending decision another run has overtaken. The caller shows {@code superseded}
+     * and does not write {@code decision.json}.
+     */
+    static boolean decisionSuperseded(Path runsRoot, String runId, String taskId, String fingerprint, String startedAt)
+            throws IOException {
+        List<Map<String, Object>> runs = runFacts(runsRoot);
+        Map<String, Object> self = null;
+        for (Map<String, Object> run : runs) {
+            if (runId != null && runId.equals(run.get("run_id"))) { self = run; break; }
+        }
+        if (self == null) {
+            self = new LinkedHashMap<>();
+            self.put("run_id", runId);
+            runs.add(self);
+        }
+        // The timeline already read this run. Prefer that over a second parse that missed a field.
+        if (taskId != null) self.put("task_id", taskId);
+        if (fingerprint != null) self.put("candidate_fingerprint", fingerprint);
+        if (startedAt != null) self.put("started_at", startedAt);
+        return supersededIds(runs).contains(runId);
+    }
+
+    private static void markSuperseded(List<Map<String, Object>> runs) {
+        Set<String> ids = supersededIds(runs);
+        for (Map<String, Object> run : runs) {
+            if (!ids.contains(String.valueOf(run.get("run_id")))) continue;
+            if (run.get("decision") instanceof Map<?, ?> decision && "pending".equals(decision.get("state"))) {
+                @SuppressWarnings("unchecked") Map<String, Object> writable = (Map<String, Object>) decision;
+                writable.put("state", "superseded");
+            }
+        }
+    }
+
+    private static Set<String> supersededIds(List<Map<String, Object>> runs) {
+        Set<String> ids = new HashSet<>();
+        for (Map<String, Object> run : runs) {
+            if (Boolean.TRUE.equals(run.get("dry_run"))) continue;
+            if (run.get("continued_from") instanceof String from && !from.isBlank()) ids.add(from);
+        }
+        for (Map<String, Object> run : runs) {
+            if (Boolean.TRUE.equals(run.get("dry_run"))) continue;
+            if (laterSameTree(runs, run)) ids.add(String.valueOf(run.get("run_id")));
+        }
+        return ids;
+    }
+
+    /** Same task, same tree, a later start. A dry run does not retire a real question. */
+    private static boolean laterSameTree(List<Map<String, Object>> runs, Map<String, Object> run) {
+        if (!(run.get("task_id") instanceof String task) || task.isBlank()) return false;
+        if (!(run.get("candidate_fingerprint") instanceof String fingerprint) || fingerprint.isBlank()) return false;
+        Instant start = instantOf(run.get("started_at"));
+        if (start == null) return false;
+        String id = String.valueOf(run.get("run_id"));
+        for (Map<String, Object> other : runs) {
+            if (id.equals(String.valueOf(other.get("run_id"))) || Boolean.TRUE.equals(other.get("dry_run"))) continue;
+            if (!task.equals(other.get("task_id")) || !fingerprint.equals(other.get("candidate_fingerprint"))) continue;
+            Instant later = instantOf(other.get("started_at"));
+            if (later != null && later.isAfter(start)) return true;
+        }
+        return false;
+    }
+
+    private static List<Map<String, Object>> runFacts(Path runsRoot) throws IOException {
+        List<Map<String, Object>> runs = new ArrayList<>();
+        if (!Files.isDirectory(runsRoot, LinkOption.NOFOLLOW_LINKS)) return runs;
+        try (var directories = Files.list(runsRoot)) {
+            for (Path directory : directories.filter(p -> Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                if (!directory.toRealPath().startsWith(runsRoot)) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("run_id", directory.getFileName().toString());
+                Path summary = directory.resolve("task-run.json");
+                if (Files.isRegularFile(summary, LinkOption.NOFOLLOW_LINKS) && Files.size(summary) <= 2L * 1024 * 1024
+                        && summary.toRealPath().startsWith(runsRoot)) {
+                    try {
+                        Map<String, Object> source = Json.parseObject(Files.readString(summary));
+                        for (String key : List.of("task_id", "continued_from", "candidate_fingerprint", "dry_run")) {
+                            copyScalar(row, source, key);
+                        }
+                    } catch (RuntimeException invalid) { /* an unreadable summary supersedes nothing */ }
+                }
+                Path reservation = directory.resolve("run.json");
+                if (Files.isRegularFile(reservation, LinkOption.NOFOLLOW_LINKS) && Files.size(reservation) <= 64 * 1024
+                        && reservation.toRealPath().startsWith(runsRoot)) {
+                    try {
+                        Map<String, Object> reserved = Json.parseObject(Files.readString(reservation));
+                        if (!row.containsKey("task_id")) copyScalar(row, reserved, "task_id");
+                        if (reserved.get("reserved_at") instanceof String at) row.put("started_at", at);
+                    } catch (RuntimeException invalid) { /* a start time is optional */ }
+                }
+                if (row.containsKey("task_id") || row.containsKey("continued_from") || row.containsKey("started_at")) runs.add(row);
+            }
+        }
+        return runs;
     }
 
     private static final String HTML = """
@@ -773,7 +962,7 @@ public final class Dashboard implements AutoCloseable {
             <p id="problems" class="bad"></p>
             <script>
             const $=id=>document.getElementById(id); let data;
-            function costText(usd,unpriced){const n=Number(unpriced||0);const amount=usd==null||usd===''?'—':'$'+Number(usd).toFixed(Number(usd)<1?4:2);return n>0?amount+' (+'+n+' {{t:dash.unpriced}})':amount}
+            function costText(usd,unpriced){const n=Number(unpriced||0);const missing=usd==null||usd==='';const amount=missing?null:Number(usd);if(n>0&&(missing||amount===0))return '{{t:dash.cost_is_unknown}} ('+n+' {{t:dash.unpriced}})';const shown=missing?'—':'$'+amount.toFixed(amount<1?4:2);return n>0?shown+' (+'+n+' {{t:dash.unpriced}})':shown}
             function cell(tr,value){const td=document.createElement('td');td.textContent=value??'—';tr.append(td)}
             function table(id,rows){const body=$(id);body.replaceChildren();for(const values of rows){const tr=document.createElement('tr');values.forEach(v=>cell(tr,v));body.append(tr)}}
             function line(parent,text){const div=document.createElement('div');div.textContent=text;parent.append(div)}
@@ -848,9 +1037,10 @@ public final class Dashboard implements AutoCloseable {
             function drawRuns(){openRuns=new Set([...document.querySelectorAll('#runs details[open]')].map(d=>d.dataset.run));const body=$('runs');body.replaceChildren();const runs=data.runs||[];
             for(const r of runs){const tr=document.createElement('tr');const chain=r.chain||{},decision=r.decision||{},gate=r.orca_gate||{};
             const cost=chain.cost_usd??r.total_cost_usd,unpriced=chain.unpriced_calls??r.unpriced_calls;
-            const costLabel=costText(cost,unpriced);
-            const outcome=(r.ok===true?'ok':r.ok===false?'{{t:conn.no}}':'—')+(r.reason?' · '+r.reason:'');
-            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'{{t:conn.yes}}':r.candidate_review_passed===false?'{{t:conn.no}}':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costLabel,chain.fix_attempts??r.attempts_used,decision.state??'—',gate.gate_id??'—'].forEach(v=>cell(tr,v));
+            const costLabel=costText(cost,unpriced)+(r.may_be_billed?' · {{t:dash.may_be_billed}}':'');
+            const outcome=r.state==='running'?'{{t:shell.in_progress}}':r.state==='controller_stopped'?'{{t:dash.controller_stopped_agent_unchecked}}':r.state==='no_summary'?'{{t:shell.no_results}}':((r.ok===true?'ok':r.ok===false?'{{t:conn.no}}':'—')+(r.reason?' · '+r.reason:''));
+            const decisionState=decision.state==='superseded'?'{{t:dash.decision_superseded}}':(decision.state??'—');
+            [r.run_id+' / '+(r.task_id??'—'),outcome,r.candidate_review_passed===true?'{{t:conn.yes}}':r.candidate_review_passed===false?'{{t:conn.no}}':'—',r.open_blocking_findings,chain.role_runs??r.role_runs,costLabel,chain.fix_attempts??r.attempts_used,decisionState,gate.gate_id??'—'].forEach(v=>cell(tr,v));
             const td=document.createElement('td');td.append(timeline(r));tr.append(td);const first=tr.firstChild,button=document.createElement('button');button.type='button';button.className='linkish';button.textContent=first.textContent;button.title='{{t:dash.open_run_timeline}}';button.addEventListener('click',()=>window.overseerOpenRun&&overseerOpenRun(r.run_id));first.replaceChildren(button);body.append(tr)}
             $('runs-empty').hidden=runs.length>0;$('dry-hidden').textContent=data.dry_runs_hidden?('{{t:dash.hidden_dry_run_entries}} '+data.dry_runs_hidden):''}
             const states={running:'{{t:dash.in_progress}}',completed:'{{t:dash.completed}}',failed:'{{t:dash.error_2}}',needs_you:'{{t:dash.answer_needed}}',dry_run:'{{t:dash.dry_run_state}}',unknown_controller_stopped:'{{t:dash.controller_stopped_agent_unchecked}}'};

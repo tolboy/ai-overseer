@@ -87,9 +87,13 @@ public final class RunTimelineTest implements Suite {
                 Map.of("id", "defect", "category", "product_defect", "severity", "P1", "status", "open")))));
         summary.put("workflow", List.of(Map.of("stage", "implement", "run", "role", "role", "implementer", "when", List.of()),
                 Map.of("stage", "gates", "run", "machine_gates", "when", List.of()),
-                Map.of("stage", "review", "run", "role", "role", "reviewer", "when", List.of("review_required"))));
+                Map.of("stage", "review", "run", "role", "role", "reviewer", "when", List.of("review_required")),
+                Map.of("stage", "review-second", "run", "role", "role", "reviewer", "when", List.of()),
+                Map.of("stage", "look", "run", "role", "role", "reviewer", "when", List.of())));
         summary.put("completed_stages", List.of("implement"));
-        summary.put("pending_stages", List.of(Map.of("stage", "gates", "reason", "did_not_pass")));
+        summary.put("pending_stages", List.of(Map.of("stage", "gates", "reason", "did_not_pass"),
+                Map.of("stage", "review-second", "reason", "not_reached"),
+                Map.of("stage", "look", "reason", "judged_an_earlier_candidate")));
         summary.put("inapplicable_stages", List.of("review"));
         Map<String, Object> attempt1 = new LinkedHashMap<>();
         attempt1.put("duration_millis", 1000L); attempt1.put("model_requested", "m-1"); attempt1.put("model_reported", null);
@@ -100,10 +104,16 @@ public final class RunTimelineTest implements Suite {
         Map<String, Object> pricedAttempt = new LinkedHashMap<>(attempt2);
         pricedAttempt.put("duration_millis", 500L);
         pricedAttempt.put("cost_usd", 0.25);
+        Map<String, Object> billed = new LinkedHashMap<>();
+        billed.put("ok", false);
+        billed.put("code", "role_api_timeout");
+        billed.put("may_be_billed", true);
+        billed.put("profile", "writer");
+        billed.put("duration_millis", 100L);
         Map<String, Object> roleStep = new LinkedHashMap<>();
         roleStep.put("step", "implementer"); roleStep.put("stage", "implement"); roleStep.put("attempt", 0L);
         roleStep.put("ok", true); roleStep.put("code", "ok"); roleStep.put("profile", "writer"); roleStep.put("vendor", "acme");
-        roleStep.put("cost_usd", 0.25); roleStep.put("vendor_attempts", List.of(pricedAttempt, attempt1, attempt2));
+        roleStep.put("cost_usd", 0.25); roleStep.put("vendor_attempts", List.of(pricedAttempt, attempt1, billed, attempt2));
         roleStep.put("artifact_path", ".oseer/runs/" + id + "--implementer-0/artifacts/implementer.json");
         summary.put("steps", List.of(
                 Map.of("step", "baseline", "attempt", 0L, "ok", true, "code", "passed",
@@ -125,13 +135,13 @@ public final class RunTimelineTest implements Suite {
         Map<?, ?> baselineStep = (Map<?, ?>) steps.get(0), role = (Map<?, ?>) steps.get(2), gate = (Map<?, ?>) steps.get(3);
         check.eq("baseline is a gate", "gate", baselineStep.get("kind"));
         check.eq("baseline duration comes from its commands", 1200L, ((Number) baselineStep.get("duration_ms")).longValue());
-        check.eq("role duration sums every vendor attempt", 4000L, ((Number) role.get("duration_ms")).longValue());
+        check.eq("role duration sums every vendor attempt", 4100L, ((Number) role.get("duration_ms")).longValue());
         check.eq("summary labels the role", "implementer", role.get("role"));
         check.eq("model is the one the last attempt reported", "m-1-build", role.get("model"));
         check.eq("requested model is kept beside it", "m-1", role.get("model_requested"));
         check.eq("effort is the requested effort", "high", role.get("effort"));
-        check.eq("attempt count is shown", 3, ((Number) role.get("vendor_attempts")).intValue());
-        check.eq("unpriced calls are counted per vendor attempt", 2L, ((Number) role.get("unpriced_calls")).longValue());
+        check.eq("attempt count is shown", 4, ((Number) role.get("vendor_attempts")).intValue());
+        check.eq("unpriced calls are counted per vendor attempt", 3L, ((Number) role.get("unpriced_calls")).longValue());
         check.eq("a vendor call without a price is unpriced, not free", true, role.get("unpriced"));
         check.eq("only input and output tokens are shown", Map.of("input", 10L, "output", 20L), role.get("tokens"));
         check.eq("role evidence directory comes from the artifact path", id + "--implementer-0", role.get("evidence_dir"));
@@ -150,9 +160,14 @@ public final class RunTimelineTest implements Suite {
         check.eq("baseline is recorded", true, baseline.get("recorded"));
         check.eq("baseline commands are read from its report", 1, ((List<?>) baseline.get("commands")).size());
         List<?> workflow = (List<?>) timeline.get("workflow");
-        check.eq("completed stage", "completed", ((Map<?, ?>) workflow.get(0)).get("state"));
+        check.eq("a finished stage chip matches its card", "passed", ((Map<?, ?>) workflow.get(0)).get("state"));
         check.eq("a stage that ran and did not pass is failed, not still open", "failed", ((Map<?, ?>) workflow.get(1)).get("state"));
         check.eq("inapplicable stage", "skipped", ((Map<?, ?>) workflow.get(2)).get("state"));
+        check.eq("a stage the run never reached is not still open", "not_reached", ((Map<?, ?>) workflow.get(3)).get("state"));
+        check.eq("a verdict about an older tree is not still open", "earlier_candidate", ((Map<?, ?>) workflow.get(4)).get("state"));
+        check.eq("a sent request that timed out may be billed", true,
+                ((Map<?, ?>) ((List<?>) role.get("failed_attempts")).get(0)).get("may_be_billed"));
+        check.eq("the run total says a call may be billed", true, ((Map<?, ?>) timeline.get("totals")).get("may_be_billed"));
         Map<?, ?> totals = (Map<?, ?>) timeline.get("totals");
         check.eq("known cost is the run's measured total, including preparation", 0.5, totals.get("cost_usd_known"));
         check.eq("one unpriced step is counted", 1L, ((Number) totals.get("unpriced_steps")).longValue());

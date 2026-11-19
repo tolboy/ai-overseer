@@ -972,6 +972,11 @@ models.ping = Проверить связь
 shell.overview_lineup_note = По личной политике, до настроек задачи. Закрепления стадий в задаче, флаги CLI и Jev могут выбрать другого участника. Точный состав для задачи — во вкладке «Следующий запуск»; менять участников и модели — во вкладке «Роли и вендоры».
 timeline.attempt_failed = попытка не удалась:
 timeline.switched = смена вендора:
+dash.cost_is_unknown = стоимость неизвестна
+dash.may_be_billed = может быть списано
+dash.decision_superseded = устарело
+shell.not_reached = не достигнута
+shell.earlier_candidate = вердикт по старому дереву
 """;
 
     static final String TEXT = String.join("\n", CONN, DASH, DECISION, DIFF, MODELS, NEXT, PREVIEW, SHELL, VENDORS, ADDED);

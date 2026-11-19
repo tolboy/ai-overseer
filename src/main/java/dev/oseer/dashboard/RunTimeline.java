@@ -135,16 +135,10 @@ public final class RunTimeline {
         steps.forEach(RunTimeline::maskCommands);
         result.put("baseline", baseline);
         result.put("steps", steps);
-        // A stage that ran and did not pass is failed, not "still open": the summary lists it
-        // among pending stages with did_not_pass, which read as waiting in the timeline.
-        if (result.get("workflow") instanceof List<?> stages) {
-            for (Object item : stages) {
-                if (item instanceof Map<?, ?> raw && "pending".equals(raw.get("state")) && "did_not_pass".equals(raw.get("reason"))) {
-                    @SuppressWarnings("unchecked") Map<String, Object> row = (Map<String, Object>) raw;
-                    row.put("state", "failed");
-                }
-            }
-        }
+        // The chip row and the stage cards are one fact. A stage that passed used to read
+        // "completed" on the chip and "passed" on the card, and a stage the run never opened
+        // read "still open" under a header that already said the run had stopped.
+        agreeWithCards(result.get("workflow"), steps);
         if (Boolean.FALSE.equals(result.get("ok"))) {
             List<Map<String, Object>> causes = stopCauses(steps);
             if (!causes.isEmpty()) result.put("stop_causes", causes);
@@ -168,10 +162,61 @@ public final class RunTimeline {
         if (result.get("unpriced_calls") instanceof Number recorded) unpriced = recorded.longValue();
         totals.put("unpriced_calls", unpriced);
         totals.put("unpriced_steps", steps.stream().filter(step -> Boolean.TRUE.equals(step.get("unpriced"))).count());
+        if (steps.stream().anyMatch(RunTimeline::mayBeBilled)) totals.put("may_be_billed", true);
         result.put("totals", totals);
-        result.put("decision_record", decision(directory, runsRoot));
+        Map<String, Object> decisionRecord = decision(directory, runsRoot);
+        // Shown, not rewritten. A later continuation or a later run of the same tree leaves
+        // decision.json pending; the ledger is the record of what was asked.
+        if (decisionRecord != null && "pending".equals(decisionRecord.get("state"))) {
+            String taskId = result.get("task_id") instanceof String text ? text : null;
+            String fingerprint = summary != null && summary.get("candidate_fingerprint") instanceof String text ? text : null;
+            String started = result.get("started_at") instanceof String text ? text : null;
+            try {
+                if (Dashboard.decisionSuperseded(runsRoot, runId, taskId, fingerprint, started)) {
+                    decisionRecord.put("state", "superseded");
+                }
+            } catch (IOException unread) { /* a sibling that cannot be read does not change this decision */ }
+        }
+        result.put("decision_record", decisionRecord);
         result.put("observed_at", Instant.now().toString());
         return result;
+    }
+
+    /**
+     * Chip state follows the card when a stage ran, and names the reason when it did not.
+     * {@code not_reached} and {@code judged_an_earlier_candidate} are not an open stage.
+     */
+    @SuppressWarnings("unchecked")
+    private static void agreeWithCards(Object workflow, List<Map<String, Object>> steps) {
+        if (!(workflow instanceof List<?> stages)) return;
+        Map<String, String> cards = new LinkedHashMap<>();
+        for (Map<String, Object> step : steps) {
+            if (step.get("stage") instanceof String name && step.get("status") instanceof String status && !status.isBlank()
+                    && !"unknown".equals(status)) {
+                cards.put(name, status);
+            }
+        }
+        for (Object item : stages) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> row = (Map<String, Object>) raw;
+            String card = cards.get(String.valueOf(row.get("stage")));
+            if (card != null) { row.put("state", card); continue; }
+            if ("completed".equals(row.get("state"))) { row.put("state", "passed"); continue; }
+            if (!"pending".equals(row.get("state"))) continue;
+            String reason = String.valueOf(row.get("reason"));
+            if ("did_not_pass".equals(reason)) row.put("state", "failed");
+            else if ("not_reached".equals(reason)) row.put("state", "not_reached");
+            else if ("judged_an_earlier_candidate".equals(reason)) row.put("state", "earlier_candidate");
+        }
+    }
+
+    private static boolean mayBeBilled(Map<String, Object> step) {
+        if (Boolean.TRUE.equals(step.get("may_be_billed"))) return true;
+        if (!(step.get("failed_attempts") instanceof List<?> attempts)) return false;
+        for (Object item : attempts) {
+            if (item instanceof Map<?, ?> attempt && Boolean.TRUE.equals(attempt.get("may_be_billed"))) return true;
+        }
+        return false;
     }
 
     /**
@@ -743,7 +788,7 @@ public final class RunTimeline {
         for (Object raw : attempts) {
             if (!(raw instanceof Map<?, ?> attempt) || !Boolean.FALSE.equals(attempt.get("ok"))) continue;
             Map<String, Object> one = new LinkedHashMap<>();
-            for (String key : List.of("profile", "vendor", "provider", "code", "failure_phase", "delivery"))
+            for (String key : List.of("profile", "vendor", "provider", "code", "failure_phase", "delivery", "may_be_billed"))
                 copyScalar(one, attempt, key);
             Object status = attempt.get("http_status");
             if (status instanceof Number number) one.put("http_status", number.longValue());
