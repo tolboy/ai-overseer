@@ -8,6 +8,7 @@ import dev.oseer.config.UserSetup;
 import dev.oseer.gate.VisualQaRunner;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.role.RoleRunner;
 import dev.oseer.run.TaskLoop;
 import dev.oseer.run.Workspace;
 import dev.oseer.testing.Check;
@@ -40,6 +41,7 @@ public final class TaskLoopTest implements Suite {
             new UserSetup().run(home);
             readinessStopsBeforeWork(check, sandbox, home);
             writerPinFollowsAFixAndAnAdvance(check, sandbox, home);
+            reviewOnlyReadsAnExistingBranch(check, sandbox, home);
 
             // Clean run: implement, gates pass, review passes, stop for a human.
             Path clean = newProject(sandbox, "clean");
@@ -7244,6 +7246,90 @@ public final class TaskLoopTest implements Suite {
         Files.writeString(project.resolve("README.md"), "seed\n");
         seedRepository(project);
         return project;
+    }
+
+    /**
+     * `mode: review` over a branch somebody else wrote: nobody is dispatched to write, the
+     * branch's declared author is the vendor every reader must differ from, and a reader that
+     * objects does not stop the readers after it. Measured 2026-11-18: the loop could not read
+     * an existing pull request at all, because `implement` always ran and the planned
+     * implementer's vendor disqualified a reader nobody was going to have write.
+     */
+    private void reviewOnlyReadsAnExistingBranch(Check check, Path sandbox, Path home) throws Exception {
+        Path branch = newProject(sandbox, "review-only");
+        Path implCounter = sandbox.resolve("review-only-impl.count");
+        Files.deleteIfExists(implCounter);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed", "impl", implCounter, 1);
+        // The implementer shares a vendor with the second reader: in a writing run that reader
+        // would be refused. In a review nobody writes, so it reads.
+        writeProfile(home, "ro-review-a", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-a.count"), 99);
+        writeProfile(home, "ro-review-b", "reviewer", "implvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-b.count"), 1);
+        writeProfile(home, "ro-review-author", "reviewer", "authorvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-author.count"), 1);
+        Files.writeString(home.resolve("policy.yaml"), """
+                version: 1
+                roles:
+                  implementer: { profiles: [loop-impl], strategy: first, require_independent_vendor: false }
+                  reviewer: { profiles: [ro-review-a, ro-review-b], strategy: rotate, require_independent_vendor: true }
+                review: { required_for_risk: [medium, high] }
+                workflow:
+                  stages:
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: gates, run: machine_gates, on_fail: fix }
+                    - { stage: review, run: role, role: reviewer, when: [review_required], on_fail: stop, on_findings: fix }
+                    - { stage: review-second, run: role, role: reviewer, when: [review_required], on_fail: stop, on_findings: fix }
+                """);
+        // The branch under review already holds the change.
+        Files.writeString(branch.resolve("src/result.txt"), "written on the PR branch" + System.lineSeparator());
+        Path task = branch.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "")
+                + "mode: review\nprior_writers: [authorvendor]\n");
+
+        TaskLoop.Outcome preview = dryLoop(branch, home, "ro-dry", new Board());
+        check.that("a review-only preview resolves", preview.ok());
+        check.that("the writing stage is skipped as review_only",
+                ((List<?>) preview.summaryReport().get("inapplicable_stages")).contains(
+                        Map.of("stage", "implement", "reason", "review_only")));
+
+        TaskLoop.Outcome read = loop(branch, home, "ro1");
+        check.that("nothing was dispatched to write", !Files.exists(implCounter));
+        check.eq("both readers ran although the first objected", 2L, read.summaryReport().get("role_runs"));
+        check.eq("the run stops on the findings, for a person", "blocking_findings_remain", read.reason());
+        check.eq("no fix round was attempted", 0L, read.summaryReport().get("attempts_used"));
+        check.eq("the objecting reader is named", List.of("review"), read.summaryReport().get("objecting_stages"));
+        check.eq("the declared author is the writer set", List.of("authorvendor"),
+                read.summaryReport().get("writer_vendors"));
+        check.eq("so the readings are independent", "independent", read.summaryReport().get("review_assurance"));
+
+        // The author's own vendor still cannot read its branch.
+        Files.writeString(home.resolve("policy.yaml"), Files.readString(home.resolve("policy.yaml"))
+                .replace("[ro-review-a, ro-review-b]", "[ro-review-author]"));
+        TaskLoop.Outcome refused = dryLoop(branch, home, "ro-dry-author", new Board());
+        check.that("the author's vendor is refused as a reader of its own branch",
+                String.valueOf(refused.summaryReport()).contains("same_vendor_as_writer"));
+
+        // `oseer role reviewer <task> --use <profile>`: a reader off the roster, picked for one
+        // dispatch, still judged against the task's declared authors.
+        ConfigLoader.Loaded loaded = new ConfigLoader().load(branch, "hello");
+        var authors = new dev.oseer.role.RoleResolver.Writers(java.util.Set.of("authorvendor"),
+                java.util.Set.of(), true, false);
+        RoleRunner.Outcome offRoster = new RoleRunner(new ProcessRunner()).pinRoleForRun("reviewer", "ro-review-b")
+                .run(loaded, UserConfig.load(home), "reviewer", "ro-role-a", authors, null, List.of(), true,
+                        RoleRunner.UNSTAGED);
+        check.that("a pinned reader that is not on the roster is dispatched", offRoster.ok());
+        check.eq("and it is the one that was named", "ro-review-b", offRoster.profile());
+        RoleRunner.Outcome ownBranch = new RoleRunner(new ProcessRunner()).pinRoleForRun("reviewer", "ro-review-author")
+                .run(loaded, UserConfig.load(home), "reviewer", "ro-role-b", authors, null, List.of(), true,
+                        RoleRunner.UNSTAGED);
+        check.that("a pin cannot put the author's vendor in the reader's chair", !ownBranch.ok());
+        check.eq("and the refusal names the rule", "same_vendor_as_writer",
+                ownBranch.rejected().get("ro-review-author"));
     }
 
     /** Stand-ins whose success attempt is set per scenario, so fix rounds are forced, not hoped for. */

@@ -265,10 +265,10 @@ public final class UserSetup {
             role: reviewer
             vendor: grok
             effort: high
-            # A label unless the args below pass it on. Overseer makes the value available as
-            # {{model}}; each vendor spells its own flag, so the profile writes the flag out.
+            # Passed to the CLI below as --model {{model}}. Without that flag the value was only
+            # a label and the CLI ran its own default, which made the report's model a guess.
             # When the vendor reports a different model, the run report says so.
-            model: grok-4.6-build
+            model: grok-4.6
             command: grok
             runner: direct
             read_only: true
@@ -282,21 +282,25 @@ public final class UserSetup {
             #   --always-approve     the flag that actually auto-approves tool execution.
             #   --reasoning-effort   must be pinned here; unset it is inherited from
             #                        ~/.grok/config.toml, which makes cost depend on ambient state.
+            #   --max-turns          the verification review below took 17 turns; 12 could not
+            #                        finish it. A pull-request-sized review needs room to read.
             args:
               - "--prompt-file"
               - "{{prompt_file}}"
               - "--output-format"
               - "json"
+              - "--model"
+              - "{{model}}"
               - "--always-approve"
               - "--reasoning-effort"
               - "{{effort}}"
               - "--max-turns"
-              - "12"
+              - "40"
               - "--disable-web-search"
               - "--verbatim"
 
             limits:
-              wall_clock_minutes: 25
+              wall_clock_minutes: 40
 
             prompt_template: prompts/reviewer.md
             json_schema: schemas/reviewer.json

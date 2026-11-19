@@ -117,7 +117,9 @@ public final class ApiExecutor implements RoleExecutor {
         String prompt = Files.readString(request.promptFile(), StandardCharsets.UTF_8);
         int outputLimit = profile.maxOutputTokens();
         if (outputLimit < 1) return failure("role_api_output_limit_missing", started, "", evidence);
-        if ("gonkarouter".equals(connection.provider()) && outputLimit > 4096) {
+        Integer ceiling = connection.outputCeiling();
+        if (ceiling != null && outputLimit > ceiling) {
+            evidence.put("connection_output_ceiling", (long) ceiling);
             return failure("role_api_output_limit_unsupported", started, "", evidence);
         }
         evidence.put("max_output_tokens", (long) outputLimit);

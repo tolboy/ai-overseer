@@ -356,6 +356,20 @@ public final class RoleRunner {
     }
 
     /**
+     * `oseer role <role> <task> --use <profile>`: a person picks the reader for one
+     * standalone dispatch. Judged like {@link #pinForRun}: every roster filter, including
+     * independence from the writers, still applies, and the profile need not be on the
+     * role's roster list — the point is to read with someone the rotation would not pick.
+     */
+    public RoleRunner pinRoleForRun(String role, String profile) {
+        roleAssignments.put(role, profile);
+        operatorPinnedRoles.add(role);
+        return this;
+    }
+
+    private final Set<String> operatorPinnedRoles = new LinkedHashSet<>();
+
+    /**
      * Pin {@code profile} for every later dispatch of the stage called {@code stage}.
      *
      * The escalation ladder's pin, and it takes the stage over: a rung reached after a
@@ -501,7 +515,7 @@ public final class RoleRunner {
         if (stage != null && stageAssignments.containsKey(stage)) {
             return operatorPinnedStages.contains(stage);
         }
-        return false;
+        return stage == null && operatorPinnedRoles.contains(role);
     }
 
     public RoleRunner(ProcessRunner processes) { this(processes, ALWAYS, null, null); }
@@ -901,9 +915,13 @@ public final class RoleRunner {
             String prompt = PromptRenderer.render(template, values, templateFile.toString());
             boolean backfilled = backfillNeeded(role, task, template);
             if (backfilled) prompt = prompt + browserScenarioSection(values.get("visual_scenarios"));
+            Map<String, Object> apiContextEvidence = null;
             if ("api".equals(profile.runner())) {
                 try {
-                    prompt += "\n\n" + dev.oseer.execution.ApiContextBuilder.build(root, mergeBase, processes);
+                    var snapshot = dev.oseer.execution.ApiContextBuilder.build(root, mergeBase, processes,
+                            profile.apiContext());
+                    prompt += "\n\n" + snapshot.text();
+                    apiContextEvidence = snapshot.evidence(profile.apiContext());
                 } catch (java.io.IOException unavailableContext) {
                     Map<String, Object> refusal = new LinkedHashMap<>();
                     refusal.put("ok", false);
@@ -913,6 +931,7 @@ public final class RoleRunner {
                     refusal.put("vendor", profile.vendor());
                     refusal.put("vendor_turn_started", false);
                     refusal.put("message", unavailableContext.getMessage());
+                    refusal.put("api_context_limits", profile.apiContext().toMap());
                     Path path = ledger.writeReport("role-" + role + "-context-refused", refusal);
                     ledger.append("role_api_context_unavailable", refusal);
                     return new Outcome(false, "role_api_context_unavailable", role, profile.name(),
@@ -979,6 +998,7 @@ public final class RoleRunner {
             report.put("prompt_path", root.relativize(promptFile).toString().replace('\\', '/'));
             report.put("prompt_sha256", GitRepository.sha256(promptFile));
             report.put("diff_base_commit", mergeBase);
+            if (apiContextEvidence != null) report.put("api_context", apiContextEvidence);
             report.put("wall_clock_minutes", profile.wallClockMinutes());
             if ("local".equals(profile.runner()) || "api".equals(profile.runner())) {
                 report.put("dispatch_preview", dispatchPreview(profile));

@@ -80,7 +80,17 @@ public record Profile(
     public record ApiSettings(String connection, String modelVendor, int maxOutputTokens,
                               String verificationFingerprint, Connection resolved, java.nio.file.Path home,
                               java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes,
-                              Integer maxRequests) {
+                              Integer maxRequests, ApiContextSettings apiContext) {
+        public ApiSettings {
+            if (apiContext == null) apiContext = ApiContextSettings.DEFAULT;
+        }
+        public ApiSettings(String connection, String modelVendor, int maxOutputTokens,
+                           String verificationFingerprint, Connection resolved, java.nio.file.Path home,
+                           java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes,
+                           Integer maxRequests) {
+            this(connection, modelVendor, maxOutputTokens, verificationFingerprint, resolved, home,
+                    harnessExecutable, declaredWallClockMinutes, maxRequests, null);
+        }
         public ApiSettings(String connection, String modelVendor, int maxOutputTokens,
                            String verificationFingerprint, Connection resolved, java.nio.file.Path home,
                            java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes) {
@@ -127,6 +137,10 @@ public record Profile(
     }
 
     public int maxOutputTokens() { return apiSettings == null ? 2048 : apiSettings.maxOutputTokens(); }
+    /** What an API reader is sent about the candidate; defaults for every other runner. */
+    public ApiContextSettings apiContext() {
+        return apiSettings == null ? ApiContextSettings.DEFAULT : apiSettings.apiContext();
+    }
     public Connection apiConnection() { return apiSettings == null ? null : apiSettings.resolved(); }
     /** Model turns one OpenCode dispatch may take through the relay. */
     public int maxRequests() {
@@ -153,7 +167,7 @@ public record Profile(
         if (apiConnection() == null) throw new IllegalArgumentException("API probe requires a bound connection");
         ApiSettings probe = new ApiSettings(connectionRef(), modelVendor(), maxOutputTokens(), null,
                 apiConnection(), apiSettings.home(), harnessExecutable(), declaredWallClockMinutes(),
-                apiSettings.maxRequests());
+                apiSettings.maxRequests(), apiSettings.apiContext());
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
@@ -191,7 +205,7 @@ public record Profile(
         String boundEndpoint = harness == null ? connection.endpoint() : connection.baseUrl();
         ApiSettings settings = new ApiSettings(connectionRef(), modelVendor(), maxOutputTokens(),
                 apiSettings.verificationFingerprint(), connection, home.toAbsolutePath().normalize(), harnessExecutable(), declaredWallClockMinutes(),
-                apiSettings.maxRequests());
+                apiSettings.maxRequests(), apiSettings.apiContext());
         Profile bound = new Profile(name, role, vendor, model, effort, command, args, readOnly,
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, promptDelivery, attachmentFlag, vision,
@@ -310,7 +324,7 @@ public record Profile(
             "limits", "prompt_template", "json_schema", "enforce_schema", "artifact", "quota",
             "prompt_delivery", "attachments", "capabilities", "runner", "endpoint", "api_key_env",
             "verification", "notes", "mcp", "connection", "model_vendor", "harness", "harness_executable",
-            "service", "account");
+            "service", "account", "api_context");
     private static final Set<String> MCP = Set.of("config", "note");
     private static final Set<String> LIMITS = Set.of("wall_clock_minutes", "max_cost_usd", "max_output_tokens",
             "max_requests");
@@ -321,6 +335,9 @@ public record Profile(
     private static final Set<String> VISION = Set.of("delivery", "verification", "acquires");
     private static final Set<String> VERIFICATION = Set.of(
             "verified_on", "status", "probe", "what_to_check", "note", "expect", "connection_fingerprint");
+
+    /** The largest output cap a profile may declare; a connection may set a lower one. */
+    public static final int MAX_OUTPUT_TOKENS_CEILING = 65536;
 
     public static final Set<String> ROLES = Set.of(
             "implementer", "reviewer", "architect", "visual_qa", "planner", "plan_reviewer");
@@ -377,7 +394,7 @@ public record Profile(
         if (scoped != null && scoped.declaredWallClockMinutes() == null) {
             scoped = new ApiSettings(scoped.connection(), scoped.modelVendor(), scoped.maxOutputTokens(),
                     scoped.verificationFingerprint(), scoped.resolved(), scoped.home(), scoped.harnessExecutable(), wallClockMinutes,
-                    scoped.maxRequests());
+                    scoped.maxRequests(), scoped.apiContext());
         }
         // A per-dispatch override can only tighten a harness's verified declaration.
         long bounded = harness == null ? minutes : Math.min(minutes, Math.min(wallClockMinutes, declaredWallClockMinutes()));
@@ -486,7 +503,7 @@ public record Profile(
         // no price cannot honestly declare one, and a strict cap then refuses the roster.
         Double maxCostUsd = limits.has("max_cost_usd")
                 ? limits.optDouble("max_cost_usd", 1.0, 0.0, 10000.0) : null;
-        int maxOutputTokens = (int) limits.optInt("max_output_tokens", 2048, 1, 16384);
+        int maxOutputTokens = (int) limits.optInt("max_output_tokens", 2048, 1, MAX_OUTPUT_TOKENS_CEILING);
         // An omitted cap is not a promise of 2048. API keeps its historical default.
         if (opencode && !limits.has("max_output_tokens")) maxOutputTokens = 0;
         // Relay turns for one OpenCode dispatch. Only a coding harness has turns to count.
@@ -495,6 +512,18 @@ public record Profile(
             if (!opencode) root.collector().add("limits.max_requests applies only to harness: opencode");
             else maxRequests = (int) limits.optInt("max_requests", CodingAttestation.MAX_REQUESTS,
                     1, CodingAttestation.REQUEST_CEILING);
+        }
+        ApiContextSettings apiContext = null;
+        if (root.has("api_context")) {
+            if (!"api".equals(runner)) {
+                root.collector().add("api_context applies only to runner: api; other runners read the worktree themselves");
+            } else {
+                try {
+                    apiContext = ApiContextSettings.parse(root.optMap("api_context"));
+                } catch (IllegalArgumentException invalid) {
+                    root.collector().add(invalid.getMessage());
+                }
+            }
         }
         if (harnessExecutable != null && maxOutputTokens == 0) {
             root.collector().add("harness_executable requires an explicit limits.max_output_tokens");
@@ -706,7 +735,7 @@ public record Profile(
                 probe, whatToCheck, verified, mcpConfig, expect, harness,
                 connects ? new ApiSettings(connection, canonicalVendor(modelVendor),
                         maxOutputTokens, connectionFingerprint, null, null, harnessExecutable, wallClock,
-                        maxRequests) : null,
+                        maxRequests, apiContext) : null,
                 cliService);
     }
 

@@ -260,7 +260,7 @@ public final class ModelCheck {
         if (limit >= 1 && reasoningModel(profile.model())) {
             limit = Math.max(limit, Math.min(REASONING_PING_FLOOR, profile.maxOutputTokens()));
         }
-        if (connection != null && "gonkarouter".equals(connection.provider())) limit = Math.min(limit, 4096);
+        if (connection != null && connection.outputCeiling() != null) limit = Math.min(limit, connection.outputCeiling());
         return limit;
     }
 

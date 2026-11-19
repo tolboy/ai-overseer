@@ -132,7 +132,35 @@ a later failure clears aggregate confirmation while preserving individual turn r
 
 API roles have no filesystem or command tools. A role dispatched through Overseer receives a bounded diff and current changed-source snapshot. Overseer refuses unsupported/binary/secret/oversized context rather than silently truncating it. Overseer's own `.oseer` metadata is excluded. The snapshot is limited to changed source; the model must return an inconclusive result when required dependencies or evidence are absent. Native synthetic verification has no repository snapshot because it is not a review.
 
-Every request sets an output token limit (default 2048). GonkaRouter refuses a configured limit above 4096; model fallback is disabled. OpenRouter requires supported parameters and disables provider fallback for this first increment. A response with unknown/substituted model identity, tool calls, truncated output or invalid artifact fails.
+What the snapshot carries is set per profile by an optional `api_context` block (only for `runner: api`):
+
+```yaml
+api_context:
+  mode: auto            # auto (default) | full | diff
+  max_files: 64         # changed files whose whole text may be included
+  max_file_bytes: 65536 # one changed file's whole text
+  max_bytes: 262144     # the whole snapshot: instructions, diff and files
+```
+
+- `full` sends the diff and every changed file whole. Anything over a limit refuses the call
+  before it is sent, and the refusal names each file that did not fit, its size and the key to
+  raise (`README.md (66641 bytes) exceed the per-file limit of 65536 bytes (api_context.max_file_bytes)`).
+- `diff` sends the diff and the list of changed paths, without whole files. Untracked files have
+  no diff, so their whole text is still sent and still bound by `max_file_bytes`.
+- `auto` sends `full` when it fits and otherwise `diff`, telling the model that whole files
+  are absent and recording why in the role report (`api_context.fallback_reasons`) and on the
+  run's progress line. A diff that does not fit `max_bytes` still refuses: nothing is cut.
+
+Limits go up to 4 MiB and 4096 files. The block does not change the profile's verification
+stamp: it changes what the model reads, not which model, endpoint or output bound is used.
+
+Every request sets an output token limit (`limits.max_output_tokens`, default 2048, at most
+65536). GonkaRouter refused a configured limit above 4096 when this was measured, so that is the
+default ceiling for a `gonkarouter` connection; a connection that has been shown to accept more
+declares its own `max_output_tokens: N` in its YAML, and a profile above the ceiling fails with
+`role_api_output_limit_unsupported` before anything is sent. A declared ceiling is part of the
+connection fingerprint; leaving it out keeps the fingerprint every existing stamp was made
+against. Model fallback is disabled. OpenRouter requires supported parameters and disables provider fallback for this first increment. A response with unknown/substituted model identity, tool calls, truncated output or invalid artifact fails.
 
 HTTP response size is bounded to 4 MiB and the deadline includes the response body. Errors distinguish authorization, credits/budgets, rate limits, unsupported requests, network/protocol failures and identity mismatches. They stop for operator action unless the operator explicitly permits the bounded role fallback below; they never trigger a code repair.
 

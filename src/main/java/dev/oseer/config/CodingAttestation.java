@@ -23,7 +23,7 @@ public final class CodingAttestation {
     /** Ceilings a profile may raise its turns and output tokens to. */
     public static final int REQUEST_CEILING = 32;
     public static final int OUTPUT_CEILING = 8192;
-    public static final int GONKAROUTER_OUTPUT_CEILING = 4096;
+    public static final int GONKAROUTER_OUTPUT_CEILING = Connection.GONKAROUTER_DEFAULT_OUTPUT_CEILING;
     private static final int MAX_RECEIPT_BYTES = 64 * 1024;
     private static final Set<String> PROOFS =
             Set.of(
@@ -56,10 +56,11 @@ public final class CodingAttestation {
      */
     public static int outputLimit(Profile profile) {
         int limit = Math.min(profile.maxOutputTokens(), OUTPUT_CEILING);
-        // GonkaRouter refuses a max_tokens above 4096 (see docs/API-CONNECTIONS.md).
+        // GonkaRouter refused a max_tokens above 4096 (see docs/API-CONNECTIONS.md); a
+        // connection may declare its own ceiling with max_output_tokens.
         Connection connection = profile.apiConnection();
-        if (connection != null && "gonkarouter".equals(connection.provider()))
-            limit = Math.min(limit, GONKAROUTER_OUTPUT_CEILING);
+        if (connection != null && connection.outputCeiling() != null)
+            limit = Math.min(limit, connection.outputCeiling());
         return limit;
     }
 

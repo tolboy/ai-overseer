@@ -1007,7 +1007,8 @@ public final class TaskLoop {
         if (!alreadyOutside.isEmpty()) {
             summary.put("preexisting_violations", alreadyOutside);
             summary.put("resolution", "these paths were already changed before this run started "
-                    + "and are outside the task's scope " + task.scopePaths() + ". Revert them, "
+                    + "and are outside the task's scope " + task.scopePaths() + ": "
+                    + namedPaths(alreadyOutside) + ". Revert them, "
                     + "commit them, or widen the scope — an implementer cannot touch them.");
             if (!dryRun) return stop(ledger, summary, "preflight_outside_scope", steps, 0, budget);
             // A dry run has no candidate to protect, so this does not stop it — but it is
@@ -1875,9 +1876,20 @@ public final class TaskLoop {
      * reviewer that risk had already excluded, or fail to reserve one that risk had brought
      * back.
      */
+    /** Up to ten paths, then how many more: enough to act on without flooding a line. */
+    static String namedPaths(List<String> paths) {
+        if (paths.size() <= 10) return String.join(", ", paths);
+        return String.join(", ", paths.subList(0, 10)) + " and " + (paths.size() - 10) + " more";
+    }
+
     private static String skipReason(Workflow.Stage stage, UserConfig user,
                                      TaskSpec.ResolvedTask task, boolean reviewByRisk) {
         if (stage.kind() == Workflow.Kind.ROLE) {
+            // A review-only task judges a candidate somebody else already wrote. A writing
+            // stage would add an author the readers then have to differ from — and a planned
+            // implementer used to do exactly that in the preview, refusing a reader whose
+            // vendor nobody was ever going to dispatch as a writer.
+            if (task.reviewOnly() && !RoleResolver.judges(stage.role())) return "review_only";
             boolean configured = user.policy() != null
                     && user.policy().roles().containsKey(stage.role());
             if (!configured) return "role_not_configured";
@@ -3044,7 +3056,17 @@ public final class TaskLoop {
                 }
                 runStage(stage, index);
             }
+            // Review-only: every reader has had its turn, so the objections stop the run now,
+            // together, instead of the first one hiding what the later readers would have said.
+            if (deferredFindingsStop != null) {
+                summary.put("objecting_stages", List.copyOf(objectingStages));
+                throw new StopException(deferredFindingsStop);
+            }
         }
+
+        /** Review-only: the first findings stop reason, held until every reader has run. */
+        private String deferredFindingsStop;
+        private final List<String> objectingStages = new ArrayList<>();
 
         private void runStage(Workflow.Stage stage, int index) throws Exception {
             Object outcome = execute(stage);
@@ -3088,6 +3110,11 @@ public final class TaskLoop {
                 requireFindingsProgress(stage);
             }
             if (blocking > 0) {
+                if (task.reviewOnly()) {
+                    objectingStages.add(stage.name());
+                    if (deferredFindingsStop == null) deferredFindingsStop = stage.findingsReason();
+                    return;
+                }
                 if (ladderExhausted()) {
                     throw qualityExhausted(stage, user.policy().escalation());
                 }
@@ -3973,9 +4000,27 @@ public final class TaskLoop {
                 line.append("   cost ").append(Progress.money(cost));
                 if (details.get("verdict") != null) line.append("   verdict ").append(details.get("verdict"));
                 if (!role.ok()) line.append("   ").append(role.code());
+                if (!role.ok() && details.get("message") != null) {
+                    line.append("\n      ").append(details.get("message"));
+                }
+                // An API reader that was sent the diff without whole files is reading less
+                // than it was configured to; the operator hears it here, not from the artifact.
+                if (details.get("api_context") instanceof Map<?, ?> context
+                        && "diff".equals(context.get("mode"))) {
+                    line.append("\n      api context: diff only");
+                    if (context.get("fallback_reasons") instanceof List<?> reasons && !reasons.isEmpty()) {
+                        line.append(" — whole files left out: ").append(String.join("; ",
+                                reasons.stream().map(String::valueOf).toList()));
+                    }
+                }
             } else if (outcome instanceof GateRunner.Outcome gate) {
                 line.append(gate.ok() ? "ok" : "FAILED ").append("  ").append(Progress.elapsed(millis));
                 if (!gate.ok()) line.append("   ").append(gate.code());
+                if (!gate.ok() && gate.data() != null && gate.data().get("violations") instanceof List<?> outside
+                        && !outside.isEmpty()) {
+                    line.append("\n      outside scope ").append(gate.data().get("scope_paths")).append(": ")
+                            .append(namedPaths(outside.stream().map(String::valueOf).toList()));
+                }
             } else if (outcome instanceof VisualQaRunner.Outcome visual) {
                 line.append(visual.ok() ? "ok" : "FAILED ").append("  ").append(Progress.elapsed(millis));
                 Object images = visual.data() == null ? null : visual.data().get("image_evidence");
@@ -3988,10 +4033,29 @@ public final class TaskLoop {
             } else {
                 return;
             }
+            // A preview keeps walking after a stage it knows would fail, to show who the later
+            // stages resolve to. Those later lines are then about a chain no real run reaches,
+            // and they can disagree with the cast printed above (which assumed the failing
+            // writer wrote). Say so on the line instead of printing a bare "ok".
+            boolean failedNow = outcome instanceof RoleRunner.Outcome r ? !r.ok()
+                    : outcome instanceof GateRunner.Outcome g ? !g.ok()
+                    : !((VisualQaRunner.Outcome) outcome).ok();
+            if (dryRun && previewStop != null) {
+                line.append("\n      preview only: a real run stops earlier, at ").append(previewStop);
+            } else if (dryRun && failedNow) {
+                previewStop = currentStageName + " (" + (outcome instanceof RoleRunner.Outcome r ? r.code()
+                        : outcome instanceof GateRunner.Outcome g ? g.code()
+                        : ((VisualQaRunner.Outcome) outcome).code()) + ")";
+            }
             progress.line(line.toString());
         }
 
+        /** The first stage a preview saw fail, with its code; null while none has. */
+        private String previewStop;
+        private String currentStageName;
+
         private Object dispatch(Workflow.Stage stage) throws Exception {
+            currentStageName = stage.name();
             switch (stage.kind()) {
                 case MACHINE_GATES -> {
                     return runGates(gates, loaded, runId, attempt, dryRun, steps,

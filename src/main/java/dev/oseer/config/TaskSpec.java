@@ -47,8 +47,20 @@ public record TaskSpec(
      *   task      no preset; the same as omitting `mode`
      *   refactor  behaviour must not change: requires `defaults.baseline_checks` in
      *             project.yaml, and the risk is at least medium so the change is reviewed
+     *   review    the candidate already exists (a pull request branch, say) and nobody writes:
+     *             writing stages are skipped, no fix round is dispatched, every reader runs
+     *             even after an earlier one objected, and the run stops at the human gate
+     *             with all of their findings. Requires `prior_writers`, because the vendors
+     *             that wrote the branch are the ones every reader must differ from.
      */
-    public static final Set<String> MODES = Set.of("quick", "bug", "task", "refactor");
+    public static final Set<String> MODES = Set.of("quick", "bug", "task", "refactor", "review");
+
+    /**
+     * The modes `oseer do` can draft a contract for. A review has nothing to plan and its
+     * author must be vouched for by a person, so it is written by hand and started with
+     * `oseer run`.
+     */
+    public static final Set<String> DRAFT_MODES = Set.of("quick", "bug", "task", "refactor");
 
     public TaskSpec(String id, String goal, List<String> nonGoals, String risk,
                     Values.Selector scope, Values.Selector checks, List<String> acceptance,
@@ -244,6 +256,15 @@ public record TaskSpec(
             if (item != null && !item.isBlank()) priorWriters.add(item.trim());
         }
 
+        if ("review".equals(mode) && priorWriters.isEmpty()) {
+            root.collector().add("mode: review needs prior_writers: the vendors that wrote the branch "
+                    + "under review, so every reader can be required to differ from them");
+        }
+        if ("review".equals(mode) && maxFixAttempts != null && maxFixAttempts > 0) {
+            root.collector().add("mode: review dispatches no fix round; max_fix_attempts must be 0 or absent");
+        }
+        if ("review".equals(mode)) maxFixAttempts = 0L;
+
         root.throwIfAny();
         if (risk == null && "quick".equals(mode)) risk = "low";
         return new TaskSpec(id, goal, List.copyOf(nonGoals), risk, scope, checks, acceptance, reproduce,
@@ -357,7 +378,8 @@ public record TaskSpec(
                 timeoutMinutes != null ? timeoutMinutes : project.defaultTimeoutMinutes(),
                 reviewAssurance == null ? "independent" : reviewAssurance,
                 manualVerification,
-                priorWriters);
+                priorWriters,
+                "review".equals(mode));
     }
 
     private static List<String> resolveCommands(List<String> requested, boolean bareChecks,
@@ -396,11 +418,24 @@ public record TaskSpec(
             long timeoutMinutes,
             String reviewAssurance,
             List<String> manualVerification,
-            List<String> priorWriters) {
+            List<String> priorWriters,
+            boolean reviewOnly) {
 
         public ResolvedTask {
             manualVerification = manualVerification == null ? List.of() : List.copyOf(manualVerification);
             priorWriters = priorWriters == null ? List.of() : List.copyOf(priorWriters);
+        }
+
+        public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
+                            String baseRef, List<String> scopePaths, List<String> baselineCommands,
+                            List<String> acceptanceCommands, List<String> reproduceCommands,
+                            Authority authority, VisualQa visualQa, Budget budget,
+                            long maxFixAttempts, long timeoutMinutes, String reviewAssurance,
+                            List<String> manualVerification, List<String> priorWriters) {
+            this(id, goal, nonGoals, risk, baseRef, scopePaths, baselineCommands,
+                    acceptanceCommands, reproduceCommands, authority, visualQa, budget,
+                    maxFixAttempts, timeoutMinutes, reviewAssurance, manualVerification,
+                    priorWriters, false);
         }
 
         public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
@@ -488,6 +523,9 @@ public record TaskSpec(
             if (!priorWriters.isEmpty()) {
                 fields.put("prior_writers", String.join("\u0000", new java.util.TreeSet<>(priorWriters)));
             }
+            // A review-only run and a run that may write are judged by different terms.
+            // Omitted when false, so every existing contract keeps its hash.
+            if (reviewOnly) fields.put("review_only", "true");
             fields.put("visual_required", String.valueOf(visualQa.required()));
             fields.put("visual_url", String.valueOf(visualQa.url()));
             fields.put("visual_start", String.valueOf(visualQa.start()));

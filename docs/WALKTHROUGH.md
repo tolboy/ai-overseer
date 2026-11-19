@@ -206,6 +206,46 @@ resolver fails rather than quietly handing the code to its own author for review
 
 ---
 
+### Reviewing a branch somebody else wrote
+
+The loop above writes and then reads. A pull request that already exists only needs the
+reading half. Check the branch out, connect the project as in Step 2, and write the task by
+hand (`oseer do` does not draft reviews, because only a person can vouch for who wrote the
+branch):
+
+```yaml
+# .oseer/tasks/review-pr-72.yaml
+version: 1
+id: review-pr-72
+goal: Review PR #72 as it stands; do not change it
+mode: review
+prior_writers: [codex]        # the vendors that wrote the branch
+risk: high
+scope: all
+```
+
+With `base_ref` in project.yaml set to the branch the pull request targets:
+
+```
+oseer run review-pr-72 --dry-run
+oseer run review-pr-72 --use review=openrouter-deepseek-review \
+    --use review-second=gonkarouter-glm-review --use review-third=grok-review
+```
+
+`mode: review` skips every writing stage (`skipped: review_only`), so the planned implementer
+no longer counts as an author and cannot disqualify a reader from its vendor. The authors are
+`prior_writers`, and every reader must differ from them. No fix round runs. A reader that
+objects does not stop the readers after it; the run stops at the human gate once all of them
+have read, with `objecting_stages` naming who objected. Machine gates still run the task's
+checks on the branch.
+
+A single reading works the same way: `oseer role reviewer review-pr-72 --use grok-review`
+picks the profile for that one dispatch (it need not be on the roster) and honours the task's
+`prior_writers`. API readers get the diff without whole files when the change is too big for
+their `api_context` limits; see [API connections](API-CONNECTIONS.md#context-and-execution-limits).
+
+---
+
 ## Step 8. What happens when a read-only role writes anyway
 
 A stub reviewer that appends a line to a file while returning `verdict: pass`:

@@ -19,6 +19,15 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A context refusal names every file that did not fit, its size, the limit and the key to
+  raise, instead of "exceeds the 64 KiB per-file limit".
+- `preflight_outside_scope` names the paths that are outside the scope, in the dry-run
+  footer and on the gates line.
+- A dry run that saw a stage fail marks every later line "preview only: a real run stops
+  earlier, at …", instead of printing `ok` under a cast row that said nobody could fill it.
+- The starter `grok-review` profile passes `--model {{model}}` (model `grok-4.6`), so the
+  model in its reports is the one that ran, and allows 40 turns / 40 minutes; 12 turns could
+  not finish the review its own verification note describes.
 - Local attempt accounting retains completed vendor calls when a crash prevents the role
   summary, reconciles partial journals by attempt identity, and withholds exact spend for
   ambiguous coverage. Retry A→A no longer counts as failover; recorded automatic and
@@ -30,6 +39,21 @@ that exists in code but has never been run live says so.
 
 ### Added
 
+- `mode: review` reads an existing branch (a pull request) through the loop without writing
+  to it: writing stages are skipped as `review_only`, the planned implementer no longer counts
+  as an author, the authors come from the required `prior_writers`, no fix round runs, and
+  every reader runs before the run stops at the human gate with all their findings
+  (`objecting_stages`). `oseer do` does not draft this mode.
+- `api_context` on an API profile chooses what the reader is sent: `full` (diff and whole
+  changed files), `diff` (diff only) or `auto` (the default: full when it fits, otherwise the
+  diff with a note in the prompt, the role report and the progress line). `max_files`,
+  `max_file_bytes` and `max_bytes` replace the fixed 64 files / 64 KiB / 256 KiB limits.
+  Measured 2026-11-18: no API reader could review a pull request that edited a 66 KiB README.
+- `oseer role <role> <task> --use <profile>` picks the profile for one standalone dispatch,
+  judged by every roster filter including independence; standalone readings now honour the
+  task's `prior_writers` as well as `--implementer-vendor`.
+- A connection may declare `max_output_tokens` as its output ceiling. GonkaRouter keeps 4096
+  as its default; profiles may now declare up to 65536 output tokens.
 - Dashboard **Launch** tab: start `oseer do` / `oseer run` from the browser against any git
   repository top, with goal, task, risk, mode, preparation, call cap, spend threshold,
   draft-only, in-place, per-stage profile and effort pins and the Orca gate switch. A dry-run

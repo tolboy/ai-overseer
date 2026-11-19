@@ -1,5 +1,6 @@
 package dev.oseer.execution;
 
+import dev.oseer.config.ApiContextSettings;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
 
@@ -47,11 +48,50 @@ public final class ApiContextBuilder {
             or other unavailable evidence is necessary, report an inconclusive or blocked
             result; never claim to have read omitted files or executed checks.
             """;
+    private static final String DIFF_ONLY = """
+            DIFF-ONLY SNAPSHOT: whole changed files are NOT included (see contents and
+            whole_files_omitted_because). Tracked files are described only by git_diff with three
+            lines of context; untracked files carry their whole text. Code outside the hunks is
+            absent: do not claim a defect that depends on it, report it as unverified instead.
+            """;
 
     private ApiContextBuilder() {}
 
+    /**
+     * The historical contract: the diff and every changed file whole, within the default
+     * limits, refusing anything that does not fit. Kept for callers and tests that pinned it.
+     */
     public static String build(Path root, String mergeBase, ProcessRunner processes)
             throws IOException, InterruptedException {
+        return build(root, mergeBase, processes, new ApiContextSettings("full",
+                MAX_FILES, MAX_FILE_BYTES, MAX_CONTEXT_BYTES)).text();
+    }
+
+    /**
+     * What was packed and why.
+     *
+     * @param mode      {@code full} or {@code diff}: what the snapshot actually carries, which
+     *                  for an {@code auto} profile may differ from what it asked for
+     * @param fallback  why whole files were left out, one line per limit that did not hold;
+     *                  empty when nothing was left out or the profile asked for the diff only
+     */
+    public record Snapshot(String text, String requestedMode, String mode, List<String> fallback,
+                           int changedFiles, int bytes) {
+        public Map<String, Object> evidence(ApiContextSettings settings) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("requested_mode", requestedMode);
+            value.put("mode", mode);
+            value.put("changed_files", (long) changedFiles);
+            value.put("bytes", (long) bytes);
+            value.put("limits", settings.toMap());
+            if (!fallback.isEmpty()) value.put("fallback_reasons", fallback);
+            return value;
+        }
+    }
+
+    public static Snapshot build(Path root, String mergeBase, ProcessRunner processes,
+                                 ApiContextSettings settings) throws IOException, InterruptedException {
+        if (settings == null) settings = ApiContextSettings.DEFAULT;
         if (mergeBase == null || !mergeBase.matches("(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})")) {
             throw refused("requires an explicit base commit hash");
         }
@@ -77,75 +117,172 @@ public final class ApiContextBuilder {
         Set<String> changed = new TreeSet<>(tracked);
         changed.addAll(untracked);
         changed.removeIf(ApiContextBuilder::internal);
-        if (changed.size() > MAX_FILES) throw refused("exceeds the 64 changed-file limit; no partial snapshot was produced");
 
-        List<Map<String, Object>> files = new ArrayList<>();
-        long sourceBytes = 0;
+        // Every path is checked whatever the mode: the diff carries file contents too, so a
+        // secret, a symlink or a path outside the repository is refused before anything else.
+        Map<String, Path> paths = new LinkedHashMap<>();
         for (String name : changed) {
             Path current = checkedPath(workspace, name);
             if (secret(name)) throw refused("refuses a changed secret or credential file");
-            Map<String, Object> file = new LinkedHashMap<>();
-            file.put("path", name);
-            if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
-                file.put("state", "deleted");
-            } else {
-                if (!Files.isRegularFile(current, LinkOption.NOFOLLOW_LINKS)) {
-                    throw refused("refuses a changed symlink, directory, or other nonregular file");
-                }
-                byte[] bytes;
-                try (InputStream input = Files.newInputStream(current,
-                        StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-                    bytes = input.readNBytes(MAX_FILE_BYTES + 1);
-                } catch (IOException failure) {
-                    throw refused("could not read a changed source file safely");
-                }
-                if (bytes.length > MAX_FILE_BYTES) throw refused("exceeds the 64 KiB per-file limit; no file was truncated");
-                sourceBytes += bytes.length;
-                if (sourceBytes > MAX_CONTEXT_BYTES) throw refused("exceeds the 256 KiB total limit; no partial snapshot was produced");
-                if (!current.toRealPath().startsWith(workspace)) throw refused("refuses a file outside the repository");
-                String content = utf8(bytes);
-                ensureText(content);
-                file.put("state", untracked.contains(name) ? "untracked" : "current");
-                file.put("content", content);
+            if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)
+                    && !Files.isRegularFile(current, LinkOption.NOFOLLOW_LINKS)) {
+                throw refused("refuses a changed symlink, directory, or other nonregular file");
             }
-            files.add(file);
+            paths.put(name, current);
         }
 
-        String diff = "";
-        if (!tracked.isEmpty()) {
-            List<String> paths = new ArrayList<>();
-            paths.add("--");
-            for (String name : tracked) if (!internal(name)) paths.add(":(literal)" + name);
-            if (paths.size() > 1) {
-                List<String> raw = new ArrayList<>(List.of("diff", "--raw", "--no-ext-diff",
-                        "--no-textconv", "--no-renames", "-z", mergeBase));
-                raw.addAll(paths);
-                rejectSpecialModes(git(processes, workspace, raw, DISCOVERY_BYTES));
-                List<String> stat = new ArrayList<>(List.of("diff", "--numstat", "--no-ext-diff",
-                        "--no-textconv", "--no-renames", "-z", mergeBase));
-                stat.addAll(paths);
-                for (String entry : git(processes, workspace, stat, DISCOVERY_BYTES).split("\0", -1)) {
-                    if (entry.startsWith("-\t")) throw refused("refuses a changed binary file");
+        // Whole files first, when the profile allows them. Every limit that does not hold is
+        // collected rather than thrown at the first one, so the refusal or the fallback note
+        // can name all of them at once instead of one per paid attempt.
+        List<String> overLimit = new ArrayList<>();
+        List<Map<String, Object>> files = new ArrayList<>();
+        if (settings.wholeFilesAllowed()) {
+            if (changed.size() > settings.maxFiles()) {
+                overLimit.add(changed.size() + " changed files exceed the " + settings.maxFiles()
+                        + " changed-file limit (api_context.max_files)");
+            }
+            long sourceBytes = 0;
+            List<String> oversized = new ArrayList<>();
+            for (Map.Entry<String, Path> entry : paths.entrySet()) {
+                Map<String, Object> file = new LinkedHashMap<>();
+                file.put("path", entry.getKey());
+                if (!Files.exists(entry.getValue(), LinkOption.NOFOLLOW_LINKS)) {
+                    file.put("state", "deleted");
+                    files.add(file);
+                    continue;
                 }
-                List<String> command = new ArrayList<>(List.of("-c", "core.quotePath=false", "diff",
-                        "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
-                        "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
-                        "--src-prefix=a/", "--dst-prefix=b/", mergeBase));
-                command.addAll(paths);
-                diff = git(processes, workspace, command, MAX_CONTEXT_BYTES);
-                ensureText(diff);
+                long size = Files.size(entry.getValue());
+                if (size > settings.maxFileBytes()) {
+                    oversized.add(entry.getKey() + " (" + size + " bytes)");
+                    continue;
+                }
+                sourceBytes += size;
+                if (!overLimit.isEmpty() || !oversized.isEmpty()) continue;
+                String content = readText(workspace, entry.getValue(), settings.maxFileBytes());
+                file.put("state", untracked.contains(entry.getKey()) ? "untracked" : "current");
+                file.put("content", content);
+                files.add(file);
+            }
+            if (!oversized.isEmpty()) {
+                overLimit.add(String.join(", ", oversized) + " exceed the per-file limit of "
+                        + settings.maxFileBytes() + " bytes (api_context.max_file_bytes)");
+            }
+            if (sourceBytes > settings.maxBytes()) {
+                overLimit.add("changed files total " + sourceBytes + " bytes, over the total limit of "
+                        + settings.maxBytes() + " bytes (api_context.max_bytes)");
             }
         }
+
+        String diff = diff(processes, workspace, mergeBase, tracked, settings.maxBytes());
+        String requested = settings.mode();
+        if (settings.wholeFilesAllowed() && overLimit.isEmpty()) {
+            String result = render("full", mergeBase, diff, files, List.of());
+            int bytes = result.getBytes(StandardCharsets.UTF_8).length;
+            if (bytes <= settings.maxBytes()) {
+                return new Snapshot(result, requested, "full", List.of(), changed.size(), bytes);
+            }
+            overLimit.add("the complete snapshot is " + bytes + " bytes, over the total limit of "
+                    + settings.maxBytes() + " bytes (api_context.max_bytes)");
+        }
+        if (!overLimit.isEmpty() && !settings.fallsBackToDiff()) {
+            throw refused("exceeds its limits: " + String.join("; ", overLimit)
+                    + ". No file was truncated. Raise the limit in the profile's api_context block, "
+                    + "or set api_context.mode to auto or diff");
+        }
+
+        // Diff only. A tracked file is fully described by the diff; an untracked one has no
+        // diff, so its whole text is the only evidence and is still bound by the per-file limit.
+        List<Map<String, Object>> listed = new ArrayList<>();
+        for (Map.Entry<String, Path> entry : paths.entrySet()) {
+            Map<String, Object> file = new LinkedHashMap<>();
+            file.put("path", entry.getKey());
+            if (!Files.exists(entry.getValue(), LinkOption.NOFOLLOW_LINKS)) {
+                file.put("state", "deleted");
+            } else if (untracked.contains(entry.getKey())) {
+                long size = Files.size(entry.getValue());
+                if (size > settings.maxFileBytes()) {
+                    throw refused("exceeds the per-file limit of " + settings.maxFileBytes()
+                            + " bytes (api_context.max_file_bytes): untracked " + entry.getKey()
+                            + " is " + size + " bytes and has no diff to send instead; no file was truncated");
+                }
+                file.put("state", "untracked");
+                file.put("content", readText(workspace, entry.getValue(), settings.maxFileBytes()));
+            } else {
+                file.put("state", "changed_see_diff");
+            }
+            listed.add(file);
+        }
+        String result = render("diff", mergeBase, diff, listed, overLimit);
+        int bytes = result.getBytes(StandardCharsets.UTF_8).length;
+        if (bytes > settings.maxBytes()) {
+            throw refused("exceeds the total limit of " + settings.maxBytes()
+                    + " bytes (api_context.max_bytes) even as a diff only: the snapshot is " + bytes
+                    + " bytes; no diff or file was truncated");
+        }
+        return new Snapshot(result, requested, "diff", List.copyOf(overLimit), changed.size(), bytes);
+    }
+
+    private static String diff(ProcessRunner processes, Path workspace, String mergeBase,
+                               Set<String> tracked, int limit) throws IOException, InterruptedException {
+        if (tracked.isEmpty()) return "";
+        List<String> paths = new ArrayList<>();
+        paths.add("--");
+        for (String name : tracked) if (!internal(name)) paths.add(":(literal)" + name);
+        if (paths.size() <= 1) return "";
+        List<String> raw = new ArrayList<>(List.of("diff", "--raw", "--no-ext-diff",
+                "--no-textconv", "--no-renames", "-z", mergeBase));
+        raw.addAll(paths);
+        rejectSpecialModes(git(processes, workspace, raw, DISCOVERY_BYTES));
+        List<String> stat = new ArrayList<>(List.of("diff", "--numstat", "--no-ext-diff",
+                "--no-textconv", "--no-renames", "-z", mergeBase));
+        stat.addAll(paths);
+        for (String entry : git(processes, workspace, stat, DISCOVERY_BYTES).split("\0", -1)) {
+            if (entry.startsWith("-\t")) throw refused("refuses a changed binary file");
+        }
+        List<String> command = new ArrayList<>(List.of("-c", "core.quotePath=false", "diff",
+                "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
+                "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
+                "--src-prefix=a/", "--dst-prefix=b/", mergeBase));
+        command.addAll(paths);
+        String diff;
+        try {
+            diff = git(processes, workspace, command, limit);
+        } catch (CaptureExceeded exceeded) {
+            throw refused("diff is larger than the total limit of " + limit
+                    + " bytes (api_context.max_bytes); repository output exceeded its capture limit "
+                    + "and no partial context was produced");
+        }
+        ensureText(diff);
+        return diff;
+    }
+
+    private static String render(String mode, String mergeBase, String diff,
+                                 List<Map<String, Object>> files, List<String> fallback) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("base_commit", mergeBase.toLowerCase(Locale.ROOT));
         snapshot.put("scope", "changed_source_only");
+        snapshot.put("contents", mode.equals("full") ? "diff_and_whole_changed_files" : "diff_only");
+        if (!fallback.isEmpty()) snapshot.put("whole_files_omitted_because", fallback);
         snapshot.put("git_diff", diff);
         snapshot.put("files", files);
-        String result = INSTRUCTIONS + "\n" + Json.writePretty(snapshot);
-        if (result.getBytes(StandardCharsets.UTF_8).length > MAX_CONTEXT_BYTES) {
-            throw refused("exceeds the 256 KiB total limit; no diff or file was truncated");
+        String header = mode.equals("full") ? INSTRUCTIONS : INSTRUCTIONS + DIFF_ONLY;
+        return header + "\n" + Json.writePretty(snapshot);
+    }
+
+    private static String readText(Path workspace, Path current, int limit) throws IOException {
+        byte[] bytes;
+        try (InputStream input = Files.newInputStream(current,
+                StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = input.readNBytes(limit + 1);
+        } catch (IOException failure) {
+            throw refused("could not read a changed source file safely");
         }
-        return result;
+        if (bytes.length > limit) throw refused("exceeds the per-file limit of " + limit
+                + " bytes (api_context.max_file_bytes); a file grew while it was read; no file was truncated");
+        if (!current.toRealPath().startsWith(workspace)) throw refused("refuses a file outside the repository");
+        String content = utf8(bytes);
+        ensureText(content);
+        return content;
     }
 
     private static List<String> discoveryPaths() {
@@ -227,7 +364,7 @@ public final class ApiContextBuilder {
         catch (IOException failure) { throw refused("could not run its repository inspection"); }
         if (!result.ok()) throw refused("could not collect repository evidence");
         if (result.stdoutTruncated() || result.stderrTruncated()) {
-            throw refused("repository output exceeded its capture limit; no partial context was produced");
+            throw new CaptureExceeded();
         }
         if (result.stdout().indexOf('\ufffd') >= 0) throw refused("requires UTF-8 repository paths and diff text");
         return result.stdout();
@@ -248,4 +385,9 @@ public final class ApiContextBuilder {
     }
 
     private static IOException refused(String message) { return new IOException("API context " + message); }
+
+    /** Repository output past its capture bound; the caller names the limit that bound it. */
+    private static final class CaptureExceeded extends IOException {
+        CaptureExceeded() { super("API context repository output exceeded its capture limit; no partial context was produced"); }
+    }
 }

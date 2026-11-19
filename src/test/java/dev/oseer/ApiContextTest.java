@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.config.ApiContextSettings;
 import dev.oseer.execution.ApiContextBuilder;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
@@ -111,6 +112,7 @@ public final class ApiContextTest implements Suite {
 
             symlinks(check, scratch, root, base);
             truncatedDiff(check, scratch);
+            settingsModes(check, scratch);
         } finally {
             try (Stream<Path> paths = Files.walk(scratch)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -141,6 +143,88 @@ public final class ApiContextTest implements Suite {
         } finally {
             Files.deleteIfExists(link);
         }
+    }
+
+    /**
+     * The 2026-11-18 case: a pull request that edits one line of a 66 KiB README could not be
+     * read by any API reviewer, although its diff was a fraction of the budget.
+     */
+    private void settingsModes(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("modes"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        StringBuilder readme = new StringBuilder("# Title\n");
+        for (int i = 0; i < 1400; i++) readme.append("Line ").append(i).append(" of a long README that nobody touched.\n");
+        readme.append("UNCHANGED-TAIL-MARKER\n");
+        Files.writeString(root.resolve("README.md"), readme.toString());
+        Files.writeString(root.resolve("small.java"), "class Small {}\n");
+        git(root, "add", "--", ".");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.writeString(root.resolve("README.md"), readme.toString().replace("# Title", "# New title"));
+        Files.writeString(root.resolve("small.java"), "class Small { int changed; }\n");
+        int readmeBytes = (int) Files.size(root.resolve("README.md"));
+        check.that("fixture README is over the default per-file limit", readmeBytes > ApiContextBuilder.MAX_FILE_BYTES);
+
+        var full = new ApiContextSettings("full", 64, 64 * 1024, 256 * 1024);
+        try {
+            ApiContextBuilder.build(root, base, processes, full);
+            check.that("full mode refuses an oversized file", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the file", refused.getMessage(), "README.md (" + readmeBytes + " bytes)");
+            check.contains("the refusal names the limit and its key", refused.getMessage(), "65536 bytes (api_context.max_file_bytes)");
+            check.contains("the refusal says how to get past it", refused.getMessage(), "api_context.mode to auto or diff");
+        }
+
+        var auto = ApiContextBuilder.build(root, base, processes, ApiContextSettings.DEFAULT);
+        check.eq("auto falls back to the diff", "diff", auto.mode());
+        check.eq("auto records what was asked for", "auto", auto.requestedMode());
+        check.contains("the fallback names the file that did not fit", String.join(";", auto.fallback()), "README.md");
+        check.contains("the model is told it has the diff only", auto.text(), "DIFF-ONLY SNAPSHOT");
+        check.contains("the change itself is sent", auto.text(), "+# New title");
+        check.contains("the other change is sent too", auto.text(), "int changed");
+        check.that("whole files are not sent", !auto.text().contains("UNCHANGED-TAIL-MARKER"));
+        check.contains("the evidence carries the fallback", String.valueOf(auto.evidence(ApiContextSettings.DEFAULT)), "fallback_reasons");
+
+        var diffOnly = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024));
+        check.eq("diff mode sends the diff", "diff", diffOnly.mode());
+        check.eq("diff mode chosen on purpose has no fallback reason", List.of(), diffOnly.fallback());
+        check.that("diff mode sends no whole file", !diffOnly.text().contains("UNCHANGED-TAIL-MARKER"));
+
+        var raised = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 64, 128 * 1024, 512 * 1024));
+        check.eq("raised limits keep whole files", "full", raised.mode());
+        check.contains("whole files are then sent", raised.text(), "UNCHANGED-TAIL-MARKER");
+
+        List<Path> many = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            Path file = root.resolve("many-" + i + ".java");
+            Files.writeString(file, "class Many" + i + " {}\n");
+            many.add(file);
+        }
+        var counted = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 4, 128 * 1024, 512 * 1024));
+        check.eq("too many files falls back too", "diff", counted.mode());
+        check.contains("and says why", String.join(";", counted.fallback()), "4 changed-file limit (api_context.max_files)");
+        check.contains("untracked files keep their text, having no diff", counted.text(), "class Many3");
+        for (Path file : many) Files.delete(file);
+
+        Path untracked = root.resolve("generated.java");
+        Files.writeString(untracked, "a".repeat(2048));
+        try {
+            ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 1024, 512 * 1024));
+            check.that("an untracked file over the limit is refused in diff mode", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the untracked file", refused.getMessage(), "untracked generated.java is 2048 bytes");
+        }
+        Files.delete(untracked);
+
+        try {
+            ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 64, 64 * 1024, 1024));
+            check.that("a diff over the total limit is refused, not cut", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the total limit", refused.getMessage(), "1024 bytes (api_context.max_bytes)");
+        }
+        check.rejects("an unknown mode is refused", "api_context.mode",
+                () -> new ApiContextSettings("everything", 64, 1, 1));
     }
 
     private void truncatedDiff(Check check, Path scratch) throws Exception {

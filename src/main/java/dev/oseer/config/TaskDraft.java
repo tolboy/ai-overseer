@@ -35,7 +35,7 @@ public final class TaskDraft {
      */
     public static String applyMode(Written drafted, String mode) throws IOException {
         if (mode == null) return null;
-        if (!TaskSpec.MODES.contains(mode)) return "mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES);
+        if (!TaskSpec.DRAFT_MODES.contains(mode)) return "mode must be one of " + new java.util.TreeSet<>(TaskSpec.DRAFT_MODES);
         Path file = drafted.file();
         String text = Files.readString(file, StandardCharsets.UTF_8);
         TaskSpec existing;

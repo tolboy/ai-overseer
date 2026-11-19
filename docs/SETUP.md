@@ -106,7 +106,7 @@ without opening the files. JSON is the default; `--text` is a table.
 oseer roster
 oseer roster --text
 oseer roster set reviewer --profiles grok-review,claude-review --strategy rotate
-oseer roster model grok-review --model grok-4.6-build --effort high
+oseer roster model grok-review --model grok-4.6 --effort high
 ```
 
 `set` rewrites only the `profiles:` line (and `strategy:` if you pass it) under that role in

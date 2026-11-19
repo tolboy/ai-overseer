@@ -25,6 +25,7 @@ import dev.oseer.ledger.LedgerReader;
 import dev.oseer.ledger.ProjectIdentity;
 import dev.oseer.ledger.RunReport;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.role.RoleResolver;
 import dev.oseer.role.RoleRunner;
 import dev.oseer.run.DoCommand;
 import dev.oseer.run.NextStep;
@@ -578,14 +579,25 @@ public final class Main {
         String runId = option(args, "--run-id", loadedDefaultRunId());
         String implementerVendor = option(args, "--implementer-vendor", null);
         String contextPath = option(args, "--context", null);
+        String pinned = option(args, "--use", null);
 
         ConfigLoader.Loaded loaded = new ConfigLoader().load(Path.of("."), taskSelector);
         UserConfig user = UserConfig.load();
+        // The candidate's authors: whoever the flag names plus whoever the task vouches for.
+        // A standalone reading used to see only the flag, so a contract that said
+        // `prior_writers: [codex]` still let a codex reader judge codex's branch.
+        java.util.Set<String> writerVendors = new java.util.LinkedHashSet<>(loaded.resolved().priorWriters());
+        if (implementerVendor != null && !implementerVendor.isBlank()) writerVendors.add(implementerVendor);
+        RoleResolver.Writers writers = writerVendors.isEmpty() ? RoleResolver.Writers.NONE
+                : new RoleResolver.Writers(writerVendors, java.util.Set.of(), true,
+                        "same_vendor_peer".equals(loaded.resolved().reviewAssurance()));
+        RoleRunner runner = new RoleRunner(new ProcessRunner());
+        if (pinned != null) runner.pinRoleForRun(roleName, pinned);
         RoleRunner.Outcome outcome;
         try {
-            outcome = new RoleRunner(new ProcessRunner()).run(
-                    loaded, user, roleName, runId, implementerVendor,
-                    contextPath == null ? null : Path.of(contextPath), dryRun);
+            outcome = runner.run(loaded, user, roleName, runId, writers,
+                    contextPath == null ? null : Path.of(contextPath), java.util.List.of(), dryRun,
+                    RoleRunner.UNSTAGED);
         } catch (dev.oseer.ledger.HomeCorpus.UnavailableException unavailable) {
             // The loop names this refusal; a single role used to let it fall through to
             // main's catch-all and reach the operator as `oseer_error` on stderr. Nothing
@@ -2983,6 +2995,11 @@ public final class Main {
                   oseer gates <task>          preflight and machine gates only; spends nothing
                   oseer visual-qa <task>      launch preview, screenshot, assert control visibility
                   oseer role <role> <task>    run one role; add --dry-run to spend nothing
+                                             --use <profile> picks the profile for this one
+                                             dispatch (it need not be on the roster; every
+                                             roster filter still applies). The task's
+                                             prior_writers and --implementer-vendor are the
+                                             authors a reader must differ from
                   oseer do \"<goal>\" [--project DIR] [--scope NAME] [--goal-file FILE]
                                            the whole workflow; stops at the human gate
                                            --isolation git|orca picks what makes the worktree;
@@ -3006,6 +3023,10 @@ public final class Main {
                                            --draft-only spends the planner and never the
                                            implementer
                   oseer run <task>            the bounded loop; stops at the human gate
+                                               A task with mode: review reads an existing
+                                               branch: writing stages are skipped, no fix
+                                               round runs, every reader runs, and the
+                                               authors come from prior_writers
                                                --use <stage>=<profile>  pin a profile for one
                                                stage this run (review-second=claude-review).
                                                Filtered by the roster's independence rule

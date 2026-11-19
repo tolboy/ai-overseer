@@ -97,6 +97,7 @@ public final class TestMain {
                 new dev.oseer.ApiFallbackLoopTest(),
                 new dev.oseer.OpenCodeHarnessTest(),
                 new dev.oseer.ApiContextTest(),
+                new dev.oseer.ReviewContextConfigTest(),
                 new dev.oseer.ProcessEnvironmentTest(),
                 new dev.oseer.execution.ApiReceiptTest(),
                 new dev.oseer.LedgerTest(),
