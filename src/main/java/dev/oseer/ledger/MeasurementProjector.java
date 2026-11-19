@@ -153,7 +153,7 @@ public final class MeasurementProjector {
     private static final Set<String> FINDING = Set.of(
             "id", "severity", "status", "stage", "supersedes", "closed",
             "closed_ids", "reopened", "reopened_from", "id_source", "category",
-            "category_source", "recorded_at_stage");
+            "category_source", "recorded_at_stage", "unverified", "verification_reason");
 
     private static final Set<String> FINDING_HISTORY = Set.of(
             "stage", "attempt", "candidate_fingerprint", "findings", "finding_registry",

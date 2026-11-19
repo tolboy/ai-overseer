@@ -513,6 +513,12 @@ stored, so it does not block and a later reading is not severity laundering. A g
 says the recorded commands do not cover the behaviour stays a P1. The local machine gate
 still runs whatever `checks` the task resolved.
 
+Before a P1 or P2 `product_defect` can block, Overseer checks the citation against the
+reviewed tree: the file exists, the line exists, and a `quote` or a backtick span of code
+appears within 20 lines of it. A miss is `unverified` (a P1 is recorded as P2 advisory)
+and does not block or go back to the implementer. The check does not call a model. Whether
+the quote means what the finding claims is left as a follow-up.
+
 Both fields are optional in the shipped schema, so a reviewer that supplies neither still
 validates and still gets a usable identity.
 

@@ -19,6 +19,7 @@ import dev.oseer.git.GitRepository;
 import dev.oseer.json.Json;
 import dev.oseer.ledger.EvidenceLedger;
 import dev.oseer.ledger.HomeCorpus;
+import dev.oseer.ledger.CitationCheck;
 import dev.oseer.ledger.Findings;
 import dev.oseer.process.ProcessRunner;
 import dev.oseer.role.RoleContract;
@@ -3562,8 +3563,10 @@ public final class TaskLoop {
             if (now == null || !(now.get("findings") instanceof List<?> rows)) return 0;
             long n = 0;
             for (Object row : rows) {
-                if (row instanceof Map<?, ?> finding
-                        && severities.contains(String.valueOf(finding.get("severity")))
+                if (!(row instanceof Map<?, ?> finding)) continue;
+                // A citation the tree does not support is not something to send back for repair.
+                if (Boolean.TRUE.equals(finding.get("unverified"))) continue;
+                if (severities.contains(String.valueOf(finding.get("severity")))
                         && "product_defect".equals(String.valueOf(finding.get("category")))) {
                     n++;
                 }
@@ -4500,6 +4503,9 @@ public final class TaskLoop {
                     found, List.copyOf(findingHistory));
             findingHistory.add(row);
             summary.put("finding_history", List.copyOf(findingHistory));
+            List<Map<String, Object>> unverified = unverifiedFindings(findingHistory);
+            if (unverified.isEmpty()) summary.remove("unverified_findings");
+            else summary.put("unverified_findings", unverified);
             if (!stringsOf(row.get("protocol_violations")).isEmpty()) {
                 summary.put("finding_protocol_failure", row.get("protocol_violations"));
                 throw new StopException("finding_protocol_failure");
@@ -6831,7 +6837,36 @@ public final class TaskLoop {
             throws Exception {
         Map<String, Object> artifact = readArtifact(root, review);
         if (artifact == null) return List.of();
-        return Findings.adjusted(Findings.of(artifact), manual, realAcceptance);
+        return CitationCheck.verify(
+                Findings.adjusted(Findings.of(artifact), manual, realAcceptance), root);
+    }
+
+    /**
+     * Product findings from each stage's latest round whose citation was not in the tree.
+     * Recomputed from the history so a later reading that cites a real line drops the flag.
+     */
+    private static List<Map<String, Object>> unverifiedFindings(List<Map<String, Object>> history) {
+        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
+        for (Map<String, Object> round : history) {
+            if (round != null && round.get("stage") instanceof String stage) latest.put(stage, round);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> round : latest.values()) {
+            if (!(round.get("findings") instanceof List<?> findings)) continue;
+            for (Object item : findings) {
+                if (!(item instanceof Map<?, ?> finding) || !Boolean.TRUE.equals(finding.get("unverified"))) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", finding.get("id"));
+                row.put("stage", round.get("stage"));
+                row.put("path", finding.get("path"));
+                row.put("severity", finding.get("severity"));
+                if (finding.get("severity_as_filed") != null) row.put("severity_as_filed", finding.get("severity_as_filed"));
+                row.put("verification_reason", finding.get("verification_reason"));
+                row.put("verification_detail", finding.get("verification_detail"));
+                rows.add(row);
+            }
+        }
+        return rows;
     }
 
     private String reviewContext(Path root, RoleRunner.Outcome review, java.util.Set<String> severities,
@@ -6841,7 +6876,12 @@ public final class TaskLoop {
         StringBuilder builder = new StringBuilder("# An independent reading asked for changes\n\n");
         if (artifact == null) return builder.append("(the reviewer artifact could not be read)\n").toString();
         builder.append("Reviewer summary: ").append(artifact.get("summary")).append("\n\n");
-        for (Findings.Finding finding : Findings.adjusted(Findings.of(artifact), manual, realAcceptance)) {
+        for (Findings.Finding finding : CitationCheck.verify(
+                Findings.adjusted(Findings.of(artifact), manual, realAcceptance), root)) {
+            // An unverified citation is not work for the implementer. It is already excluded
+            // from the blocking count; leaving it in the repair prompt would send them to
+            // edit a line the finding did not actually show.
+            if (finding.unverified()) continue;
             // P1 always; P2 and P3 when the policy repairs them before the human gate. A
             // non-blocking finding handed over here is what the operator would otherwise have
             // had to read at the gate and send back by hand.

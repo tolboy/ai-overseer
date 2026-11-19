@@ -11,6 +11,7 @@ import dev.oseer.execution.RoleExecutor;
 import dev.oseer.execution.ExecutionActivity;
 import dev.oseer.git.GitRepository;
 import dev.oseer.json.Json;
+import dev.oseer.ledger.CitationCheck;
 import dev.oseer.ledger.EvidenceLedger;
 import dev.oseer.ledger.Findings;
 import dev.oseer.ledger.HomeCorpus;
@@ -921,6 +922,10 @@ public final class RoleRunner {
             if (acceptanceBackfillNeeded(role, template)) {
                 prompt = prompt + acceptanceEvidenceSection(values.get("acceptance_evidence"));
             }
+            // Same reason as the acceptance block: setup does not rewrite an old reviewer
+            // prompt, and a reader that never hears about the citation check keeps inventing
+            // lines. The check itself does not depend on the paragraph.
+            if (citationBackfillNeeded(role, template)) prompt = prompt + citationSection();
             Map<String, Object> apiContextEvidence = null;
             if ("api".equals(profile.runner())) {
                 try {
@@ -1162,9 +1167,9 @@ public final class RoleRunner {
             if (result.artifact() != null) {
                 // Both downgrades happen before the report is written. The loop reads the
                 // vendor file, not this list, and applies the same adjustment there.
-                List<Findings.Finding> found = Findings.adjusted(
+                List<Findings.Finding> found = CitationCheck.verify(Findings.adjusted(
                         Findings.of(result.artifact()), task.manualVerification(),
-                        task.acceptanceEvidence().recordsRealAcceptance());
+                        task.acceptanceEvidence().recordsRealAcceptance()), root);
                 if (!found.isEmpty()) {
                     report.put("findings", found.stream().map(Findings.Finding::toMap).toList());
                 }
@@ -1845,6 +1850,25 @@ public final class RoleRunner {
     /** A reviewer prompt that predates {@code {{acceptance_evidence}}}. See the call site. */
     private static boolean acceptanceBackfillNeeded(String role, String template) {
         return "reviewer".equals(role) && !PromptRenderer.uses(template, "acceptance_evidence");
+    }
+
+    /** A reviewer prompt that does not yet mention the mechanical citation check. */
+    private static boolean citationBackfillNeeded(String role, String template) {
+        return "reviewer".equals(role) && !template.contains("unverified");
+    }
+
+    private static String citationSection() {
+        return """
+
+                ## Citations that can block
+
+                A P1 or P2 product_defect has to name a file that is in the tree. When you name
+                a line, that line has to exist. Put the code you are quoting in `quote`, or in
+                backticks. Overseer checks that the quote appears within 20 lines of the cited
+                line before the finding can block. A citation it cannot check is recorded as
+                unverified and does not block. The check reads the files; it does not call a model.
+
+                """;
     }
 
     private static String acceptanceEvidenceSection(String evidence) {

@@ -699,6 +699,12 @@ public final class UserSetup {
             - `review_disagreement` — you believe an earlier finding was wrong. Say why, on the
               evidence.
 
+            A P1 or P2 `product_defect` must name a file that is in the tree. When you name a
+            line, that line must exist. Put the code you mean in `quote`, or in backticks of
+            the code itself. Overseer checks the file, the line, and that the quote sits
+            within 20 lines of it. A citation it cannot check is recorded as unverified and
+            does not block. The check reads the worktree; it does not call a model.
+
             A finding an implementer cannot act on is not a reason to soften a defect. File a
             product defect at the severity it deserves. A check the grammar cannot express is
             the exception above: it is P2, advisory, and it names manual verification. Only a
@@ -814,6 +820,8 @@ public final class UserSetup {
                       "severity": { "enum": ["P1", "P2", "P3"] },
                       "path": { "type": "string" },
                       "line": { "type": "integer" },
+                      "end_line": { "type": "integer" },
+                      "quote": { "type": "string" },
                       "message": { "type": "string" },
                       "scenario": { "type": "string" },
                       "expected": { "type": "string" },

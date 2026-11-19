@@ -43,6 +43,7 @@ public final class TaskLoopTest implements Suite {
             writerPinFollowsAFixAndAnAdvance(check, sandbox, home);
             reviewOnlyReadsAnExistingBranch(check, sandbox, home);
             recordedAcceptanceChecks(check, sandbox, home);
+            unverifiedCitationDoesNotBlock(check, sandbox, home);
 
             // Clean run: implement, gates pass, review passes, stop for a human.
             Path clean = newProject(sandbox, "clean");
@@ -7423,6 +7424,41 @@ public final class TaskLoopTest implements Suite {
         check.eq("at the vendor's P1", "P1", lastFinding(stopped).get("severity"));
         check.that("and the summary has no acceptance evidence",
                 stopped.summaryReport().get("acceptance_evidence") == null);
+    }
+
+    /** A product P1 whose file is not in the tree is recorded as unverified and does not block. */
+    @SuppressWarnings("unchecked")
+    private void unverifiedCitationDoesNotBlock(Check check, Path sandbox, Path home) throws Exception {
+        Path reviewed = newProject(sandbox, "false-cite");
+        Files.writeString(reviewed.resolve("src/result.txt"), "already on the branch\n");
+        Path task = reviewed.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                """);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl", sandbox.resolve("false-cite-impl.count"), 1);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-false-cite", sandbox.resolve("false-cite-review.count"), 1);
+        policy(home, "loop-review", "loop-impl");
+        TaskLoop.Outcome passed = loop(reviewed, home, "cite1");
+        check.that("an unverifiable product finding still reaches the gate", passed.ok());
+        check.eq("as ready for a person", "ready_for_human", passed.reason());
+        Map<String, Object> lowered = lastFinding(passed);
+        check.eq("recorded as P2", "P2", lowered.get("severity"));
+        check.eq("flagged unverified", true, lowered.get("unverified"));
+        check.eq("because the file is not in the tree", "file_missing", lowered.get("verification_reason"));
+        check.eq("and nothing blocks", 0L,
+                ((Number) passed.summaryReport().get("blocking_findings")).longValue());
+        List<Map<String, Object>> unverified =
+                (List<Map<String, Object>>) passed.summaryReport().get("unverified_findings");
+        check.eq("the summary lists it", "made-up-line", unverified.get(0).get("id"));
+        String rendered = dev.oseer.ledger.RunReport.render(
+                new dev.oseer.ledger.RunReport().of(reviewed, "cite1"));
+        check.contains("the run report names the unverified finding", rendered, "unverified 1");
+        check.contains("and the reason", rendered, "file_missing");
     }
 
     /** Stand-ins whose success attempt is set per scenario, so fix rounds are forced, not hoped for. */

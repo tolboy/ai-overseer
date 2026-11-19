@@ -14,6 +14,7 @@ public final class TestMain {
                 new dev.oseer.JsonFileTest(),
                 new dev.oseer.execution.EffortCapabilitiesTest(),
                 new dev.oseer.FindingsTest(),
+                new dev.oseer.CitationCheckTest(),
                 new dev.oseer.SchemaTest(),
                 new dev.oseer.YamlTest(),
                 new dev.oseer.ConfigTest(),

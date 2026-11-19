@@ -215,6 +215,18 @@ defect is never lowered. The vendor artifact is left as filed. The reviewer prom
 carries the block as `{{acceptance_evidence}}`; a template that predates the placeholder
 has the block appended, because `oseer setup` does not overwrite `prompts/reviewer.md`.
 
+A P1 or P2 `product_defect` is checked against the worktree before it can block. The
+`path` (optionally `path:line` or `path:start-end`), the integer `line` / `end_line`, and
+any `quote` or `snippet` must agree with the file. A backtick span of at least 12
+characters that looks like code is treated as a quote; a backtick that only names the
+file is not. The quote has to occur within 20 lines of the cited line, or anywhere in
+the file when no line is cited. A miss is recorded with `unverified: true`,
+`verification_reason` and `verification_detail`. A P1 is stored as P2 with
+`severity_as_filed` and `advisory: true`. A P2 stays a P2 and is not repaired. Other
+categories are not checked. The vendor artifact is left as filed. No model is called.
+The run summary lists them as `unverified_findings`, and the report and dashboard show
+that list. A template that does not mention the check has a short paragraph appended.
+
 `oseer pilot prepare` requires a declared `reproduction.command` to be in
 `checks.acceptance` and writes it into the task's `reproduce` list. Preparation executes
 nothing: `reproduction_check.status` is `enforced_by_oseer_run`, or `not_declared` when

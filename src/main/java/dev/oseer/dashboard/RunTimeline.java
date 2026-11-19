@@ -114,6 +114,20 @@ public final class RunTimeline {
                     .map(String.class::cast).toList();
             if (!ids.isEmpty()) result.put("contract_gap_ids", ids);
         }
+        if (summary != null && summary.get("unverified_findings") instanceof List<?> rows && !rows.isEmpty()) {
+            List<Map<String, Object>> visible = new ArrayList<>();
+            for (Object item : rows) {
+                if (!(item instanceof Map<?, ?> raw)) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                for (String key : List.of("id", "stage", "path", "severity", "severity_as_filed",
+                        "verification_reason", "verification_detail")) {
+                    Object value = raw.get(key);
+                    if (value instanceof String text && !text.isBlank()) row.put(key, redact(text));
+                }
+                if (!row.isEmpty()) visible.add(row);
+            }
+            if (!visible.isEmpty()) result.put("unverified_findings", visible);
+        }
         result.put("workflow", workflow(summary));
         Map<String, Object> baseline = baseline(summary, runsRoot);
         attribute(steps, baseline);

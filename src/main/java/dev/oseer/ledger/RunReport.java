@@ -81,6 +81,9 @@ public final class RunReport {
         if (summary.get("acceptance_evidence") != null) {
             report.put("acceptance_evidence", summary.get("acceptance_evidence"));
         }
+        if (summary.get("unverified_findings") != null) {
+            report.put("unverified_findings", summary.get("unverified_findings"));
+        }
         for (String key : List.of("finding_protocol_failure", "last_repair_receipt",
                 "severity_downgraded_without_change", "nonactionable_blocking_ids"))
             report.put(key, summary.get(key));
@@ -598,6 +601,17 @@ public final class RunReport {
             Object checks = recorded.get("checks");
             if (checks instanceof List<?> list && !list.isEmpty()) {
                 out.append(" checks=").append(list.size());
+            }
+            out.append('\n');
+        }
+        if (report.get("unverified_findings") instanceof List<?> unverified && !unverified.isEmpty()) {
+            out.append("unverified ").append(unverified.size());
+            for (Object item : unverified) {
+                if (item instanceof Map<?, ?> row) {
+                    out.append("\n          ").append(row.get("id")).append("  ")
+                            .append(row.get("verification_reason")).append("  ")
+                            .append(row.get("verification_detail"));
+                }
             }
             out.append('\n');
         }

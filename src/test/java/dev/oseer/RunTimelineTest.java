@@ -76,6 +76,11 @@ public final class RunTimelineTest implements Suite {
         summary.put("baseline_commands", List.of("make test"));
         summary.put("baseline_report", root.resolve(".oseer/runs/" + id + "--baseline-0/baseline-gate.json").toString());
         summary.put("decision_note", "PRIVATE_NOTE_MARKER");
+        summary.put("unverified_findings", List.of(Map.of(
+                "id", "made-up-line", "stage", "review", "path", "src/missing.java",
+                "severity", "P2", "severity_as_filed", "P1",
+                "verification_reason", "file_missing",
+                "verification_detail", "src/missing.java is not in the reviewed tree")));
         summary.put("finding_history", List.of(Map.of("stage", "review", "findings", List.of(
                 Map.of("id", "contract acceptance / case 1", "category", "contract_gap", "severity", "P1", "status", "open", "message", "FINDING_PROSE"),
                 Map.of("id", "closed", "category", "contract_gap", "severity", "P1", "status", "closed"),
@@ -156,6 +161,8 @@ public final class RunTimelineTest implements Suite {
                 recorded instanceof Number n ? n.longValue() : 1L, ((Number) totals.get("unpriced_calls")).longValue());
         String json = Json.write(timeline);
         check.eq("only open contract gap IDs populate the waiver suggestions", List.of("contract acceptance / case 1"), timeline.get("contract_gap_ids"));
+        check.eq("an unverified citation is on the run page", "file_missing",
+                ((Map<?, ?>) ((List<?>) timeline.get("unverified_findings")).get(0)).get("verification_reason"));
         check.that("waiver suggestions contain only IDs", !json.contains("FINDING_PROSE"));
         check.that("raw output paths and prose are not in the projection", !json.contains("SECRET_RAW_MARKER"));
         check.that("the person's note stays on the decision page", !json.contains("PRIVATE_NOTE_MARKER"));

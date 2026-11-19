@@ -19,6 +19,13 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A P1 or P2 `product_defect` is checked against the reviewed tree before it can block.
+  The cited file has to exist, the cited line has to exist, and a `quote` (or a backtick
+  span of code) has to appear within 20 lines of that spot. A citation that fails is
+  recorded as `unverified` (a P1 becomes P2 advisory) and shown on the run report, the
+  ledger and the dashboard. The check reads files only; it does not call a model. A later
+  model check of whether the quote means what the finding claims is not done. Not yet
+  run live against a vendor. Suites `citation`, `task loop`, `run-timeline`.
 - A `mode: review` task can record `acceptance_evidence`: the pull request's own test
   commands and a pasted CI result (a `gh pr checks` summary as a string or a list of
   lines, plus check-run conclusions). Readers see it in the prompt, including reviewer

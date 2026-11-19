@@ -65,7 +65,10 @@ public final class Findings {
     public record Finding(String id, String idSource, String category, String categorySource,
                           String severity, String path, String message, Map<String, Object> raw) {
 
-        public boolean blocking() { return "P1".equals(severity); }
+        public boolean blocking() { return "P1".equals(severity) && !unverified(); }
+
+        /** A citation the controller could not find in the tree. Such a finding does not block. */
+        public boolean unverified() { return Boolean.TRUE.equals(raw.get("unverified")); }
 
         /** A P1 an implementer can be expected to close by editing the candidate. */
         public boolean repairable() {
@@ -112,6 +115,16 @@ public final class Findings {
                 value.put("acceptance_evidence", marker);
             }
             if (Boolean.TRUE.equals(raw.get("advisory"))) value.put("advisory", true);
+            // A product finding whose file, line or quote was not in the tree. The reason is a
+            // short code; the detail is the sentence an operator reads. Both are omitted when
+            // the citation checked out, so a verified finding stays what it was.
+            if (Boolean.TRUE.equals(raw.get("unverified"))) {
+                value.put("unverified", true);
+                Object reason = raw.get("verification_reason");
+                if (reason instanceof String code && !code.isBlank()) value.put("verification_reason", code);
+                Object detail = raw.get("verification_detail");
+                if (detail instanceof String text && !text.isBlank()) value.put("verification_detail", text);
+            }
             value.put("evidence_refs", refs(raw.get("evidence_refs")));
             value.put("supersedes", refs(raw.get("supersedes")));
             // A serialized empty list is indistinguishable from a field the vendor never

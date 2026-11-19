@@ -263,6 +263,17 @@ public final class StubVendor {
             }
             // The noise a review of an existing pull request filed when the local gate was
             // only `git diff --check` and the pull request's own CI was already green.
+            // A product defect whose file is not in the tree. The citation check must keep it
+            // from blocking; the vendor file stays the P1 they filed.
+            case "review-false-cite" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"made up\","
+                    + "\"findings\":[{\"id\":\"made-up-line\",\"category\":\"product_defect\","
+                    + "\"severity\":\"P1\",\"path\":\"src/not-in-the-tree.java\",\"line\":12,"
+                    + "\"quote\":\"if (ready) return null;\","
+                    + "\"message\":\"the guard returns null\","
+                    + "\"expected\":\"null\",\"actual\":\"falls through\",\"confidence\":\"confirmed\"}]},"
+                    + "\"total_cost_usd\":0.004}");
             case "review-nothing-runs" -> System.out.println(
                     "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
                     + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"nothing was tested\","
