@@ -19,6 +19,14 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A direct CLI (or local HTTP) review whose findings are complete except for `message` is
+  no longer thrown away as `role_artifact_schema_violation`: the message is copied from
+  the finding's own `actual`, else `scenario`, else `expected`, and the evidence records
+  `finding_messages_derived`. Measured on a 23-minute Grok CLI review of a pull request.
+- `oseer run --help` / `-h` prints usage and creates nothing; it used to start a run for a
+  task called `--help` and leave a pending decision behind.
+- The model check reads "Not signed in" (the Grok CLI's wording) as `check_auth_required`.
+
 - The dashboard run page no longer calls a stage the run never opened "still open"
   after the run has stopped: the chip says not reached (or earlier candidate, when the
   verdict is about a tree a later repair replaced) and uses the same status as the stage
@@ -29,9 +37,10 @@ that exists in code but has never been run live says so.
   it was. A total of $0 with unpriced calls is cost unknown, and a call that timed out
   after the request was sent is marked may be billed. Not yet run live against a vendor.
   Suites `dashboard`, `run-timeline`.
-- A call that sits with no new bytes can stop before its wall clock. API profiles
-  default to `limits.stall_seconds: 180` (set `0` to disable; a direct CLI stays on the
-  wall clock until the key is set, because a thinking model can be silent). The failure
+- A call that sits with no new bytes can stop before its wall clock. The bound is
+  `limits.stall_seconds`, off unless set: API calls use `stream: false`, so a healthy
+  review call can send nothing until it is done (5–16 minutes measured), and a thinking
+  CLI can be silent too. The failure
   is `role_stalled`, distinct from `role_api_timeout` / `role_timeout`, and it is eligible
   for `failover.on_vendor_failure`. A request that already left the machine is marked
   `may_be_billed`. Not yet run live against a vendor.

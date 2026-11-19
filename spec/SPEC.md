@@ -436,7 +436,7 @@ CLI is not failed over onto a paid API of the same family. `allow` permits it.
 `on_pinned` defaults to `stop`: a stage named with `--use` does not take that vendor-failure
 failover unless the value is `confirm` or `auto`. Quota failover is unchanged.
 A switch and a refusal are both recorded from→to (`role_failovers`, `failover_blocked`).
-`limits.stall_seconds` (API default 180, `0` off, direct CLI off until set) stops a silent
+`limits.stall_seconds` (off unless set; `0` is off) stops a silent
 call as `role_stalled` while the wall clock remains. That code follows `on_vendor_failure`.
 
 A stop caused by a vendor's endpoint rather than by its reading of the work has its own reason:

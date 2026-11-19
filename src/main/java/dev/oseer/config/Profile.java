@@ -160,19 +160,16 @@ public record Profile(
      * How long a call may sit with no new bytes before it is given up, while the wall clock
      * still has time left. Null means only the wall clock applies.
      *
-     * An API profile that never names the key gets {@link #DEFAULT_API_STALL_SECONDS}. A
-     * provider that accepts the request and then says nothing used to occupy the whole
-     * wall clock; the retry of that same call finished in minutes. A direct CLI does not
-     * get that default: a model that is thinking can be silent for minutes and still be
-     * working, so silence is a stall only when the operator sets {@code limits.stall_seconds}.
-     * Zero is the explicit off switch.
+     * Off unless the profile names {@code limits.stall_seconds}. API calls are sent with
+     * {@code stream: false}, so a healthy reasoning model can return no byte at all until it
+     * has finished: measured review calls took 5–16 minutes (GLM) and 8.5 minutes (DeepSeek)
+     * and succeeded. A default shorter than that would stop exactly the calls that work. Set
+     * the key per profile when the provider is known to send headers or keep-alive bytes
+     * early, or to bound a provider that is known to hang. Zero is the explicit off switch.
      */
     public java.time.Duration stallTimeout() {
         if (stallSeconds != null) {
             return stallSeconds == 0 ? null : java.time.Duration.ofSeconds(stallSeconds);
-        }
-        if ("api".equals(runner) && harness == null) {
-            return java.time.Duration.ofSeconds(DEFAULT_API_STALL_SECONDS);
         }
         return null;
     }
@@ -361,13 +358,7 @@ public record Profile(
     private static final Set<String> LIMITS = Set.of("wall_clock_minutes", "max_cost_usd", "max_output_tokens",
             "max_requests", "max_turns", "stall_seconds");
 
-    /**
-     * Silence, not the wall clock. An API call that never produced a byte used to sit for the
-     * whole {@code wall_clock_minutes}. Three minutes is long enough for a slow first token
-     * and short enough that a dead provider does not occupy the run. A direct CLI has no
-     * default: set the key to bound idle output, or to 0 on an API profile to disable it.
-     */
-    public static final int DEFAULT_API_STALL_SECONDS = 180;
+
 
     /**
      * The turn ceiling a direct CLI profile gets when its args carry {@code {{max_turns}}} and

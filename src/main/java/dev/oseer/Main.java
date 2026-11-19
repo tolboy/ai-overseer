@@ -634,8 +634,25 @@ public final class Main {
      * The bounded loop. It stops at the human gate and never lands anything: the only two
      * outcomes are `human_gate` and `human_escalation`.
      */
+    static final String RUN_USAGE = """
+            usage: oseer run <task-id|task.yaml> [options]
+              --dry-run                 print the cast, costs and stages; dispatch nothing
+              --run-id <id>             name the run (default: generated)
+              --continue <run-id>       continue a stopped run, reusing verdicts on the same tree
+              --use <stage>=<profile>   pin a profile to a stage for this run (repeatable)
+              --effort <stage>=<level>  override effort for a stage (repeatable)
+              --no-wait-for-gate        return at the human gate instead of waiting
+              --wait-for-gate <minutes> wait for a published gate decision
+            A run never lands anything; see `oseer approve` for the human gate.""";
+
     private static int runLoop(String[] args) throws Exception {
         if (args.length < 2) throw new IllegalArgumentException("run requires a task id or YAML path");
+        // `oseer run --help` used to be read as a task called "--help": it created a run
+        // record and a pending decision for a task that does not exist. Help creates nothing.
+        if ("--help".equals(args[1]) || "-h".equals(args[1])) {
+            System.out.println(RUN_USAGE);
+            return 0;
+        }
         String runId = option(args, "--run-id", loadedDefaultRunId());
         boolean dryRun = hasFlag(args, "--dry-run");
         String continueFrom = option(args, "--continue", null);

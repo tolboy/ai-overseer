@@ -517,8 +517,8 @@ named with `--use` does not take a vendor-failure failover unless the value is
 `confirm` or `auto`. A spent subscription still follows `on_quota_exhausted`.
 
 `limits.stall_seconds` bounds a call that accepts the request and then says nothing.
-An API profile that omits it uses 180 seconds; `0` disables it. A direct CLI has no
-default, because a model that is thinking can be silent. The stop is `role_stalled`,
+It is off unless set: API calls use `stream: false`, so a healthy
+reasoning model can send nothing for minutes, and a thinking CLI can be silent too. The stop is `role_stalled`,
 not a wall-clock timeout, and it follows `on_vendor_failure`. The wall clock still
 wins when it is the shorter of the two.
 

@@ -136,6 +136,8 @@ public final class LocalHttpExecutor implements RoleExecutor {
             return new Result(false, "role_artifact_incomplete", duration, answer, null, evidence);
         }
 
+        int derived = DirectCliExecutor.deriveFindingMessages(artifact);
+        if (derived > 0) evidence.put("finding_messages_derived", derived);
         List<String> schemaErrors = DirectCliExecutor.schemaErrors(profile, request, artifact);
         if (!schemaErrors.isEmpty()) {
             evidence.put("failure", "role_artifact_schema_violation");

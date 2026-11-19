@@ -396,8 +396,8 @@ public final class ConfigTest implements Suite {
                 read_only: true
                 limits: { wall_clock_minutes: 5, max_output_tokens: 256 }
                 """, "api-review.yaml");
-        check.eq("an API profile stalls after three quiet minutes by default",
-                java.time.Duration.ofSeconds(180), apiQuiet.stallTimeout());
+        // stream: false means a healthy reasoning call can be silent until it is done.
+        check.eq("an API profile has no stall bound unless it names one", null, apiQuiet.stallTimeout());
         Profile stallOff = Profile.parse("""
                 version: 1
                 profile: api-review

@@ -250,6 +250,8 @@ public final class DirectCliExecutor implements RoleExecutor {
             artifact.putIfAbsent("role", request.role());
             artifact.putIfAbsent("task_id", request.task().id());
             artifact.putIfAbsent("run_id", request.runId());
+            int derived = deriveFindingMessages(artifact);
+            if (derived > 0) evidence.put("finding_messages_derived", derived);
             List<String> missing = missingFields(profile, artifact);
             List<String> schemaProblems = missing.isEmpty()
                     ? schemaErrors(profile, request, artifact) : List.of();
@@ -487,6 +489,36 @@ public final class DirectCliExecutor implements RoleExecutor {
     }
 
     /** Conformance is ours, even when the vendor claimed to enforce the schema. */
+    /**
+     * A finding that says everything except {@code message} is still a finding.
+     *
+     * Measured: a Grok CLI review of a pull request (22 minutes, verdict fail, three findings
+     * with path, line, scenario, expected, actual and suggestion) was thrown away as a schema
+     * violation because no finding carried {@code message}; "whatever it concluded is
+     * unknown" was false, the conclusion was in {@code actual}. The vendor's own words are
+     * copied, in the order a reader would summarise them: {@code actual}, then
+     * {@code scenario}, then {@code expected}. Nothing is invented: a finding with none of
+     * them stays invalid. Returns how many messages were filled in, for the evidence.
+     */
+    static int deriveFindingMessages(Map<String, Object> artifact) {
+        if (artifact == null || !(artifact.get("findings") instanceof List<?> findings)) return 0;
+        int derived = 0;
+        for (Object item : findings) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Object message = raw.get("message");
+            if (message instanceof String text && !text.isBlank()) continue;
+            for (String source : List.of("actual", "scenario", "expected")) {
+                if (raw.get(source) instanceof String text && !text.isBlank()) {
+                    @SuppressWarnings("unchecked") Map<String, Object> finding = (Map<String, Object>) raw;
+                    finding.put("message", text);
+                    derived++;
+                    break;
+                }
+            }
+        }
+        return derived;
+    }
+
     static List<String> schemaErrors(Profile profile, Request request, Map<String, Object> artifact)
             throws Exception {
         // The planner's draft is compiled into a contract. A profile may skip schema

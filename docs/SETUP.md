@@ -502,9 +502,9 @@ CLI is not replaced by a paid API of the same family. `failover.on_pinned` defau
 `stop`, so a stage passed with `--use` does not take a vendor-failure failover unless you
 set `confirm` or `auto`. A spent subscription still follows `on_quota_exhausted`.
 
-`limits.stall_seconds` is how long a call may sit with no new bytes. An API profile that
-omits it uses 180 seconds; `0` disables the bound. A direct CLI uses only its wall clock
-until you set the key. The stop is `role_stalled` and can fail over under
+`limits.stall_seconds` is how long a call may sit with no new bytes. It is off until you
+set it (`0` also means off): API calls use `stream: false`, so a healthy review call can
+return its first byte only when it is done, after several minutes. The stop is `role_stalled` and can fail over under
 `on_vendor_failure`. The wall clock still wins when it expires first.
 
 API transport failures additionally require `roles.<role>.api_fallback_profiles`, an ordered
