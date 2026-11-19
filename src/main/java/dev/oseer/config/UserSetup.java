@@ -611,7 +611,7 @@ public final class UserSetup {
             Browser scenarios the harness asserts, after you and before a human
             {{visual_scenarios}}
 
-            Those two lists are the whole of the machine acceptance, and the second one is not
+            Those two lists are what Overseer itself runs, and the second one is not
             a plan — a headless browser runs it at the named viewports. The grammar is
             `testid=` / `css=` / `role=` / `text=` with `visible`, `hidden`, `click`,
             `click@x,y` or `focused`, plus `press=KEY` (Escape, Enter, Tab, Space, an arrow,
@@ -633,6 +633,15 @@ public final class UserSetup {
             file a blocking contract_gap for one of them:
 
             {{manual_verification}}
+
+            Acceptance already recorded for this change, beyond the local machine gate
+            {{acceptance_evidence}}
+
+            That block was supplied with the task — the pull request's own commands and a CI
+            result — and Overseer did not look it up. When it names commands or a check that
+            passed, do not file a contract_gap claiming that nothing compiles, that tests do
+            not run, or that the only acceptance is `git diff --check`. File a contract_gap
+            only when those commands do not cover the behaviour under review.
 
             ## Hard constraints
 

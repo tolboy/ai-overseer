@@ -163,7 +163,9 @@ contract gap in the history), and when any open P1 is a product defect, includin
 one another reviewer left open in the finding registry or filed under the same id.
 A task may list checks a person already does by hand under `manual_verification:`; a
 contract gap whose text contains one of those items is recorded as advisory and the run
-continues to the human gate.
+continues to the human gate. A review may also record `acceptance_evidence:` — the pull
+request's test commands and a pasted CI result — so a contract gap that only says nothing
+was compiled or tested is recorded as advisory when that evidence is real acceptance.
 
 **The harness** is a real headless browser over CDP, with zero npm dependencies. Scenarios
 live in the task contract and are checked mechanically:

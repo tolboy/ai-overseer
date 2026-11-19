@@ -222,7 +222,29 @@ mode: review
 prior_writers: [codex]        # the vendors that wrote the branch
 risk: high
 scope: all
+checks: ["git diff --check origin/master...HEAD"]
+acceptance_evidence:
+  commands:
+    - "./build.sh"
+    - "./test.sh"
+  ci:
+    source: "gh pr checks"    # a label; Overseer does not run it
+    summary:
+      - "build   pass"
+      - "test    pass"
+    checks:
+      - { name: build, conclusion: success }
+      - { name: test, conclusion: success }
 ```
+
+`acceptance_evidence` is what the pull request already ran. The local machine gate may
+still be only `git diff --check`; readers are shown the recorded commands and CI and do
+not file a blocking contract gap that nothing compiles or that tests do not run. A gap
+that says those commands do not cover the behaviour under review still blocks. Paste the
+check output yourself — Overseer does not call GitHub. The config YAML subset has no
+block scalars, so a multi-line summary is a list of lines (or one quoted string).
+Conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`,
+`action_required`, `startup_failure`; `pass` and `fail` are accepted as aliases.
 
 With `base_ref` in project.yaml set to the branch the pull request targets:
 

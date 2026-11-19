@@ -42,6 +42,7 @@ public final class TaskLoopTest implements Suite {
             readinessStopsBeforeWork(check, sandbox, home);
             writerPinFollowsAFixAndAnAdvance(check, sandbox, home);
             reviewOnlyReadsAnExistingBranch(check, sandbox, home);
+            recordedAcceptanceChecks(check, sandbox, home);
 
             // Clean run: implement, gates pass, review passes, stop for a human.
             Path clean = newProject(sandbox, "clean");
@@ -7348,6 +7349,80 @@ public final class TaskLoopTest implements Suite {
         check.that("a pin cannot put the author's vendor in the reader's chair", !ownBranch.ok());
         check.eq("and the refusal names the rule", "same_vendor_as_writer",
                 ownBranch.rejected().get("ro-review-author"));
+    }
+
+    /**
+     * A review whose local gate is only a file check, with the pull request's own tests and a
+     * green CI result recorded on the task. The "nothing compiles" contract gap is noise.
+     * The same words without that evidence still block.
+     */
+    @SuppressWarnings("unchecked")
+    private void recordedAcceptanceChecks(Check check, Path sandbox, Path home) throws Exception {
+        Path reviewed = newProject(sandbox, "recorded-acceptance");
+        Files.writeString(reviewed.resolve("src/result.txt"), "already on the branch\n");
+        Path task = reviewed.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                acceptance_evidence:
+                  commands:
+                    - "./test.sh"
+                  ci:
+                    source: "gh pr checks"
+                    summary:
+                      - "test    pass"
+                    checks:
+                      - name: test
+                        conclusion: success
+                """);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl", sandbox.resolve("recorded-acceptance-impl.count"), 1);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-nothing-runs", sandbox.resolve("recorded-acceptance-review.count"), 1);
+        policy(home, "loop-review", "loop-impl");
+        TaskLoop.Outcome passed = loop(reviewed, home, "ae1");
+        check.that("recorded acceptance lets the noise gap reach the gate", passed.ok());
+        check.eq("as ready for a person", "ready_for_human", passed.reason());
+        Map<String, Object> lowered = lastFinding(passed);
+        check.eq("the gap is recorded as P2", "P2", lowered.get("severity"));
+        check.eq("with the vendor severity beside it", "P1", lowered.get("severity_as_filed"));
+        check.eq("marked as recorded acceptance", "recorded", lowered.get("acceptance_evidence"));
+        check.eq("and nothing blocks", 0L,
+                ((Number) passed.summaryReport().get("blocking_findings")).longValue());
+        check.that("the summary carries the evidence the readers were shown",
+                passed.summaryReport().get("acceptance_evidence") instanceof Map<?, ?>);
+        String prompt = Files.readString(reviewed.resolve(
+                ".oseer/runs/ae1--reviewer-0/prompts/reviewer.md"));
+        check.contains("the prompt names the pull request's command", prompt, "./test.sh");
+        check.contains("and the recorded CI line", prompt, "test    pass");
+        Map<String, Object> artifact = readJson(reviewed.resolve(
+                ".oseer/runs/ae1--reviewer-0/artifacts/reviewer.json"));
+        check.eq("the vendor file is still the P1 they filed", "P1",
+                ((List<Map<String, Object>>) artifact.get("findings")).get(0).get("severity"));
+        Map<String, Object> report = new dev.oseer.ledger.RunReport().of(reviewed, "ae1");
+        check.that("the run report carries the same evidence",
+                report.get("acceptance_evidence") instanceof Map<?, ?>);
+        check.contains("and the text report says it was recorded",
+                dev.oseer.ledger.RunReport.render(report), "accepted ");
+
+        Path bare = newProject(sandbox, "recorded-acceptance-bare");
+        Files.writeString(bare.resolve("src/result.txt"), "already on the branch\n");
+        Path bareTask = bare.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(bareTask, Files.readString(bareTask).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                """);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-nothing-runs", sandbox.resolve("recorded-acceptance-bare.count"), 1);
+        TaskLoop.Outcome stopped = loop(bare, home, "ae2");
+        check.that("the same words without evidence still stop the run", !stopped.ok());
+        check.eq("for a person", "blocking_findings_remain", stopped.reason());
+        check.eq("at the vendor's P1", "P1", lastFinding(stopped).get("severity"));
+        check.that("and the summary has no acceptance evidence",
+                stopped.summaryReport().get("acceptance_evidence") == null);
     }
 
     /** Stand-ins whose success attempt is set per scenario, so fix rounds are forced, not hoped for. */

@@ -381,6 +381,24 @@ manual_verification:
 
 `oseer setup` does not overwrite an existing `prompts/reviewer.md`. Copy the new grammar
 paragraphs into it, or a reviewer that still has the old prompt can file the same P1.
+A template that does not mention `{{acceptance_evidence}}` still receives that block at
+dispatch: a review of an existing pull request can record the commands and CI result
+below, and readers are shown them even from an older prompt.
+
+```yaml
+acceptance_evidence:
+  commands: ["./build.sh", "./test.sh"]
+  ci:
+    source: "gh pr checks"
+    summary: ["build   pass", "test    pass"]
+    checks:
+      - { name: build, conclusion: success }
+      - { name: test, conclusion: success }
+```
+
+Overseer does not run `gh` or call GitHub. A P1 `contract_gap` that only says nothing
+compiles or tests do not run is recorded as advisory when this evidence is real
+acceptance. A gap about coverage still blocks. See the task spec for the conclusion set.
 
 Set `OSEER_CONFIG_HOME` the same way every other command does if the configuration is not in
 `~/.oseer`.

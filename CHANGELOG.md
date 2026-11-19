@@ -19,6 +19,16 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A `mode: review` task can record `acceptance_evidence`: the pull request's own test
+  commands and a pasted CI result (a `gh pr checks` summary as a string or a list of
+  lines, plus check-run conclusions). Readers see it in the prompt, including reviewer
+  templates written before the placeholder existed (`oseer setup` does not overwrite
+  them). A P1 `contract_gap` that only says nothing compiles, tests do not run, or the
+  only gate is `git diff --check` is recorded as P2 advisory when that evidence is real
+  acceptance; a gap that says the commands do not cover the behaviour still blocks. The
+  local machine gate is unchanged and Overseer does not fetch CI. Empty evidence is
+  omitted from `acceptance_sha256`. Not yet run live against a vendor. Suites `config`,
+  `findings`, `role runner`, `task loop`.
 - A `vendor: grok` direct CLI profile that declares `model:` but whose args never pass
   `{{model}}` is refused when it is loaded. Such a profile ran the Grok CLI's default model
   while its reports named the declared one; the refusal names the line to add

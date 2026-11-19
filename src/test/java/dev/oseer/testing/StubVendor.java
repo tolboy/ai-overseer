@@ -261,6 +261,16 @@ public final class StubVendor {
                                 "verdict", ids.isEmpty() ? "pass" : "fail", "summary", "round " + n,
                                 "findings", findings))));
             }
+            // The noise a review of an existing pull request filed when the local gate was
+            // only `git diff --check` and the pull request's own CI was already green.
+            case "review-nothing-runs" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"nothing was tested\","
+                    + "\"findings\":[{\"id\":\"nothing-runs\",\"category\":\"contract_gap\","
+                    + "\"severity\":\"P1\",\"path\":\".oseer/tasks/hello.yaml\","
+                    + "\"message\":\"nothing compiles or runs the tests; the only gate is git diff --check\","
+                    + "\"expected\":\"a build and a test run\",\"actual\":\"whitespace check only\","
+                    + "\"confidence\":\"confirmed\"}]},\"total_cost_usd\":0.004}");
             case "review-categorised" -> System.out.println(
                     "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
                     + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"contract too weak\","

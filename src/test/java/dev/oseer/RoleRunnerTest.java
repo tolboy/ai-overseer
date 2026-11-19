@@ -108,6 +108,42 @@ public final class RoleRunnerTest implements Suite {
             check.contains("and to file that gap as manual verification, not a blocking P1",
                     prompt, "it names manual verification");
             check.contains("an undeclared hand-check list is explicit", prompt, "(none declared)");
+            check.contains("an unrecorded acceptance block is explicit", prompt, "(none recorded)");
+            check.contains("and the reviewer is told what that block is for",
+                    prompt, "do not file a contract_gap claiming that nothing compiles");
+
+            // A reviewer template already sitting in ~/.oseer is never rewritten by setup.
+            // The recorded CI still has to reach the reader, or the same noise gap comes back.
+            Path reviewerTemplate = home.resolve("prompts/reviewer.md");
+            String shippedReviewer = Files.readString(reviewerTemplate);
+            Files.writeString(reviewerTemplate, "Review {{task_id}}\n{{goal}}\n");
+            Files.writeString(project.resolve(".oseer/tasks/reviewed.yaml"), """
+                    version: 1
+                    id: reviewed
+                    goal: Review the branch as it stands
+                    mode: review
+                    prior_writers: [codex]
+                    risk: high
+                    scope: app
+                    acceptance_evidence:
+                      commands:
+                        - "./test.sh"
+                      ci:
+                        source: "gh pr checks"
+                        checks:
+                          - name: test
+                            conclusion: success
+                    """);
+            RoleRunner.Outcome evidenced = runRole(project, home, "reviewer", "evidenced",
+                    null, null, true, "reviewed");
+            check.that("a dry run of a review that records acceptance resolves", evidenced.ok());
+            String evidencedPrompt = Files.readString(
+                    project.resolve(".oseer/runs/evidenced/prompts/reviewer.md"));
+            check.contains("an old reviewer template still receives the recorded command",
+                    evidencedPrompt, "./test.sh");
+            check.contains("and is told not to file the noise gap",
+                    evidencedPrompt, "Do not file a contract_gap");
+            Files.writeString(reviewerTemplate, shippedReviewer);
 
             // --- implementer writes, reviewer stays read-only --------------------------
             RoleRunner.Outcome implemented = runRole(project, home, "implementer", "live", null, null, false);

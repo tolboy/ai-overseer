@@ -188,6 +188,33 @@ actual, scenario or suggestion contains an item (case-insensitive substring) is 
 as P2 with `severity_as_filed`, the matched item, and `advisory: true`. It does not block.
 A product defect is never lowered. The vendor artifact is left as filed.
 
+Optional task `acceptance_evidence` records acceptance the pull request already has, so a
+review whose local gate is only `git diff --check` can still show readers the commands
+and the CI result. Overseer does not fetch either; the operator pastes them.
+
+```yaml
+acceptance_evidence:
+  commands: ["./build.sh", "./test.sh"]   # at most 20 single lines, each ≤2000 characters
+  ci:
+    source: "gh pr checks"                # optional label, ≤200 characters
+    summary: ["build   pass", "test    pass"]   # a string or a list of lines, ≤8000 characters
+    checks:
+      - { name: build, conclusion: success }
+```
+
+Check conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`,
+`timed_out`, `action_required`, `startup_failure`. `pass` and `fail` are stored as
+`success` and `failure`. Unknown keys and unknown conclusions are refused. Absent or
+empty evidence is omitted from `acceptance_sha256`. When the evidence is real acceptance
+— any command, any check concluded `success`, or a summary that does not itself say the
+run failed — a P1 `contract_gap` whose text only claims that nothing compiles, that tests
+do not run, or that the gate is `git diff --check` is recorded as P2 with
+`severity_as_filed`, `acceptance_evidence: recorded`, and `advisory: true`. A gap that
+says those commands do not cover or do not assert the behaviour stays a P1. A product
+defect is never lowered. The vendor artifact is left as filed. The reviewer prompt
+carries the block as `{{acceptance_evidence}}`; a template that predates the placeholder
+has the block appended, because `oseer setup` does not overwrite `prompts/reviewer.md`.
+
 `oseer pilot prepare` requires a declared `reproduction.command` to be in
 `checks.acceptance` and writes it into the task's `reproduce` list. Preparation executes
 nothing: `reproduction_check.status` is `enforced_by_oseer_run`, or `not_declared` when

@@ -130,6 +130,33 @@ public final class Values {
         return readStringList(key, raw);
     }
 
+    /**
+     * A string, or a list of strings joined by newlines.
+     *
+     * The config YAML subset rejects block scalars, so a pasted {@code gh pr checks}
+     * summary is a list of lines rather than a {@code |} block. A single quoted
+     * string, including one with {@code \n}, is the other form.
+     */
+    public String optText(String key) {
+        Object raw = map.get(key);
+        if (raw == null) return null;
+        if (raw instanceof String value) {
+            String trimmed = value.strip();
+            if (trimmed.isEmpty()) {
+                collector.add(at(key) + " must be a non-empty string");
+                return null;
+            }
+            return trimmed;
+        }
+        if (raw instanceof List<?> list) {
+            List<String> lines = readStringList(key, list);
+            return lines.isEmpty() ? null : String.join("\n", lines);
+        }
+        collector.add(at(key) + " must be a string or a list of strings, got "
+                + dev.oseer.json.Json.typeName(raw));
+        return null;
+    }
+
     public List<String> requireStringList(String key) {
         Object raw = map.get(key);
         if (raw == null) {

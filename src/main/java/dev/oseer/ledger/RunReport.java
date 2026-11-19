@@ -76,6 +76,11 @@ public final class RunReport {
         // What each judging stage objected to, round by round, and what moved between them.
         // Two reports of one defect used to be two unrelated blobs of text.
         report.put("finding_history", summary.get("finding_history"));
+        // Commands and a pasted CI result the readers were told already passed. Omitted when
+        // the task recorded none, so a report of an older run does not grow an empty block.
+        if (summary.get("acceptance_evidence") != null) {
+            report.put("acceptance_evidence", summary.get("acceptance_evidence"));
+        }
         for (String key : List.of("finding_protocol_failure", "last_repair_receipt",
                 "severity_downgraded_without_change", "nonactionable_blocking_ids"))
             report.put(key, summary.get(key));
@@ -584,6 +589,18 @@ public final class RunReport {
         out.append('\n');
         // Printed next to the outcome and not buried below the tables, because the whole point
         // of separating them is that a reader who stops at the outcome line gets it wrong.
+        if (report.get("acceptance_evidence") instanceof Map<?, ?> recorded) {
+            out.append("accepted ");
+            Object commands = recorded.get("commands");
+            if (commands instanceof List<?> list && !list.isEmpty()) {
+                out.append(" commands=").append(list.size());
+            }
+            Object checks = recorded.get("checks");
+            if (checks instanceof List<?> list && !list.isEmpty()) {
+                out.append(" checks=").append(list.size());
+            }
+            out.append('\n');
+        }
         if (report.get("candidate_review_passed") != null) {
             out.append("review   ").append(Boolean.TRUE.equals(report.get("candidate_review_passed"))
                             ? "the candidate passed every review that ran"

@@ -915,6 +915,12 @@ public final class RoleRunner {
             String prompt = PromptRenderer.render(template, values, templateFile.toString());
             boolean backfilled = backfillNeeded(role, task, template);
             if (backfilled) prompt = prompt + browserScenarioSection(values.get("visual_scenarios"));
+            // setup never overwrites ~/.oseer/prompts, so a reviewer template written before
+            // acceptance evidence existed would otherwise hide the pull request's CI from the
+            // reader and every one of them would file the same contract_gap.
+            if (acceptanceBackfillNeeded(role, template)) {
+                prompt = prompt + acceptanceEvidenceSection(values.get("acceptance_evidence"));
+            }
             Map<String, Object> apiContextEvidence = null;
             if ("api".equals(profile.runner())) {
                 try {
@@ -1154,8 +1160,11 @@ public final class RoleRunner {
             }
 
             if (result.artifact() != null) {
-                List<Findings.Finding> found = Findings.acknowledging(
-                        Findings.of(result.artifact()), task.manualVerification());
+                // Both downgrades happen before the report is written. The loop reads the
+                // vendor file, not this list, and applies the same adjustment there.
+                List<Findings.Finding> found = Findings.adjusted(
+                        Findings.of(result.artifact()), task.manualVerification(),
+                        task.acceptanceEvidence().recordsRealAcceptance());
                 if (!found.isEmpty()) {
                     report.put("findings", found.stream().map(Findings.Finding::toMap).toList());
                 }
@@ -1833,6 +1842,26 @@ public final class RoleRunner {
                 && !PromptRenderer.uses(template, "visual_scenarios");
     }
 
+    /** A reviewer prompt that predates {@code {{acceptance_evidence}}}. See the call site. */
+    private static boolean acceptanceBackfillNeeded(String role, String template) {
+        return "reviewer".equals(role) && !PromptRenderer.uses(template, "acceptance_evidence");
+    }
+
+    private static String acceptanceEvidenceSection(String evidence) {
+        return """
+
+                ## Recorded acceptance evidence
+
+                The machine gate's command list is not the whole of what this change already
+                ran. The block below was supplied with the task (commands and a recorded CI
+                summary). Overseer did not look it up. When it records real acceptance, do
+                not file a contract_gap claiming that nothing compiles, that tests do not run,
+                or that the only acceptance is a whitespace check. File a contract_gap only
+                when those commands do not cover the behaviour under review.
+
+                """ + (evidence == null ? "(none recorded)" : evidence) + "\n";
+    }
+
     /** Items the task already accepts as checked by hand, or an explicit empty list. */
     private static String manualLines(List<String> items) {
         if (items == null || items.isEmpty()) return "(none declared)";
@@ -1887,6 +1916,7 @@ public final class RoleRunner {
         values.put("scope_paths", String.join(", ", task.scopePaths()));
         values.put("changed_files", changedFileList(loaded.root(), mergeBase));
         values.put("acceptance_commands", bullets(task.acceptanceCommands()));
+        values.put("acceptance_evidence", task.acceptanceEvidence().promptText());
         values.put("visual_scenarios", bullets(task.visualQa().scenarios()));
         values.put("manual_verification", manualLines(task.manualVerification()));
         values.put("authority", "workspace_write=" + task.authority().workspaceWrite()

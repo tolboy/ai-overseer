@@ -105,6 +105,74 @@ public final class ConfigTest implements Suite {
         check.eq("a task that names none keeps an empty list", List.of(),
                 TaskSpec.parse(reproductionTask, "task.yaml").manualVerification());
 
+        String evidenceTask = reproductionTask + """
+                acceptance_evidence:
+                  commands:
+                    - "./build.sh"
+                    - "./test.sh"
+                  ci:
+                    source: "gh pr checks"
+                    summary:
+                      - "build   pass"
+                      - "test    pass"
+                    checks:
+                      - { name: build, conclusion: success }
+                      - name: test
+                        conclusion: pass
+                """;
+        TaskSpec evidenced = TaskSpec.parse(evidenceTask, "task.yaml");
+        check.eq("recorded commands stay in the order they were written",
+                List.of("./build.sh", "./test.sh"), evidenced.acceptanceEvidence().commands());
+        check.eq("a pasted check table is kept as lines", "build   pass\ntest    pass",
+                evidenced.acceptanceEvidence().ciSummary());
+        check.eq("pass is stored as success", "success",
+                evidenced.acceptanceEvidence().checks().get(1).conclusion());
+        check.that("commands plus a passing check are real acceptance",
+                evidenced.acceptanceEvidence().recordsRealAcceptance());
+        check.contains("the reader is told not to file the noise gap",
+                evidenced.acceptanceEvidence().promptText(), "Do not file a contract_gap");
+        TaskSpec.ResolvedTask resolvedEvidence = evidenced.resolve(project, "task.yaml");
+        String bareFingerprint = TaskSpec.parse(reproductionTask, "task.yaml")
+                .resolve(project, "task.yaml").acceptanceFingerprint();
+        check.that("recording evidence moves the acceptance hash",
+                !resolvedEvidence.acceptanceFingerprint().equals(bareFingerprint));
+        check.eq("an empty block keeps the hash a task had before the key existed",
+                bareFingerprint,
+                TaskSpec.parse(reproductionTask + "acceptance_evidence: {}\n", "task.yaml")
+                        .resolve(project, "task.yaml").acceptanceFingerprint());
+        check.eq("a task that records none has no evidence", false,
+                TaskSpec.parse(reproductionTask, "task.yaml").acceptanceEvidence().present());
+        check.rejects("an unknown conclusion is refused", "is not one of",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            checks:
+                              - { name: build, conclusion: green }
+                        """, "task.yaml"));
+        check.rejects("a blank command cannot be evidence", "non-empty",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          commands: ["  "]
+                        """, "task.yaml"));
+        check.rejects("an unknown evidence key is refused", "unsupported key 'acceptance_evidence.fetched'",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          fetched: true
+                        """, "task.yaml"));
+        check.that("a failed CI summary alone is not real acceptance",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: "test    fail"
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a command alone is real acceptance",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          commands: ["./test.sh"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.eq("nothing recorded says so in the prompt", "(none recorded)",
+                dev.oseer.config.AcceptanceEvidence.NONE.promptText());
+
         // What has to happen in a checkout before any of `checks` can run. Most projects have
         // nothing to say here; a `git worktree` of an npm project has no node_modules, and
         // without this its gates fail for a reason no implementer put there.

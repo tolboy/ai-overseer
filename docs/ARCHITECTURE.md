@@ -503,6 +503,16 @@ grammar and tells the model to file a check that grammar cannot express — a ch
 a drag — as that P2, with a manual-verification note. `oseer setup` does not overwrite an
 existing reviewer prompt.
 
+A review task may also record `acceptance_evidence`: command lines and a pasted CI
+summary (for example `gh pr checks`), never a network fetch. Readers receive it as
+`{{acceptance_evidence}}`, and a template that does not name that placeholder has the
+block appended for the same reason the implementer prompt is backfilled. When the
+evidence is real acceptance, a P1 `contract_gap` that only says nothing was compiled or
+tested is recorded as P2 advisory (`acceptance_evidence: recorded`) before the round is
+stored, so it does not block and a later reading is not severity laundering. A gap that
+says the recorded commands do not cover the behaviour stays a P1. The local machine gate
+still runs whatever `checks` the task resolved.
+
 Both fields are optional in the shipped schema, so a reviewer that supplies neither still
 validates and still gets a usable identity.
 
