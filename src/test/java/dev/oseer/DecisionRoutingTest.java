@@ -93,7 +93,7 @@ public final class DecisionRoutingTest implements Suite {
             check.that("warning says it may be slow or expensive",String.valueOf(((Map<?,?>)raised.get(0)).get("message")).contains("may be slow or expensive"));
             List<String> printed=new ArrayList<>();TaskRouting.using(client).route(scoped,home,task,targets,printed::add);
             check.that("warning is printed in the run-start progress",printed.stream().anyMatch(line->line.startsWith("warn  Jev chose effort max")));
-            var grok=Profile.parse("version: 1\nprofile: grok-worker\nrole: implementer\nvendor: grok\nmodel: grok-4.7\neffort: high\ncommand: grok\nargs: ['--effort','{{effort}}']\nread_only: false\n", "fixture");
+            var grok=Profile.parse("version: 1\nprofile: grok-worker\nrole: implementer\nvendor: grok\nmodel: grok-4.7\neffort: high\ncommand: grok\nargs: ['--model','{{model}}','--effort','{{effort}}']\nread_only: false\n", "fixture");
             check.eq("Grok 4.7 has no max effort",List.of("low","medium","high","xhigh"),TaskRouting.supportedEfforts(grok));
             stub.effortBand=Map.of("low",0.0,"medium",0.0,"high",0.1,"xhigh",0.9);
             var grokUser=new UserConfig(home,user.policy(),Map.of(grok.name(),grok),Map.of(),true,user.connections());

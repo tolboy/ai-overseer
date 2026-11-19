@@ -345,7 +345,9 @@ public final class RosterTest implements Suite {
         String untouched = Files.readString(grok, StandardCharsets.UTF_8);
         RosterCommand.Outcome refused = roster(labelled, "roster", "model", "grok-review",
                 "--model", "grok-4.20");
-        check.eq("a profile that passes no model is refused", "model_not_forwarded",
+        // A grok profile whose model never reaches the CLI is now refused when it is loaded,
+        // before any roster edit or run can use it.
+        check.eq("a profile that passes no model is refused", "profile_unreadable",
                 refused.report().get("code"));
         check.contains("and told which line to add",
                 String.valueOf(refused.report().get("message")), "\"{{model}}\"");

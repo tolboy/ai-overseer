@@ -327,7 +327,14 @@ public record Profile(
             "service", "account", "api_context");
     private static final Set<String> MCP = Set.of("config", "note");
     private static final Set<String> LIMITS = Set.of("wall_clock_minutes", "max_cost_usd", "max_output_tokens",
-            "max_requests");
+            "max_requests", "max_turns");
+
+    /**
+     * The turn ceiling a direct CLI profile gets when its args carry {@code {{max_turns}}} and
+     * its limits do not name one. A pull-request review measured 17 turns; 12 could not finish.
+     */
+    public static final int DEFAULT_MAX_TURNS = 40;
+    public static final int MAX_TURNS_CEILING = 500;
     private static final Set<String> ARTIFACT = Set.of("required_fields");
     private static final Set<String> QUOTA = Set.of("signatures");
     private static final Set<String> ATTACHMENTS = Set.of("flag");
@@ -471,6 +478,17 @@ public record Profile(
         } else if (args.stream().anyMatch(a -> a.contains("{{effort}}"))) {
             root.collector().add("{{effort}} in args requires effort");
         }
+        // A model a direct CLI never receives is a label: the CLI runs its own default and the
+        // report's model column becomes a wish. Measured: grok-review declared a model, its args
+        // had no --model, and every review ran the CLI default. Scoped to grok: its CLI has no
+        // other way to select a model per call, whereas a Codex profile may select one through
+        // `--profile` in its own config.toml, where the declared model is a faithful label.
+        if ("direct".equals(runner) && !opencode && "grok".equals(vendor) && model != null && !model.isBlank()
+                && args.stream().noneMatch(a -> a.contains("{{model}}"))) {
+            root.collector().add("model is declared but no args entry passes {{model}} to the vendor, so the "
+                    + "CLI would run its own default model; add \"--model\", \"{{model}}\" to args "
+                    + "or remove model");
+        }
         if ("orca".equals(runner) && !args.isEmpty()) {
             root.collector().add("runner: orca cannot forward args (including tool grants, sandbox and turn limits); "
                     + "keep runner: direct for those constraints instead of dropping them");
@@ -512,6 +530,24 @@ public record Profile(
             if (!opencode) root.collector().add("limits.max_requests applies only to harness: opencode");
             else maxRequests = (int) limits.optInt("max_requests", CodingAttestation.MAX_REQUESTS,
                     1, CodingAttestation.REQUEST_CEILING);
+        }
+        // The vendor's own turn ceiling, for a direct CLI. Written once in limits and handed to
+        // the CLI through {{max_turns}}, so a review that needs more room is a limits edit,
+        // not a hunt through args for a bare number.
+        boolean usesMaxTurns = args.stream().anyMatch(a -> a.contains("{{max_turns}}"));
+        if (limits.has("max_turns")) {
+            if (!"direct".equals(runner) || opencode) {
+                root.collector().add("limits.max_turns applies only to runner: direct CLI profiles");
+            } else if (!usesMaxTurns) {
+                root.collector().add("limits.max_turns is declared but no args entry passes {{max_turns}} to the "
+                        + "vendor (for grok and claude: \"--max-turns\", \"{{max_turns}}\"), so the ceiling "
+                        + "would never be applied");
+            }
+        }
+        if (usesMaxTurns) {
+            long maxTurns = limits.optInt("max_turns", DEFAULT_MAX_TURNS, 1, MAX_TURNS_CEILING);
+            String turns = Long.toString(maxTurns);
+            args = args.stream().map(a -> a.replace("{{max_turns}}", turns)).toList();
         }
         ApiContextSettings apiContext = null;
         if (root.has("api_context")) {

@@ -284,6 +284,8 @@ public final class UserSetup {
             #                        ~/.grok/config.toml, which makes cost depend on ambient state.
             #   --max-turns          the verification review below took 17 turns; 12 could not
             #                        finish it. A pull-request-sized review needs room to read.
+            #                        The ceiling lives in limits.max_turns and reaches the CLI
+            #                        through {{max_turns}}.
             args:
               - "--prompt-file"
               - "{{prompt_file}}"
@@ -295,12 +297,13 @@ public final class UserSetup {
               - "--reasoning-effort"
               - "{{effort}}"
               - "--max-turns"
-              - "40"
+              - "{{max_turns}}"
               - "--disable-web-search"
               - "--verbatim"
 
             limits:
               wall_clock_minutes: 40
+              max_turns: 40
 
             prompt_template: prompts/reviewer.md
             json_schema: schemas/reviewer.json

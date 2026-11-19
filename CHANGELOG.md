@@ -19,6 +19,14 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A `vendor: grok` direct CLI profile that declares `model:` but whose args never pass
+  `{{model}}` is refused when it is loaded. Such a profile ran the Grok CLI's default model
+  while its reports named the declared one; the refusal names the line to add
+  (`"--model", "{{model}}"`).
+- A direct CLI profile can set its turn ceiling in `limits.max_turns` (1–500) and pass it with
+  `"--max-turns", "{{max_turns}}"`; without the key the placeholder resolves to 40. A declared
+  `max_turns` that no argument passes, or one on an API profile, is refused. The starter
+  `grok-review` uses it (`max_turns: 40`). Literal `--max-turns N` arguments keep working.
 - A context refusal names every file that did not fit, its size, the limit and the key to
   raise, instead of "exceeds the 64 KiB per-file limit".
 - The API context no longer refuses committed env templates (`.env.example`, `.env.sample`,
