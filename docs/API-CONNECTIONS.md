@@ -130,7 +130,7 @@ a later failure clears aggregate confirmation while preserving individual turn r
 
 ## Context and execution limits
 
-API roles have no filesystem or command tools. A role dispatched through Overseer receives a bounded diff and current changed-source snapshot. Overseer refuses unsupported/binary/secret/oversized context rather than silently truncating it. Overseer's own `.oseer` metadata is excluded. The snapshot is limited to changed source; the model must return an inconclusive result when required dependencies or evidence are absent. Native synthetic verification has no repository snapshot because it is not a review.
+API roles have no filesystem or command tools. A role dispatched through Overseer receives a bounded diff and current changed-source snapshot. Overseer refuses unsupported/binary/secret/oversized context rather than silently truncating it; a refused secret is named (`.env`, `.env.local`, keys, credential files), while committed env templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`) are read like other files. Overseer's own `.oseer` metadata is excluded. The snapshot is limited to changed source; the model must return an inconclusive result when required dependencies or evidence are absent. Native synthetic verification has no repository snapshot because it is not a review.
 
 What the snapshot carries is set per profile by an optional `api_context` block (only for `runner: api`):
 

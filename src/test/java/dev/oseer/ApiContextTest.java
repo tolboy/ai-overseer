@@ -74,8 +74,28 @@ public final class ApiContextTest implements Suite {
             Files.writeString(secret, "API_KEY=do-not-leak-secret-value\n");
             git(root, "add", "-f", "--", ".env");
             safeFailure(check, "changed secret files are refused before sending", "secret or credential", root, base);
+            try {
+                ApiContextBuilder.build(root, base, processes);
+            } catch (IOException failure) {
+                check.contains("the secret refusal names the file", failure.getMessage(), ": .env");
+            }
             git(root, "reset", "-q", "--", ".env");
             Files.delete(secret);
+
+            Path localEnv = root.resolve(".env.local");
+            Files.writeString(localEnv, "API_KEY=do-not-leak-secret-value\n");
+            git(root, "add", "-f", "--", ".env.local");
+            safeFailure(check, "a local env file is still refused", "secret or credential", root, base);
+            git(root, "reset", "-q", "--", ".env.local");
+            Files.delete(localEnv);
+
+            Path template = root.resolve(".env.example");
+            Files.writeString(template, "API_KEY=\n");
+            git(root, "add", "-f", "--", ".env.example");
+            String withTemplate = ApiContextBuilder.build(root, base, processes);
+            check.contains("a committed env template is read like any other file", withTemplate, ".env.example");
+            git(root, "reset", "-q", "--", ".env.example");
+            Files.delete(template);
 
             Path binary = root.resolve("binary.java");
             Files.write(binary, new byte[]{0, 1, 2, 3});

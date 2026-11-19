@@ -36,6 +36,12 @@ public final class ApiContextBuilder {
             "secrets.json", "secrets.yaml", "secrets.yml", "secrets.toml", "secrets.ini",
             "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519");
     private static final Set<String> SECRET_DIRECTORIES = Set.of(".ssh", ".aws", ".azure", "gcloud");
+    // Committed templates that document which variables exist. They are meant to be read by
+    // anyone with the repository, so refusing them blocked every review of a change that adds
+    // a variable. Only these exact names are exempt; `.env.local`, `.env.production` and the
+    // rest are still refused.
+    private static final Set<String> ENV_TEMPLATES = Set.of(
+            ".env.example", ".env.sample", ".env.template", ".env.dist");
     private static final String INSTRUCTIONS = """
             API CHANGED-SOURCE CONTEXT v1
             You have no filesystem, shell, network, or repository tools. The JSON below is a
@@ -123,7 +129,7 @@ public final class ApiContextBuilder {
         Map<String, Path> paths = new LinkedHashMap<>();
         for (String name : changed) {
             Path current = checkedPath(workspace, name);
-            if (secret(name)) throw refused("refuses a changed secret or credential file");
+            if (secret(name)) throw refused("refuses a changed secret or credential file: " + name);
             if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)
                     && !Files.isRegularFile(current, LinkOption.NOFOLLOW_LINKS)) {
                 throw refused("refuses a changed symlink, directory, or other nonregular file");
@@ -336,6 +342,7 @@ public final class ApiContextBuilder {
         String[] parts = lower.split("/");
         String file = parts[parts.length - 1];
         for (String part : parts) if (SECRET_DIRECTORIES.contains(part)) return true;
+        if (ENV_TEMPLATES.contains(file)) return false;
         return file.equals(".env") || file.startsWith(".env.") || SECRET_FILES.contains(file)
                 || file.endsWith(".pem") || file.endsWith(".key") || file.endsWith(".p12")
                 || file.endsWith(".pfx") || file.endsWith(".jks") || file.endsWith(".keystore");

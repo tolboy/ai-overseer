@@ -21,6 +21,9 @@ that exists in code but has never been run live says so.
 
 - A context refusal names every file that did not fit, its size, the limit and the key to
   raise, instead of "exceeds the 64 KiB per-file limit".
+- The API context no longer refuses committed env templates (`.env.example`, `.env.sample`,
+  `.env.template`, `.env.dist`), which blocked every review of a change that documents a new
+  variable; other `.env.*` files are still refused, and the refusal now names the file.
 - `preflight_outside_scope` names the paths that are outside the scope, in the dry-run
   footer and on the gates line.
 - A dry run that saw a stage fail marks every later line "preview only: a real run stops
