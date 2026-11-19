@@ -237,7 +237,8 @@ no longer counts as an author and cannot disqualify a reader from its vendor. Th
 `prior_writers`, and every reader must differ from them. No fix round runs. A reader that
 objects does not stop the readers after it; the run stops at the human gate once all of them
 have read, with `objecting_stages` naming who objected. Machine gates still run the task's
-checks on the branch.
+checks on the branch. Each reader is blind to the others: none is shown an earlier reader's findings, so
+agreement between them is evidence rather than an echo.
 
 A single reading works the same way: `oseer role reviewer review-pr-72 --use grok-review`
 picks the profile for that one dispatch (it need not be on the roster) and honours the task's

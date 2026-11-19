@@ -27,6 +27,9 @@ that exists in code but has never been run live says so.
 - A `mode: review` run no longer checks the repairer's model before it starts (no repair
   round runs), and its dry run no longer prints "if … sends the work back" repair costs. The
   launch check had stopped a review with `model_check_failed` on a signed-out implementer.
+- Readers in a `mode: review` run are blind to each other: a later reader no longer receives
+  the earlier readers' finding registry, which had made three readings of one pull request
+  repeat the first reader's ids and wording.
 - `preflight_outside_scope` names the paths that are outside the scope, in the dry-run
   footer and on the gates line.
 - A dry run that saw a stage fail marks every later line "preview only: a real run stops

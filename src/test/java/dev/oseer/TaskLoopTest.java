@@ -7306,6 +7306,12 @@ public final class TaskLoopTest implements Suite {
         check.eq("the declared author is the writer set", List.of("authorvendor"),
                 read.summaryReport().get("writer_vendors"));
         check.eq("so the readings are independent", "independent", read.summaryReport().get("review_assurance"));
+        Path secondPrompt = branch.resolve(".oseer/runs/ro1--review-second-0/prompts/reviewer.md");
+        check.that("the second reader's prompt was written", Files.isRegularFile(secondPrompt));
+        check.that("and it is blind to the first reader's findings",
+                Files.isRegularFile(secondPrompt)
+                        && !Files.readString(secondPrompt).contains("A previous stage has already read this candidate")
+                        && !Files.readString(secondPrompt).contains("Cumulative finding registry"));
 
         // The launch check asks only about models the run can dispatch: no repair round runs,
         // so the implementer (signed out, in the run that found this) is not checked.

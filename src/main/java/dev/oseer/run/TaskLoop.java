@@ -3346,6 +3346,11 @@ public final class TaskLoop {
          * second round could not be compared to the first.
          */
         private String reviewerPackage(Workflow.Stage stage) {
+            // A review-only task asks each reader for its own reading of a branch nobody here
+            // will repair: there is no closure to check and no repair receipt. Handing a later
+            // reader the earlier readers' registry made three "independent" readings of the
+            // first outside pull request repeat the first reader's finding ids and wording.
+            if (task.reviewOnly()) return null;
             Map<String, Object> own = lastFindingRound(stage.name());
             Map<String, Object> last = own != null ? own : lastInheritedFindingRound(stage.name());
             if (last == null) return null;
