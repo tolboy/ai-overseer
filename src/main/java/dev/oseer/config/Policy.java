@@ -27,12 +27,19 @@ import java.util.Set;
  * It defaults to `stop`, so a policy that never mentions it keeps today's behaviour. A
  * review finding, a gate failure and a rejection are verdicts on the work and never take
  * this path. {@code max_per_stage} bounds how many times one role dispatch may switch.
+ *
+ * {@code subscription_to_same_family_api} defaults to {@code never}: a subscription CLI
+ * (grok, codex, claude) is not moved onto a paid API of the same model family. {@code allow}
+ * is the explicit escape. {@code on_pinned} defaults to {@code stop}: a stage the operator
+ * named with {@code --use} does not silently take a vendor-failure failover. A spent
+ * subscription still follows {@code on_quota_exhausted}, because that profile cannot answer.
  */
 public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForRisk,
                      Workflow workflow, boolean workflowDeclared, String failoverMode,
                      String repairReserve, Escalation escalation, RateLimitRetry rateLimitRetry,
                      Set<String> repairSeverities, String contractGaps,
-                     String vendorFailureMode, int maxVendorFailovers) {
+                     String vendorFailureMode, int maxVendorFailovers,
+                     String subscriptionToSameFamilyApi, String onPinned) {
 
     /**
      * What a reader's `contract_gap` finding on a passing candidate leads to.
@@ -52,7 +59,7 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
                   Set<String> repairSeverities, String contractGaps) {
         this(roles, reviewRequiredForRisk, workflow, workflowDeclared, failoverMode,
                 repairReserve, escalation, rateLimitRetry, repairSeverities, contractGaps,
-                "stop", 1);
+                "stop", 1, "never", "stop");
     }
 
     public Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForRisk,
@@ -249,7 +256,9 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
     private static final Set<String> ESCALATION_KEYS = Set.of("after_blocking_reviews", "rungs", "note");
     private static final Set<String> RUNG_KEYS = Set.of("implementer", "reviewer");
     private static final Set<String> FAILOVER_KEYS = Set.of(
-            "on_quota_exhausted", "on_vendor_failure", "max_per_stage", "note");
+            "on_quota_exhausted", "on_vendor_failure", "max_per_stage", "note",
+            "subscription_to_same_family_api", "on_pinned");
+    public static final Set<String> FAMILY_API_FAILOVER = Set.of("never", "allow");
     private static final Set<String> BUDGET_KEYS = Set.of("repair_reserve", "note");
 
     /**
@@ -384,6 +393,13 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
         // switching vendors on a network error.
         String vendorFailureMode = failover.requireEnum("on_vendor_failure", FAILOVER_MODES, "stop");
         int maxVendorFailovers = (int) failover.optInt("max_per_stage", 1, 0, 8);
+        // never is the safe default. A policy written before the key existed must not start
+        // paying an API for a model the operator already has on a subscription CLI.
+        String subscriptionToSameFamilyApi = failover.requireEnum(
+                "subscription_to_same_family_api", FAMILY_API_FAILOVER, "never");
+        // A --use pin is a person naming the profile. Vendor-failure auto used to leave that
+        // profile anyway and the summary then named only the successor.
+        String onPinned = failover.requireEnum("on_pinned", FAILOVER_MODES, "stop");
 
         Values budget = root.optMap("budget").rejectUnknownKeys(BUDGET_KEYS);
         String repairReserve = budget.requireEnum("repair_reserve", REPAIR_RESERVES, "full");
@@ -433,7 +449,7 @@ public record Policy(Map<String, RoleSpec> roles, Set<String> reviewRequiredForR
         root.throwIfAny();
         return new Policy(roles, Set.copyOf(requiredForRisk), workflow, workflowDeclared,
                 failoverMode, repairReserve, escalation, rateLimitRetry, Set.copyOf(repairSeverities),
-                contractGaps, vendorFailureMode, maxVendorFailovers);
+                contractGaps, vendorFailureMode, maxVendorFailovers, subscriptionToSameFamilyApi, onPinned);
     }
 
     public boolean reviewRequired(String risk) {

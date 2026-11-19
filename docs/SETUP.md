@@ -497,6 +497,15 @@ profile that still satisfies `require_independent_vendor` and records `role_fail
 a red gate and a rejection are verdicts and never take this path. `failover.max_per_stage`
 (default 1) is how many times one dispatch may switch. A role may set its own
 `on_vendor_failure`; omitting it inherits the policy.
+`failover.subscription_to_same_family_api` defaults to `never`, so a grok, codex, or claude
+CLI is not replaced by a paid API of the same family. `failover.on_pinned` defaults to
+`stop`, so a stage passed with `--use` does not take a vendor-failure failover unless you
+set `confirm` or `auto`. A spent subscription still follows `on_quota_exhausted`.
+
+`limits.stall_seconds` is how long a call may sit with no new bytes. An API profile that
+omits it uses 180 seconds; `0` disables the bound. A direct CLI uses only its wall clock
+until you set the key. The stop is `role_stalled` and can fail over under
+`on_vendor_failure`. The wall clock still wins when it expires first.
 
 API transport failures additionally require `roles.<role>.api_fallback_profiles`, an ordered
 subset of that role's `profiles`. It is empty by default. Only network, timeout, rate-limit

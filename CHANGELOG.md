@@ -19,6 +19,21 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A call that sits with no new bytes can stop before its wall clock. API profiles
+  default to `limits.stall_seconds: 180` (set `0` to disable; a direct CLI stays on the
+  wall clock until the key is set, because a thinking model can be silent). The failure
+  is `role_stalled`, distinct from `role_api_timeout` / `role_timeout`, and it is eligible
+  for `failover.on_vendor_failure`. A request that already left the machine is marked
+  `may_be_billed`. Not yet run live against a vendor.
+- Automatic failover no longer leaves a subscription CLI for a paid API of the same model
+  family (grok, codex, or claude CLI onto `x-ai` / `openai` / `anthropic`).
+  `failover.subscription_to_same_family_api: allow` is the escape. A stage pinned with
+  `--use` does not take a vendor-failure failover unless `failover.on_pinned` is `confirm`
+  or `auto` (default `stop`); a spent subscription still follows `on_quota_exhausted`.
+  A switch or a refusal is named from→to on the progress line, the role report
+  (`failover_notice`, `failover_blocked`, `role_failovers`) and the run summary. Not yet
+  run live against a vendor. Suites `api-http`, `api-fallback`, `direct-capture`, `config`,
+  `workflow`.
 - A P1 or P2 `product_defect` is checked against the reviewed tree before it can block.
   The cited file has to exist, the cited line has to exist, and a `quote` (or a backtick
   span of code) has to appear within 20 lines of that spot. A citation that fails is

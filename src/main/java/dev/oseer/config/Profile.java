@@ -52,7 +52,8 @@ public record Profile(
         String verificationExpect,
         String harness,
         ApiSettings apiSettings,
-        CliService cliService) {
+        CliService cliService,
+        Integer stallSeconds) {
 
     /**
      * The service and account a CLI profile authenticates against. Null for legacy files that
@@ -73,7 +74,8 @@ public record Profile(
         this(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, null);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness,
+                apiSettings, null, null);
     }
 
     /** Connection metadata contains references only; never a credential value. */
@@ -153,6 +155,36 @@ public record Profile(
         return apiSettings == null || apiSettings.declaredWallClockMinutes() == null
                 ? wallClockMinutes : apiSettings.declaredWallClockMinutes();
     }
+
+    /**
+     * How long a call may sit with no new bytes before it is given up, while the wall clock
+     * still has time left. Null means only the wall clock applies.
+     *
+     * An API profile that never names the key gets {@link #DEFAULT_API_STALL_SECONDS}. A
+     * provider that accepts the request and then says nothing used to occupy the whole
+     * wall clock; the retry of that same call finished in minutes. A direct CLI does not
+     * get that default: a model that is thinking can be silent for minutes and still be
+     * working, so silence is a stall only when the operator sets {@code limits.stall_seconds}.
+     * Zero is the explicit off switch.
+     */
+    public java.time.Duration stallTimeout() {
+        if (stallSeconds != null) {
+            return stallSeconds == 0 ? null : java.time.Duration.ofSeconds(stallSeconds);
+        }
+        if ("api".equals(runner) && harness == null) {
+            return java.time.Duration.ofSeconds(DEFAULT_API_STALL_SECONDS);
+        }
+        return null;
+    }
+
+    /** The same profile with an explicit stall bound. Zero disables it. */
+    public Profile withStallSeconds(Integer seconds) {
+        return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
+                maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
+                quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness,
+                apiSettings, cliService, seconds);
+    }
     @Override public boolean verified() {
         // A hand-written stamp cannot make a coding harness eligible. Tool-loop proof is separate.
         if (harness != null) return verified && apiSettings != null
@@ -171,7 +203,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, false, mcpConfig, verificationExpect, harness, probe, cliService);
+                verificationProbe, verificationChecks, false, mcpConfig, verificationExpect, harness, probe, cliService, stallSeconds);
     }
 
     /** Effective identity for independence; the legacy label remains in historical evidence. */
@@ -210,14 +242,14 @@ public record Profile(
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, promptDelivery, attachmentFlag, vision,
                 runner, boundEndpoint, connection.apiKeyEnv(), verificationProbe,
-                verificationChecks, verified, mcpConfig, verificationExpect, harness, settings, cliService);
+                verificationChecks, verified, mcpConfig, verificationExpect, harness, settings, cliService, stallSeconds);
         boolean checked = verified
                 && bound.apiFingerprint().equals(settings.verificationFingerprint());
         return new Profile(name, role, vendor, model, effort, command, args, readOnly,
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, promptDelivery, attachmentFlag, vision,
                 runner, boundEndpoint, connection.apiKeyEnv(), verificationProbe,
-                verificationChecks, checked, mcpConfig, verificationExpect, harness, settings, cliService);
+                verificationChecks, checked, mcpConfig, verificationExpect, harness, settings, cliService, stallSeconds);
     }
 
     /** Changes to model, endpoint, adapter or output bound invalidate API verification. */
@@ -287,7 +319,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, resolved, verificationExpect, harness, apiSettings, cliService);
+                verificationProbe, verificationChecks, verified, resolved, verificationExpect, harness, apiSettings, cliService, stallSeconds);
     }
 
     /** Effort for one dispatch. Does not rewrite the home file or drop {@code verified_on}. */
@@ -295,7 +327,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, next, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, cliService);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, cliService, stallSeconds);
     }
 
     /**
@@ -316,7 +348,7 @@ public record Profile(
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, "workspace_file", attachmentFlag,
                 vision, "orca", endpoint, apiKeyEnv, verificationProbe, verificationChecks,
-                verified, mcpConfig, verificationExpect, null, null, cliService);
+                verified, mcpConfig, verificationExpect, null, null, cliService, stallSeconds);
     }
 
     private static final Set<String> TOP_LEVEL = Set.of(
@@ -327,7 +359,15 @@ public record Profile(
             "service", "account", "api_context");
     private static final Set<String> MCP = Set.of("config", "note");
     private static final Set<String> LIMITS = Set.of("wall_clock_minutes", "max_cost_usd", "max_output_tokens",
-            "max_requests", "max_turns");
+            "max_requests", "max_turns", "stall_seconds");
+
+    /**
+     * Silence, not the wall clock. An API call that never produced a byte used to sit for the
+     * whole {@code wall_clock_minutes}. Three minutes is long enough for a slow first token
+     * and short enough that a dead provider does not occupy the run. A direct CLI has no
+     * default: set the key to bound idle output, or to 0 on an API profile to disable it.
+     */
+    public static final int DEFAULT_API_STALL_SECONDS = 180;
 
     /**
      * The turn ceiling a direct CLI profile gets when its args carry {@code {{max_turns}}} and
@@ -408,7 +448,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, bounded,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, scoped, cliService);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, scoped, cliService, stallSeconds);
     }
 
     public boolean hasVerifiedVision() {
@@ -548,6 +588,16 @@ public record Profile(
             long maxTurns = limits.optInt("max_turns", DEFAULT_MAX_TURNS, 1, MAX_TURNS_CEILING);
             String turns = Long.toString(maxTurns);
             args = args.stream().map(a -> a.replace("{{max_turns}}", turns)).toList();
+        }
+        // 0 is off. 1–4 are shorter than a slow TLS handshake and would fail calls that are
+        // merely connecting, so they are refused rather than stored as a surprise.
+        Integer stallSeconds = null;
+        if (limits.has("stall_seconds")) {
+            long raw = limits.optInt("stall_seconds", 0, 0, 3600);
+            if (raw != 0 && raw < 5) {
+                root.collector().add("limits.stall_seconds must be 0 (off) or from 5 to 3600");
+            }
+            stallSeconds = (int) raw;
         }
         ApiContextSettings apiContext = null;
         if (root.has("api_context")) {
@@ -772,7 +822,7 @@ public record Profile(
                 connects ? new ApiSettings(connection, canonicalVendor(modelVendor),
                         maxOutputTokens, connectionFingerprint, null, null, harnessExecutable, wallClock,
                         maxRequests, apiContext) : null,
-                cliService);
+                cliService, stallSeconds);
     }
 
     /**

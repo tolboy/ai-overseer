@@ -431,6 +431,13 @@ spent subscription: it never fails over, and the run stops with `rate_limited`.
 `on_vendor_failure` is the same three choices for a call that produced no artifact, and it
 defaults to `stop`. `max_per_stage` (default 1) bounds how many times one dispatch may switch.
 A review finding, a gate failure and a rejection are not this.
+`subscription_to_same_family_api` defaults to `never`: a grok, codex, or claude subscription
+CLI is not failed over onto a paid API of the same family. `allow` permits it.
+`on_pinned` defaults to `stop`: a stage named with `--use` does not take that vendor-failure
+failover unless the value is `confirm` or `auto`. Quota failover is unchanged.
+A switch and a refusal are both recorded from→to (`role_failovers`, `failover_blocked`).
+`limits.stall_seconds` (API default 180, `0` off, direct CLI off until set) stops a silent
+call as `role_stalled` while the wall clock remains. That code follows `on_vendor_failure`.
 
 A stop caused by a vendor's endpoint rather than by its reading of the work has its own reason:
 `quota_exhausted`, `rate_limited`, `role_timed_out`, `vendor_call_failed`,

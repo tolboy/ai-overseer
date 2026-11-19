@@ -107,6 +107,12 @@ public final class RunReport {
         report.put("vendors", vendors(stages));
         report.put("failovers", failovers(stages));
         report.put("role_failovers", roleFailovers(stages));
+        List<Map<String, Object>> blocked = blockedFailovers(stages);
+        if (blocked.isEmpty() && summary.get("failover_blocked") instanceof List<?>) {
+            report.put("failover_blocked", summary.get("failover_blocked"));
+        } else if (!blocked.isEmpty()) {
+            report.put("failover_blocked", blocked);
+        }
         report.put("visual", visual(stages));
         // Overseer's own contract files are listed apart. They are a real difference in the
         // worktree and stay visible, but reporting "4 files changed" for a one-file fix sends
@@ -178,6 +184,10 @@ public final class RunReport {
                 Object recordedFailovers = step.get("role_failovers");
                 if (recordedFailovers == null) recordedFailovers = body.get("role_failovers");
                 if (recordedFailovers != null) stage.put("role_failovers", recordedFailovers);
+                Object blocked = step.get("failover_blocked");
+                if (blocked == null) blocked = body.get("failover_blocked");
+                if (blocked != null) stage.put("failover_blocked", blocked);
+                if (step.get("failover_notice") != null) stage.put("failover_notice", step.get("failover_notice"));
                 stage.put("artifact_path", step.getOrDefault("artifact_path", body.get("artifact_path")));
                 stage.put("rejected_profiles", step.get("rejected_profiles"));
             } else if ("gates".equals(label) || "baseline".equals(label)) {
@@ -482,6 +492,23 @@ public final class RunReport {
         return List.copyOf(all);
     }
 
+    /** Refused switches, one row per rule. The profile that ran is not a substitute for this list. */
+    private static List<Map<String, Object>> blockedFailovers(List<Map<String, Object>> stages) {
+        List<Map<String, Object>> all = new ArrayList<>();
+        for (Map<String, Object> stage : stages) {
+            Object raw = stage.get("failover_blocked");
+            if (!(raw instanceof List<?> rows)) continue;
+            for (Object item : rows) {
+                if (!(item instanceof Map<?, ?> map)) continue;
+                Map<String, Object> event = new LinkedHashMap<>(cast(map));
+                event.putIfAbsent("step", stage.get("step"));
+                event.putIfAbsent("attempt", stage.get("attempt"));
+                all.add(event);
+            }
+        }
+        return List.copyOf(all);
+    }
+
     /**
      * The class of failure a switch was made for. Quota keeps its own code. A missing
      * artifact is named by what was missing, not by the role outcome that carried it.
@@ -715,6 +742,15 @@ public final class RunReport {
                     out.append("  authorized_by=").append(row.get("authorized_by"));
                 }
                 out.append('\n');
+            }
+        }
+        List<Object> blocked = list(report.get("failover_blocked"));
+        if (!blocked.isEmpty()) {
+            out.append('\n').append("failover refused\n");
+            for (Object item : blocked) {
+                if (!(item instanceof Map<?, ?> row)) continue;
+                out.append("  ").append(row.get("from")).append(" -> ").append(row.get("to"))
+                        .append(" (").append(row.get("rule")).append(")\n");
             }
         }
 

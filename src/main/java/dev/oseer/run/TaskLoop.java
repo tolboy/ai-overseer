@@ -360,7 +360,7 @@ public final class TaskLoop {
 
     /** Stops that cut a writer off mid-change and leave its edits in the worktree. */
     private static final java.util.Set<String> INTERRUPTED_WRITER = java.util.Set.of(
-            "turn_ceiling_reached", "role_timed_out");
+            "turn_ceiling_reached", "role_timed_out", "role_stalled");
 
     /** A passing run whose readers found the acceptance too weak, sent to the planner. */
     public static final String CONTRACT_AMENDMENT = "contract_amendment_requested";
@@ -514,6 +514,8 @@ public final class TaskLoop {
             // this list: the role contract check already decides reuse for those.
             Map.entry("role_api_interrupted", CONTROLLER_INTERRUPTED),
             Map.entry("role_api_timeout", "role_timed_out"),
+            // Silence while the wall clock remains is not a request to raise that clock.
+            Map.entry("role_stalled", "role_stalled"),
             Map.entry("role_api_network_error", "vendor_call_failed"),
             Map.entry("role_api_provider_error", "vendor_call_failed"),
             Map.entry("role_api_protocol_error", "vendor_call_failed"),
@@ -533,17 +535,18 @@ public final class TaskLoop {
             Map.entry("role_api_artifact_failure", "vendor_protocol_failed"));
 
     /** What kind of trouble each infrastructure stop was, for a reader who wants one word. */
-    private static final Map<String, String> INFRASTRUCTURE_CAUSES = Map.of(
-            CONTROLLER_INTERRUPTED, "cancelled",
-            "role_timed_out", "timeout",
-            "vendor_call_failed", "call_failed",
-            "vendor_protocol_failed", "protocol",
-            "prompt_undeliverable", "prompt_delivery",
-            "rate_limited", "rate_limit",
-            "quota_exhausted", "quota",
-            "turn_ceiling_reached", "turn_ceiling",
-            "orca_worker_not_started", "orca_start",
-            "vendor_unavailable", "unavailable");
+    private static final Map<String, String> INFRASTRUCTURE_CAUSES = Map.ofEntries(
+            Map.entry(CONTROLLER_INTERRUPTED, "cancelled"),
+            Map.entry("role_timed_out", "timeout"),
+            Map.entry("role_stalled", "stall"),
+            Map.entry("vendor_call_failed", "call_failed"),
+            Map.entry("vendor_protocol_failed", "protocol"),
+            Map.entry("prompt_undeliverable", "prompt_delivery"),
+            Map.entry("rate_limited", "rate_limit"),
+            Map.entry("quota_exhausted", "quota"),
+            Map.entry("turn_ceiling_reached", "turn_ceiling"),
+            Map.entry("orca_worker_not_started", "orca_start"),
+            Map.entry("vendor_unavailable", "unavailable"));
 
     /**
      * Whether a call timed out on a wall clock the chain deadline had lowered.
@@ -4164,7 +4167,7 @@ public final class TaskLoop {
         /**
          * The implementer the previous run cut off, handed to the one that picks up its tree.
          *
-         * A writer stopped by its turn ceiling or its timeout leaves its edits in the
+         * A writer stopped by its turn ceiling, its timeout or a stall leaves its edits in the
          * worktree, and `retry` or `advance` without a note dispatched the next implementer
          * with an empty `## Previous attempt`. Measured 2026-10-01 on Living-Horizon: the
          * continuation re-read the repository from the top and spent its whole 120-turn ceiling
@@ -5894,6 +5897,14 @@ public final class TaskLoop {
             if (step.details().get("role_failovers") != null) {
                 entry.put("role_failovers", step.details().get("role_failovers"));
             }
+            // A refused switch is not a switch. The summary has to name both profiles;
+            // the successor alone is what a silent failover used to leave behind.
+            if (step.details().get("failover_blocked") != null) {
+                entry.put("failover_blocked", step.details().get("failover_blocked"));
+            }
+            if (step.details().get("failover_notice") != null) {
+                entry.put("failover_notice", step.details().get("failover_notice"));
+            }
             entry.put("artifact_path", step.details().get("artifact_path"));
             if ("role_quota_exhausted".equals(step.code())) {
                 entry.put("quota", step.details().get("quota"));
@@ -5912,6 +5923,7 @@ public final class TaskLoop {
         String cause = String.valueOf(pending.get("cause"));
         return "vendor_call_failed".equals(cause)
                 || "role_timeout".equals(cause)
+                || "role_stalled".equals(cause)
                 || "artifact_invalid".equals(cause)
                 || "vendor_unavailable".equals(cause);
     }
@@ -6393,6 +6405,38 @@ public final class TaskLoop {
             }
         }
         if (weakest != null) summary.put("review_assurance", weakest);
+        liftFailovers(summary);
+    }
+
+    /**
+     * Switches and refused switches, on the summary itself.
+     *
+     * The step row names the profile that finished. A run that left grok for a paid API
+     * then showed only that API. The from→to list is what an operator can see without
+     * opening the role report.
+     */
+    private static void liftFailovers(Map<String, Object> summary) {
+        List<Object> switches = new ArrayList<>();
+        List<Object> blocked = new ArrayList<>();
+        if (summary.get("steps") instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (!(row instanceof Map<?, ?> step)) continue;
+                if (step.get("role_failovers") instanceof List<?> list) switches.addAll(list);
+                if (step.get("failover_blocked") instanceof List<?> list) blocked.addAll(list);
+            }
+        }
+        if (switches.isEmpty()) summary.remove("role_failovers");
+        else summary.put("role_failovers", List.copyOf(switches));
+        if (blocked.isEmpty()) summary.remove("failover_blocked");
+        else summary.put("failover_blocked", List.copyOf(blocked));
+    }
+
+    /** Appended when a switch was refused, so the stop does not read as an ordinary timeout. */
+    private static String blockedFailoverNote(Map<String, Object> summary) {
+        if (!(summary.get("failover_blocked") instanceof List<?> rows) || rows.isEmpty()) return "";
+        if (!(rows.get(0) instanceof Map<?, ?> event)) return "";
+        return " Automatic failover was refused (" + event.get("rule") + "): "
+                + event.get("from") + " -> " + event.get("to") + ".";
     }
 
     /** Order of assurance labels, strongest first; the weaker of two wins. */
@@ -6469,7 +6513,12 @@ public final class TaskLoop {
                     + "then: " + carryOn + kept(summary);
             case "role_timed_out" -> "the " + failedProfile(summary) + " call ran out of wall "
                     + "clock. Raise limits.wall_clock_minutes on that profile if the task "
-                    + "needs longer, or narrow the task, then: " + carryOn + kept(summary);
+                    + "needs longer, or narrow the task, then: " + carryOn + kept(summary)
+                    + blockedFailoverNote(summary);
+            case "role_stalled" -> "the " + failedProfile(summary) + " call went quiet while "
+                    + "the wall clock still had time. Raise limits.stall_seconds on that "
+                    + "profile (0 turns the bound off), then: " + carryOn + kept(summary)
+                    + blockedFailoverNote(summary);
             case CONTRACT_AMENDMENT -> "the candidate passed, and its readers found the acceptance "
                     + "too weak to have proved it (contract_gaps_to_plan). The supervisor of "
                     + "`oseer do`/`oseer run` hands that to the planner and continues on its own; "

@@ -102,6 +102,8 @@ public final class SettingsEditorTest implements Suite {
             check.eq("saved use can be removed", true, new ConfigLoader().load(root, "hello").task().use().isEmpty());
             var describe = editor.describe("hello");
             check.eq("personal UI sees current quota policy", "confirm", describe.get("on_quota_exhausted"));
+            check.eq("personal UI sees the family rule", "never", describe.get("subscription_to_same_family_api"));
+            check.eq("personal UI sees the pin rule", "stop", describe.get("on_pinned"));
             Map<String, Object> personalChanges = Map.of("roles", Map.of("reviewer", Map.of("profiles", List.of("reader-c", "reader-b"), "strategy", "first")),
                     "on_quota_exhausted", "auto", "on_vendor_failure", "confirm", "max_per_stage", 8L,
                     "max_attempts", 2L, "backoff_seconds", 12L, "repair_reserve", "partial");
@@ -114,6 +116,14 @@ public final class SettingsEditorTest implements Suite {
             check.eq("personal fallback order saved", List.of("reader-c", "reader-b"), policy.roles().get("reviewer").profiles());
             check.eq("policy retry is saved", 2L, policy.rateLimitRetry().maxAttempts());
             check.eq("policy failover count uses parser bound", 8, policy.maxVendorFailovers());
+            check.eq("a save that omits the family rule keeps never", "never", policy.subscriptionToSameFamilyApi());
+            check.eq("a save that omits the pin rule keeps stop", "stop", policy.onPinned());
+            var family = request(next, "personal", Map.of(
+                    "subscription_to_same_family_api", "allow", "on_pinned", "confirm"));
+            var familyPreview = editor.preview(family);
+            check.eq("the family and pin rules are editable", true, familyPreview.get("apply_allowed"));
+            check.contains("the preview shows the family rule", String.valueOf(familyPreview.get("diff")),
+                    "subscription_to_same_family_api");
             check.eq("saving policy does not restamp profiles", profileBefore, Files.readString(home.resolve("profiles/reader-c.yaml")));
             check.rejects("profile role mismatch is refused", "does not fill", () -> editor.preview(request(next, "personal", Map.of("roles", Map.of("reviewer", Map.of("profiles", List.of("writer")))))));
             check.rejects("duplicate fallback is refused", "unique", () -> editor.preview(request(next, "personal", Map.of("roles", Map.of("reviewer", Map.of("profiles", List.of("reader-c", "reader-c")))))));

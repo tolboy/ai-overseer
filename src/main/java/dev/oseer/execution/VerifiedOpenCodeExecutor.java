@@ -235,7 +235,8 @@ public final class VerifiedOpenCodeExecutor implements RoleExecutor {
                                 request.projectRoot(),
                                 Duration.ofNanos(remaining),
                                 256 * 1024,
-                                null);
+                                null,
+                                profile.stallTimeout());
             } catch (ProcessRunner.CaptureException unsettled) {
                 evidence.put("process_tree_settled", unsettled.settled());
                 return fail(
@@ -254,9 +255,11 @@ public final class VerifiedOpenCodeExecutor implements RoleExecutor {
             evidence.put("relay", observed);
             evidence.put("process_exit", run.exitCode());
             evidence.put("timed_out", run.timedOut());
+            evidence.put("stalled", run.stalled());
             evidence.put("tokens", usage(observed));
             if ("probe_served_effort_mismatch".equals(observed.get("failure")))
                 return fail("role_api_effort_mismatch", started, evidence, safe);
+            if (run.stalled()) return fail("role_stalled", started, evidence, safe);
             if (run.timedOut()) return fail("role_timeout", started, evidence, safe);
             if (!run.ok() || run.stdoutTruncated() || run.stderrTruncated())
                 return fail(processFailure(observed), started, evidence, safe);

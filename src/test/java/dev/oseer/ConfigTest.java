@@ -373,6 +373,55 @@ public final class ConfigTest implements Suite {
         check.eq("runner defaults to direct", "direct", reviewer.runner());
         check.eq("non-visual legacy profile needs no vision capability", null, reviewer.vision());
         check.that("unverified profile is flagged", !reviewer.verified());
+        check.eq("a direct CLI omits the idle bound", null, reviewer.stallTimeout());
+        Profile stalledCli = Profile.parse("""
+                version: 1
+                profile: grok-review
+                role: reviewer
+                vendor: grok
+                command: grok
+                args: ["--prompt-file", "{{prompt_file}}"]
+                limits: { wall_clock_minutes: 20, stall_seconds: 30 }
+                """, "grok-review.yaml");
+        check.eq("an explicit stall is kept on a CLI", java.time.Duration.ofSeconds(30),
+                stalledCli.stallTimeout());
+        Profile apiQuiet = Profile.parse("""
+                version: 1
+                profile: api-review
+                role: reviewer
+                model_vendor: deepseek
+                model: deepseek/deepseek-chat
+                runner: api
+                connection: fixture
+                read_only: true
+                limits: { wall_clock_minutes: 5, max_output_tokens: 256 }
+                """, "api-review.yaml");
+        check.eq("an API profile stalls after three quiet minutes by default",
+                java.time.Duration.ofSeconds(180), apiQuiet.stallTimeout());
+        Profile stallOff = Profile.parse("""
+                version: 1
+                profile: api-review
+                role: reviewer
+                model_vendor: deepseek
+                model: deepseek/deepseek-chat
+                runner: api
+                connection: fixture
+                read_only: true
+                limits: { wall_clock_minutes: 5, max_output_tokens: 256, stall_seconds: 0 }
+                """, "api-review.yaml");
+        check.eq("stall_seconds 0 disables the bound", null, stallOff.stallTimeout());
+        check.rejects("a stall under five seconds is refused", "stall_seconds",
+                () -> Profile.parse("""
+                        version: 1
+                        profile: api-review
+                        role: reviewer
+                        model_vendor: deepseek
+                        model: deepseek/deepseek-chat
+                        runner: api
+                        connection: fixture
+                        read_only: true
+                        limits: { wall_clock_minutes: 5, max_output_tokens: 256, stall_seconds: 3 }
+                        """, "api-review.yaml"));
 
         Profile implementer = Profile.parse("""
                 version: 1

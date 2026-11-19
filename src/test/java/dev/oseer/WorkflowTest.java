@@ -49,6 +49,10 @@ public final class WorkflowTest implements Suite {
                 silent.roles().get("reviewer").vendorFailureMode());
         check.eq("so the effective mode is the policy default", "stop",
                 silent.vendorFailureModeFor("reviewer"));
+        check.eq("a subscription CLI is not moved onto a paid API of the same family",
+                "never", silent.subscriptionToSameFamilyApi());
+        check.eq("a stage named with --use does not fail over on a vendor failure",
+                "stop", silent.onPinned());
 
         Policy opted = Policy.parse("""
                 version: 1
@@ -62,6 +66,28 @@ public final class WorkflowTest implements Suite {
         check.eq("a role may override it", "confirm", opted.vendorFailureModeFor("implementer"));
         check.eq("and a role that does not still inherits", "auto",
                 opted.vendorFailureModeFor("reviewer"));
+        Policy family = Policy.parse("""
+                version: 1
+                failover: { on_vendor_failure: auto, subscription_to_same_family_api: allow, on_pinned: auto }
+                roles:
+                  reviewer: { profiles: [b], strategy: first }
+                """, "policy.yaml");
+        check.eq("the family escape is explicit", "allow", family.subscriptionToSameFamilyApi());
+        check.eq("an unattended pin failover is explicit", "auto", family.onPinned());
+        check.rejects("an unknown family rule is refused", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { subscription_to_same_family_api: sometimes }
+                        roles:
+                          reviewer: { profiles: [b], strategy: first }
+                        """, "policy.yaml"));
+        check.rejects("an unknown pin rule is refused", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { on_pinned: maybe }
+                        roles:
+                          reviewer: { profiles: [b], strategy: first }
+                        """, "policy.yaml"));
         check.rejects("an unknown vendor-failure mode is refused", "must be one of",
                 () -> Policy.parse("""
                         version: 1

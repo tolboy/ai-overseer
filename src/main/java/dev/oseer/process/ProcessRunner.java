@@ -97,13 +97,19 @@ public final class ProcessRunner {
 
     public record Result(List<String> command, int exitCode, boolean timedOut, long durationMillis,
                          String stdout, String stderr, boolean stdoutTruncated,
-                         boolean stderrTruncated, boolean outputLimitExceeded) {
+                         boolean stderrTruncated, boolean outputLimitExceeded, boolean stalled) {
+        public Result(List<String> command, int exitCode, boolean timedOut, long durationMillis,
+                      String stdout, String stderr, boolean stdoutTruncated,
+                      boolean stderrTruncated, boolean outputLimitExceeded) {
+            this(command, exitCode, timedOut, durationMillis, stdout, stderr,
+                    stdoutTruncated, stderrTruncated, outputLimitExceeded, false);
+        }
         public Result(List<String> command, int exitCode, boolean timedOut, long durationMillis,
                       String stdout, String stderr, boolean stdoutTruncated, boolean stderrTruncated) {
             this(command, exitCode, timedOut, durationMillis, stdout, stderr,
                     stdoutTruncated, stderrTruncated, false);
         }
-        public boolean ok() { return !timedOut && !outputLimitExceeded && exitCode == 0; }
+        public boolean ok() { return !timedOut && !stalled && !outputLimitExceeded && exitCode == 0; }
     }
 
     /**
@@ -195,7 +201,7 @@ public final class ProcessRunner {
      */
     public Result run(List<String> command, Path workingDirectory, Duration timeout, int captureBytes,
                       String stdinText) throws IOException, InterruptedException {
-        return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText, null, null, DEFAULT_RAW_BYTES, false);
+        return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText, null, null, DEFAULT_RAW_BYTES, false, null);
     }
 
     /**
@@ -209,7 +215,7 @@ public final class ProcessRunner {
             throws IOException, InterruptedException {
         try (OutputStream stdout = Files.newOutputStream(stdoutFile);
              OutputStream stderr = Files.newOutputStream(stderrFile)) {
-            return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText, stdout, stderr, DEFAULT_RAW_BYTES, false);
+            return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText, stdout, stderr, DEFAULT_RAW_BYTES, false, null);
         }
     }
 
@@ -219,25 +225,44 @@ public final class ProcessRunner {
      */
     public Result runVendor(List<String> command, Path workingDirectory, Duration timeout, int captureBytes,
                             String stdinText) throws IOException, InterruptedException {
+        return runVendor(command, workingDirectory, timeout, captureBytes, stdinText, (Duration) null);
+    }
+
+    /**
+     * {@code idle} is how long both output streams may stay quiet before the process is
+     * stopped. Null leaves only the wall clock, which is what every existing caller does.
+     * A direct CLI that prints as it works can use this; a silent {@code sleep} cannot hide
+     * inside the wall clock once the operator has set one.
+     */
+    public Result runVendor(List<String> command, Path workingDirectory, Duration timeout, int captureBytes,
+                            String stdinText, Duration idle) throws IOException, InterruptedException {
         return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText,
-                null, null, DEFAULT_RAW_BYTES, true);
+                null, null, DEFAULT_RAW_BYTES, true, idle);
     }
 
     /** Vendor calls settle their known descendants before returning to a failover caller. */
     public Result runVendor(List<String> command, Path workingDirectory, Duration timeout, int captureBytes,
                             String stdinText, Path stdoutFile, Path stderrFile, long rawBytes)
             throws IOException, InterruptedException {
+        return runVendor(command, workingDirectory, timeout, captureBytes, stdinText,
+                stdoutFile, stderrFile, rawBytes, null);
+    }
+
+    public Result runVendor(List<String> command, Path workingDirectory, Duration timeout, int captureBytes,
+                            String stdinText, Path stdoutFile, Path stderrFile, long rawBytes, Duration idle)
+            throws IOException, InterruptedException {
         if (rawBytes < 1) throw new IllegalArgumentException("raw output limit must be positive");
         try (OutputStream stdout = Files.newOutputStream(stdoutFile);
              OutputStream stderr = Files.newOutputStream(stderrFile)) {
             return runCaptured(command, workingDirectory, timeout, captureBytes, stdinText,
-                    stdout, stderr, rawBytes, true);
+                    stdout, stderr, rawBytes, true, idle);
         }
     }
 
     private Result runCaptured(List<String> command, Path workingDirectory, Duration timeout,
                                int captureBytes, String stdinText, OutputStream stdoutFile,
-                               OutputStream stderrFile, long rawBytes, boolean vendor) throws IOException, InterruptedException {
+                               OutputStream stderrFile, long rawBytes, boolean vendor, Duration idle)
+            throws IOException, InterruptedException {
         long started = System.nanoTime();
         ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory.toFile());
         removeEnvironment(builder.environment());
@@ -281,10 +306,11 @@ public final class ProcessRunner {
                 writer = Thread.ofVirtual().start(() -> feed(process.getOutputStream(), input));
             }
 
-            boolean finished;
+            Wait wait;
             try {
-                finished = await(process, timeout, descendants, vendor,
-                        () -> stdout.exceeded() || stderr.exceeded() || stdout.failed() || stderr.failed());
+                wait = await(process, timeout, descendants, vendor,
+                        () -> stdout.exceeded() || stderr.exceeded() || stdout.failed() || stderr.failed(),
+                        idle, stdout, stderr);
             } catch (InterruptedException interrupted) {
                 // Cancellation is not permission to orphan a vendor CLI or its descendants.
                 terminateTree(process, descendants, Duration.ofSeconds(2), vendor);
@@ -292,10 +318,14 @@ public final class ProcessRunner {
                 Thread.currentThread().interrupt();
                 throw interrupted;
             }
+            boolean finished = wait.finished();
             boolean outputLimit = stdout.exceeded() || stderr.exceeded();
             boolean captureFailed = stdout.failed() || stderr.failed();
-            boolean timedOut = !finished && !outputLimit && !captureFailed;
-            if (timedOut || outputLimit || captureFailed || (vendor && descendants.values().stream().anyMatch(ProcessHandle::isAlive))) {
+            // The wall clock wins when both expire together: a stall longer than the wall is
+            // the wall, and that stays role_timeout rather than a second name for the same stop.
+            boolean stalled = wait.stalled() && !outputLimit && !captureFailed;
+            boolean timedOut = !finished && !stalled && !outputLimit && !captureFailed;
+            if (timedOut || stalled || outputLimit || captureFailed || (vendor && descendants.values().stream().anyMatch(ProcessHandle::isAlive))) {
                 terminateTree(process, descendants, Duration.ofSeconds(2), vendor);
             }
             if (vendor && (process.isAlive() || descendants.values().stream().anyMatch(ProcessHandle::isAlive))) {
@@ -327,7 +357,7 @@ public final class ProcessRunner {
             long durationMillis = Duration.ofNanos(System.nanoTime() - started).toMillis();
             return new Result(List.copyOf(command), exitCode, timedOut, durationMillis,
                     stdout.text(), stderr.text(), stdout.truncated(), stderr.truncated(),
-                    stdout.exceeded() || stderr.exceeded());
+                    stdout.exceeded() || stderr.exceeded(), stalled);
         } catch (IOException failure) {
             if (vendor && !(failure instanceof CaptureException)) {
                 WorktreeLease.requireRecovery("vendor process receipt or capture failed");
@@ -366,20 +396,28 @@ public final class ProcessRunner {
         awaitTree(process, descendants, grace, vendor);
     }
 
-    private static boolean await(Process process, Duration timeout, Map<Long, ProcessHandle> descendants,
-                                 boolean vendor, java.util.function.BooleanSupplier stop)
+    private record Wait(boolean finished, boolean stalled) {}
+
+    private static Wait await(Process process, Duration timeout, Map<Long, ProcessHandle> descendants,
+                              boolean vendor, java.util.function.BooleanSupplier stop, Duration idle,
+                              LimitedBuffer stdout, LimitedBuffer stderr)
             throws InterruptedException, IOException {
         long started = System.nanoTime();
         long budget = Math.max(0, timeout.toNanos());
+        long idleNanos = idle == null || idle.isZero() || idle.isNegative() ? Long.MAX_VALUE : idle.toNanos();
         while (process.isAlive()) {
             // Windows enumerates the system process table here. Git and short gate
             // commands need a census only when they must be terminated, not every call.
             if (vendor) observeDescendants(process, descendants, true);
-            long remaining = budget - (System.nanoTime() - started);
-            if (remaining <= 0 || stop.getAsBoolean()) return false;
-            process.waitFor(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
+            long now = System.nanoTime();
+            long remaining = budget - (now - started);
+            if (remaining <= 0 || stop.getAsBoolean()) return new Wait(false, false);
+            long quiet = now - Math.max(stdout.activity(), stderr.activity());
+            if (quiet >= idleNanos) return new Wait(false, true);
+            long slice = Math.min(remaining, Math.min(TimeUnit.MILLISECONDS.toNanos(100), idleNanos - quiet));
+            process.waitFor(Math.max(1, slice), TimeUnit.NANOSECONDS);
         }
-        return true;
+        return new Wait(true, false);
     }
 
     private static void observeDescendants(Process process, Map<Long, ProcessHandle> descendants,
@@ -448,6 +486,9 @@ public final class ProcessRunner {
         private final long rawLimit;
         private long persisted;
         private boolean exceeded;
+        private long lastActivity = System.nanoTime();
+
+        synchronized long activity() { return lastActivity; }
 
         LimitedBuffer(int limit, OutputStream spool, long rawLimit) {
             this.limit = Math.max(0, limit);
@@ -457,6 +498,7 @@ public final class ProcessRunner {
         }
 
         synchronized void add(byte[] source, int length) {
+            lastActivity = System.nanoTime();
             if (spool != null) {
                 try {
                     int count = (int) Math.min(length, Math.max(0, rawLimit - persisted));

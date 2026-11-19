@@ -57,7 +57,8 @@ public final class MeasurementProjector {
             "lands", "kind", "finding_id", "waived_findings",
             "from_profile", "from_vendor", "to_profile", "to_vendor", "cause", "authorized_by",
             "role_code", "policy_setting", "api_fallback_profiles",
-            "failed_over_from", "exhausted_profiles", "role_failovers",
+            "failed_over_from", "exhausted_profiles", "role_failovers", "failover_blocked",
+            "rule", "may_be_billed", "stalled",
             "role_contract", "measurement_context", "vendor_attempts", "quota",
             "vendor_unavailable", "relay", "task_routing", "stage_capabilities",
             "vision_capability", "findings", "finding_registry", "finding_history", "steps",
@@ -101,7 +102,7 @@ public final class MeasurementProjector {
             "effort_requested", "effort_transmitted", "effort_reported", "effort_delivery",
             "effort_transmission", "effort_verification", "ok", "code", "duration_millis", "duration_ms",
             "cost_usd", "tokens", "inherited_unfinished_work", "budget_charged",
-            "vendor_attempt_id", "relay");
+            "vendor_attempt_id", "relay", "may_be_billed", "stalled", "delivery", "failure_phase");
 
     private static final Set<String> RELAY = Set.of(
             "requests", "responses", "identity_confirmed", "cost_status",
@@ -214,6 +215,14 @@ public final class MeasurementProjector {
             "from", "to", "cause", "authorized_by", "policy_setting", "role_code",
             "role_invocation_id", "api_fallback_profiles");
 
+    /**
+     * A switch the policy refused. {@code detail} stays local: it is a sentence for the
+     * operator. The corpus keeps the rule and the two profiles.
+     */
+    private static final Set<String> FAILOVER_BLOCK = Set.of(
+            "rule", "from_profile", "from_vendor", "to_profile", "to_vendor", "from", "to",
+            "step", "attempt");
+
     private static final Set<String> VISION = Set.of("verified", "delivery");
 
     private static final Set<String> ACCOUNTING = Set.of(
@@ -258,6 +267,7 @@ public final class MeasurementProjector {
             Map.entry("quota", QUOTA),
             Map.entry("vendor_unavailable", VENDOR_UNAVAILABLE),
             Map.entry("role_failovers", FAILOVER),
+            Map.entry("failover_blocked", FAILOVER_BLOCK),
             Map.entry("vision_capability", VISION),
             Map.entry("accounting", ACCOUNTING),
             Map.entry("outcomes", OUTCOMES),

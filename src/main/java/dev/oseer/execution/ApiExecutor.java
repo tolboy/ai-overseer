@@ -34,6 +34,7 @@ public final class ApiExecutor implements RoleExecutor {
     private final Function<String, String> environment;
     private final GitRepository git;
     private final Duration timeoutOverride;
+    private final Duration stallOverride;
     private final ApiRetry.Policy retryPolicy;
     private final ApiRetry.Sleeper sleeper;
 
@@ -45,9 +46,15 @@ public final class ApiExecutor implements RoleExecutor {
 
     /** A short timeout makes the body deadline testable without a minute-long test. */
     public ApiExecutor(Function<String, String> environment, Duration timeout, GitRepository git) {
+        this(environment, timeout, null, git);
+    }
+
+    /** {@code stall} replaces the profile's idle bound, so a test can fail fast without waiting minutes. */
+    public ApiExecutor(Function<String, String> environment, Duration timeout, Duration stall, GitRepository git) {
         this.environment = Objects.requireNonNullElse(environment, System::getenv);
         this.git = git;
         this.timeoutOverride = timeout;
+        this.stallOverride = stall;
         this.retryPolicy = ApiRetry.Policy.NOT_SENT_ONLY;
         this.sleeper = ApiRetry.REAL_SLEEP;
     }
@@ -62,6 +69,7 @@ public final class ApiExecutor implements RoleExecutor {
         this.environment = Objects.requireNonNullElse(environment, System::getenv);
         this.git = git;
         this.timeoutOverride = timeout;
+        this.stallOverride = null;
         this.retryPolicy = policy;
         this.sleeper = sleeper;
     }
@@ -129,10 +137,11 @@ public final class ApiExecutor implements RoleExecutor {
                 ? git.fingerprint(request.diffBaseCommit()) : null;
         Duration limit = timeoutOverride != null ? timeoutOverride
                 : Duration.ofMinutes(profile.wallClockMinutes());
+        Duration stall = stallOverride != null ? stallOverride : profile.stallTimeout();
         HttpReply reply;
         evidence.put("vendor_turn_started", true);
         ApiRetry.Outcome sent = ApiRetry.send(connection, "POST", URI.create(connection.endpoint()),
-                Json.write(body), token, limit, retryPolicy, sleeper,
+                Json.write(body), token, limit, stall, retryPolicy, sleeper,
                 ApiRetry.correlation(request.runId(), profile.name(), request.role(),
                         request.evidenceName()));
         sent.record(evidence);
@@ -140,6 +149,11 @@ public final class ApiExecutor implements RoleExecutor {
         if (sent.failure() != null) {
             // A call that provably never left this machine spent nothing; the budget gives it back.
             if (sent.nothingSent()) evidence.put("vendor_turn_started", false);
+            else if ("role_api_timeout".equals(sent.failure().code) || "role_stalled".equals(sent.failure().code)) {
+                // Headers or a body may already be at the provider. The dashboard must not
+                // price that as a free zero.
+                evidence.put("may_be_billed", true);
+            }
             return failure(sent.failure().code, started, "", evidence);
         }
         reply = sent.reply();
@@ -274,6 +288,17 @@ public final class ApiExecutor implements RoleExecutor {
     /** The completion future includes the entire bounded body, not just response headers. */
     static HttpReply call(Connection connection, String method, URI uri, String body,
                           String token, Duration limit) throws CallFailure {
+        return call(connection, method, uri, body, token, limit, null);
+    }
+
+    /**
+     * {@code stall} bounds silence: no response headers, or no further body bytes. The wall
+     * clock in {@code limit} still wins when it is the shorter of the two, and that stop
+     * stays {@code role_api_timeout}. A stall while the wall clock remains is
+     * {@code role_stalled}.
+     */
+    static HttpReply call(Connection connection, String method, URI uri, String body,
+                          String token, Duration limit, Duration stall) throws CallFailure {
         URI origin = URI.create(connection.baseUrl());
         if (uri.getHost() == null || !origin.getScheme().equalsIgnoreCase(uri.getScheme())
                 || !origin.getHost().equalsIgnoreCase(uri.getHost())
@@ -290,6 +315,9 @@ public final class ApiExecutor implements RoleExecutor {
         // body was never pulled cannot have been acted on by the provider.
         java.util.concurrent.atomic.AtomicBoolean bodyPulled = new java.util.concurrent.atomic.AtomicBoolean();
         java.util.concurrent.atomic.AtomicBoolean headersSeen = new java.util.concurrent.atomic.AtomicBoolean();
+        boolean watchStall = stall != null && !stall.isZero() && !stall.isNegative();
+        java.util.concurrent.atomic.AtomicLong progress = watchStall
+                ? new java.util.concurrent.atomic.AtomicLong(System.nanoTime()) : null;
         boolean post = "POST".equals(method);
         try {
             HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(limit)
@@ -308,13 +336,33 @@ public final class ApiExecutor implements RoleExecutor {
             } else builder.GET();
             pending = client.sendAsync(builder.build(), ignored -> {
                 headersSeen.set(true);
-                return new BoundedBody();
+                if (progress != null) progress.set(System.nanoTime());
+                return new BoundedBody(progress);
             });
-            long remaining = limit.toNanos() - (System.nanoTime() - started);
-            if (remaining <= 0) throw new TimeoutException();
-            HttpResponse<byte[]> response = pending.get(remaining, TimeUnit.NANOSECONDS);
-            return new HttpReply(response.statusCode(), response.headers(),
-                    new String(response.body(), StandardCharsets.UTF_8));
+            if (!watchStall) {
+                long remaining = limit.toNanos() - (System.nanoTime() - started);
+                if (remaining <= 0) throw new TimeoutException();
+                HttpResponse<byte[]> response = pending.get(remaining, TimeUnit.NANOSECONDS);
+                return replyOf(response);
+            }
+            long deadline = started + limit.toNanos();
+            long stallNanos = stall.toNanos();
+            while (true) {
+                long now = System.nanoTime();
+                if (now >= deadline) throw new TimeoutException();
+                long idleFor = now - progress.get();
+                if (idleFor >= stallNanos) throw new Stalled();
+                long slice = Math.min(deadline - now, stallNanos - idleFor);
+                try {
+                    return replyOf(pending.get(Math.max(1, slice), TimeUnit.NANOSECONDS));
+                } catch (TimeoutException sliceElapsed) {
+                    // The next iteration decides whether the wall or the stall expired.
+                }
+            }
+        } catch (Stalled stalled) {
+            String during = headersSeen.get() ? "body" : post && !bodyPulled.get() ? "connect" : "headers";
+            throw new CallFailure("role_stalled", during, delivery(post, bodyPulled.get(), headersSeen.get()),
+                    headersSeen.get() ? "body_idle" : "first_byte");
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new CallFailure("role_api_interrupted", "cancel",
@@ -380,21 +428,34 @@ public final class ApiExecutor implements RoleExecutor {
         return uri.getPort() >= 0 ? uri.getPort() : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
     }
 
+    private static HttpReply replyOf(HttpResponse<byte[]> response) {
+        return new HttpReply(response.statusCode(), response.headers(),
+                new String(response.body(), StandardCharsets.UTF_8));
+    }
+
+    /** Silence while the wall clock still has time. Not a TimeoutException, so it is not a wall-clock miss. */
+    private static final class Stalled extends Exception {
+        private static final long serialVersionUID = 1L;
+    }
+
     private static final class BodyLimit extends IOException {
         private static final long serialVersionUID = 1L;
     }
 
     private static final class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
         private final HttpResponse.BodySubscriber<byte[]> delegate = HttpResponse.BodySubscribers.ofByteArray();
+        private final java.util.concurrent.atomic.AtomicLong progress;
         private Flow.Subscription subscription;
         private long size;
         private boolean failed;
+        BoundedBody(java.util.concurrent.atomic.AtomicLong progress) { this.progress = progress; }
         @Override public CompletionStage<byte[]> getBody() { return delegate.getBody(); }
         @Override public void onSubscribe(Flow.Subscription next) {
             subscription = next;
             delegate.onSubscribe(next);
         }
         @Override public void onNext(List<ByteBuffer> buffers) {
+            if (progress != null) progress.set(System.nanoTime());
             if (failed) return;
             for (ByteBuffer buffer : buffers) size += buffer.remaining();
             if (size > MAX_RESPONSE_BYTES) {

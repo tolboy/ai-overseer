@@ -46,6 +46,8 @@ public final class SettingsEditor {
         result.put("on_quota_exhausted", policy.failoverMode());
         result.put("on_vendor_failure", policy.vendorFailureMode());
         result.put("max_per_stage", policy.maxVendorFailovers());
+        result.put("subscription_to_same_family_api", policy.subscriptionToSameFamilyApi());
+        result.put("on_pinned", policy.onPinned());
         result.put("max_attempts", policy.rateLimitRetry().maxAttempts());
         result.put("backoff_seconds", policy.rateLimitRetry().backoffSeconds());
         result.put("repair_reserve", policy.repairReserve());
@@ -140,6 +142,7 @@ public final class SettingsEditor {
             }
         } else {
             requireKeys(changed, Set.of("roles", "on_quota_exhausted", "on_vendor_failure", "max_per_stage",
+                    "subscription_to_same_family_api", "on_pinned",
                     "max_attempts", "backoff_seconds", "repair_reserve"));
             if (changed.containsKey("max_per_stage") && (!(changed.get("max_per_stage") instanceof Number n)
                     || !Double.isFinite(n.doubleValue()) || n.doubleValue() != n.longValue()))
@@ -168,7 +171,8 @@ public final class SettingsEditor {
                 }
                 replacements.put("roles", roles);
             }
-            merge(replacements, root, "failover", changed, Set.of("on_quota_exhausted", "on_vendor_failure", "max_per_stage"));
+            merge(replacements, root, "failover", changed, Set.of("on_quota_exhausted", "on_vendor_failure",
+                    "max_per_stage", "subscription_to_same_family_api", "on_pinned"));
             merge(replacements, root, "budget", changed, Set.of("repair_reserve"));
             if (changed.containsKey("max_attempts") || changed.containsKey("backoff_seconds")) {
                 Map<String, Object> retry = new LinkedHashMap<>(mapOrEmpty(root.get("retry")));

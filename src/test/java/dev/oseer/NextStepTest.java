@@ -82,13 +82,16 @@ public final class NextStepTest implements Suite {
         check.contains("a timeout names the profile's wall clock, not the gate timeout",
                 String.valueOf(NextStep.of("role_timed_out", summary("run-1", "hello"), null)
                         .get("edits")), "limits.wall_clock_minutes");
+        check.contains("a stall names the idle bound, not the wall clock",
+                String.valueOf(NextStep.of("role_stalled", summary("run-1", "hello"), null)
+                        .get("edits")), "limits.stall_seconds");
         check.eq("quota", "wait_or_add_vendor",
                 kind("quota_exhausted", summary("run-1", "hello")));
         check.eq("rate limit", "wait_or_add_vendor",
                 kind("rate_limited", summary("run-1", "hello")));
         check.eq("failover", "confirm_failover",
                 kind("failover_requires_confirmation", summary("run-1", "hello")));
-        for (String reason : List.of("role_timed_out", "vendor_call_failed",
+        for (String reason : List.of("role_timed_out", "role_stalled", "vendor_call_failed",
                 "vendor_unavailable", "vendor_protocol_failed", "prompt_undeliverable",
                 "turn_ceiling_reached", "orca_worker_not_started")) {
             check.eq(reason, "retry_infrastructure", kind(reason, summary("run-1", "hello")));

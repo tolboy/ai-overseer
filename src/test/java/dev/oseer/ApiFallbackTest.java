@@ -34,6 +34,7 @@ public final class ApiFallbackTest implements Suite {
             boundsAndBudget(check, fixture);
             eligibilityStillApplies(check, fixture);
             confirmedContinuation(check, fixture);
+            failoverSafety(check, fixture);
             mixedFallbackCannotEscape(check, fixture);
         }
     }
@@ -84,7 +85,7 @@ public final class ApiFallbackTest implements Suite {
     private void failureAllowlist(Check check, Fixture f) throws Exception {
         f.policy(List.of("backup-one", "backup-two"), "auto", 2);
         int index = 0;
-        for (String code : List.of("role_api_network_error", "role_api_timeout",
+        for (String code : List.of("role_api_network_error", "role_api_timeout", "role_stalled",
                 "role_api_rate_limited", "role_api_provider_error", "role_api_output_truncated")) {
             Calls calls = new Calls(Map.of("primary", code));
             var result = f.run("allowed-" + index++, calls, new Gate(3));
@@ -184,6 +185,68 @@ public final class ApiFallbackTest implements Suite {
         List<?> switches = (List<?>) resumed.details().get("role_failovers");
         check.eq("the confirmed switch is recorded as human authorized", "human",
                 ((Map<?, ?>) switches.get(0)).get("authorized_by"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void failoverSafety(Check check, Fixture f) throws Exception {
+        f.cliProfile("grok-review", "grok");
+        f.profile("deepseek-review", "deepseek", true);
+        f.profile("xai-review", "x-ai", true);
+
+        f.safetyPolicy(List.of("grok-review", "deepseek-review"), "auto", "never", "stop");
+        Calls pinned = new Calls(Map.of("grok-review", "role_timeout"));
+        var held = f.runner(pinned, new Gate(5)).pinForRun("review", "grok-review")
+                .run(new ConfigLoader().load(f.project, "hello"), UserConfig.load(f.home),
+                        "reviewer", "pinned-grok", "writer", null, false, 0);
+        check.eq("a pinned stage keeps the vendor failure", "role_timeout", held.code());
+        check.eq("a pinned stage does not call the paid API", List.of("grok-review"), pinned.profiles);
+        List<?> pinBlocks = (List<?>) held.details().get("failover_blocked");
+        check.eq("the refusal names the pin", "pinned",
+                ((Map<?, ?>) pinBlocks.get(pinBlocks.size() - 1)).get("rule"));
+        check.that("the refusal names both profiles",
+                String.valueOf(pinBlocks.get(pinBlocks.size() - 1)).contains("grok-review")
+                        && String.valueOf(pinBlocks.get(pinBlocks.size() - 1)).contains("deepseek-review"));
+
+        f.safetyPolicy(List.of("grok-review", "xai-review"), "auto", "never", "stop");
+        Calls family = new Calls(Map.of("grok-review", "role_timeout"));
+        var refused = f.run("family-never", family, new Gate(5));
+        check.eq("a grok CLI is not moved onto an x-ai API", "role_timeout", refused.code());
+        check.eq("the same-family API is not called", List.of("grok-review"), family.profiles);
+        List<?> familyBlocks = (List<?>) refused.details().get("failover_blocked");
+        check.eq("the refusal names the family rule", "subscription_to_same_family_api",
+                ((Map<?, ?>) familyBlocks.get(0)).get("rule"));
+
+        f.safetyPolicy(List.of("grok-review", "deepseek-review"), "auto", "never", "stop");
+        Calls stalled = new Calls(Map.of("grok-review", "role_stalled"));
+        var switched = f.run("stall-cross-family", stalled, new Gate(5));
+        check.that("a CLI stall may fail over to a different vendor", switched.ok());
+        check.eq("the stall and its successor both ran",
+                List.of("grok-review", "deepseek-review"), stalled.profiles);
+        List<?> switches = (List<?>) switched.details().get("role_failovers");
+        check.eq("the switch leaves the stalled CLI", "grok-review",
+                ((Map<?, ?>) switches.get(0)).get("from_profile"));
+        check.eq("the switch names the other vendor", "deepseek-review",
+                ((Map<?, ?>) switches.get(0)).get("to_profile"));
+        check.eq("a stall keeps its own cause", "role_stalled",
+                ((Map<?, ?>) switches.get(0)).get("cause"));
+        check.contains("the notice names both profiles",
+                String.valueOf(switched.details().get("failover_notice")), "grok-review -> deepseek-review");
+
+        f.safetyPolicy(List.of("grok-review", "deepseek-review"), "auto", "never", "auto");
+        Calls pinAuto = new Calls(Map.of("grok-review", "role_timeout"));
+        var allowed = f.runner(pinAuto, new Gate(5)).pinForRun("review", "grok-review")
+                .run(new ConfigLoader().load(f.project, "hello"), UserConfig.load(f.home),
+                        "reviewer", "pinned-auto", "writer", null, false, 0);
+        check.that("on_pinned auto is the opt-in that leaves a pinned stage", allowed.ok());
+        check.eq("the pinned profile and its successor both ran",
+                List.of("grok-review", "deepseek-review"), pinAuto.profiles);
+
+        f.safetyPolicy(List.of("grok-review", "xai-review"), "auto", "allow", "stop");
+        Calls escape = new Calls(Map.of("grok-review", "role_timeout"));
+        var escaped = f.run("family-allow", escape, new Gate(5));
+        check.that("allow is the only way onto a same-family API", escaped.ok());
+        check.eq("the x-ai API ran after the grok CLI",
+                List.of("grok-review", "xai-review"), escape.profiles);
     }
 
     @SuppressWarnings("unchecked")
@@ -316,6 +379,17 @@ public final class ApiFallbackTest implements Suite {
                     json_schema: schemas/reviewer.json
                     verification: {verified_on: '2026-10-29'}
                     """.formatted(name, vendor));
+        }
+        void safetyPolicy(List<String> profiles, String mode, String family, String pinned) throws IOException {
+            Files.writeString(home.resolve("policy.yaml"), """
+                    version: 1
+                    roles:
+                      reviewer:
+                        profiles: [%s]
+                        strategy: first
+                        require_independent_vendor: true
+                    failover: {on_vendor_failure: %s, max_per_stage: 2, subscription_to_same_family_api: %s, on_pinned: %s}
+                    """.formatted(String.join(", ", profiles), mode, family, pinned));
         }
         void policy(List<String> fallback, String mode, int max) throws IOException {
             String roster = Files.exists(home.resolve("profiles/backup-three.yaml"))

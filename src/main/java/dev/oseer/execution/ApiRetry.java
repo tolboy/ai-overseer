@@ -130,6 +130,12 @@ public final class ApiRetry {
     public static Outcome send(Connection connection, String method, URI uri, String body, String token,
                                Duration limit, Policy policy, Sleeper sleeper,
                                Map<String, Object> correlation) {
+        return send(connection, method, uri, body, token, limit, null, policy, sleeper, correlation);
+    }
+
+    public static Outcome send(Connection connection, String method, URI uri, String body, String token,
+                               Duration limit, Duration stall, Policy policy, Sleeper sleeper,
+                               Map<String, Object> correlation) {
         long deadline = System.nanoTime() + limit.toNanos();
         List<Map<String, Object>> attempts = new ArrayList<>();
         for (int attempt = 1; ; attempt++) {
@@ -141,7 +147,7 @@ public final class ApiRetry {
             ApiExecutor.HttpReply reply = null;
             ApiExecutor.CallFailure failure = null;
             try {
-                reply = ApiExecutor.call(connection, method, uri, body, token, remaining);
+                reply = ApiExecutor.call(connection, method, uri, body, token, remaining, stall);
             } catch (ApiExecutor.CallFailure failed) {
                 failure = failed;
             }

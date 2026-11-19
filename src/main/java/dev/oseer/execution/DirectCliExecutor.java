@@ -161,7 +161,7 @@ public final class DirectCliExecutor implements RoleExecutor {
         try (LiveCliOutput live = LiveCliOutput.follow(stdoutFile, stderrFile, activity)) {
             process = processes.runVendor(command, request.projectRoot(),
                     Duration.ofMinutes(profile.wallClockMinutes()), PREVIEW_BYTES, stdinText,
-                    stdoutFile, stderrFile, ProcessRunner.DEFAULT_RAW_BYTES);
+                    stdoutFile, stderrFile, ProcessRunner.DEFAULT_RAW_BYTES, profile.stallTimeout());
         } catch (ProcessRunner.CaptureException incomplete) {
             recordEffortTransmission(profile, evidence);
             String code = incomplete.settled() ? "role_output_capture_failed" : "role_process_unsettled";
@@ -194,6 +194,7 @@ public final class DirectCliExecutor implements RoleExecutor {
         evidence.put("capture_preview", "head_and_tail");
         evidence.put("exit_code", (long) process.exitCode());
         evidence.put("timed_out", process.timedOut());
+        evidence.put("stalled", process.stalled());
         evidence.put("duration_millis", process.durationMillis());
 
         Duration duration = Duration.ofMillis(process.durationMillis());
@@ -258,7 +259,8 @@ public final class DirectCliExecutor implements RoleExecutor {
                 // off at the byte cap can hide the later turn entirely, so a non-zero exit
                 // or a timeout on a truncated transcript is not success either. A child
                 // can exit 0 after SIGTERM; the timeout flag is the fact that matters.
-                if (protocol.superseded() && (process.exitCode() != 0 || process.timedOut() || protocol.turnFailed())) {
+                if (protocol.superseded() && (process.exitCode() != 0 || process.timedOut()
+                        || process.stalled() || protocol.turnFailed())) {
                     return rejectedStaleArtifact(request, process, duration, evidence, retainedQuota, retainedUnavailable, retainedTurns);
                 }
                 String semanticFailure = semanticFailure(request.role(), artifact);
@@ -269,6 +271,10 @@ public final class DirectCliExecutor implements RoleExecutor {
                 }
                 evidence.put("verdict", artifact.get("verdict"));
                 return new Result(true, "ok", duration, process.stdout(), artifact, evidence);
+            }
+            if (process.stalled()) {
+                evidence.put("failure", "role_stalled");
+                return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
             }
             if (process.timedOut()) {
                 evidence.put("failure", "role_timeout");
@@ -304,6 +310,10 @@ public final class DirectCliExecutor implements RoleExecutor {
             }
         }
 
+        if (process.stalled()) {
+            evidence.put("failure", "role_stalled");
+            return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
+        }
         if (process.timedOut()) {
             evidence.put("failure", "role_timeout");
             return new Result(false, "role_timeout", duration, process.stdout(), null, evidence);
@@ -708,6 +718,10 @@ public final class DirectCliExecutor implements RoleExecutor {
         if (quota != null) return quota;
         Result ceiling = turnCeilingFailure(request.profile(), process, duration, evidence, retainedTurns);
         if (ceiling != null) return ceiling;
+        if (process.stalled()) {
+            evidence.put("failure", "role_stalled");
+            return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
+        }
         if (process.timedOut()) {
             evidence.put("failure", "role_timeout");
             return new Result(false, "role_timeout", duration, process.stdout(), null, evidence);

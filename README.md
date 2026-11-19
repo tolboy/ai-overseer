@@ -507,7 +507,20 @@ non-zero exit: the exit code is recorded and the verdict stands. Under `confirm`
 `--continue` runs the profile the person approved for that stage and records
 `role_failover` (`authorized_by: human`, `policy_setting: confirm`). The profile that
 failed is left out of that stage's attempt only. A role may set its own
-`on_vendor_failure`. `report.json` lists the switches under `role_failovers`.
+`on_vendor_failure`. `report.json` lists the switches under `role_failovers`, and a
+refusal under `failover_blocked`, each as from→to.
+
+`subscription_to_same_family_api` defaults to `never`: a grok, codex, or claude
+subscription CLI is not moved onto a paid API of that same family (`x-ai`, `openai`,
+`anthropic`). `allow` is the explicit escape. `on_pinned` defaults to `stop`: a stage
+named with `--use` does not take a vendor-failure failover unless the value is
+`confirm` or `auto`. A spent subscription still follows `on_quota_exhausted`.
+
+`limits.stall_seconds` bounds a call that accepts the request and then says nothing.
+An API profile that omits it uses 180 seconds; `0` disables it. A direct CLI has no
+default, because a model that is thinking can be silent. The stop is `role_stalled`,
+not a wall-clock timeout, and it follows `on_vendor_failure`. The wall clock still
+wins when it is the shorter of the two.
 
 `repair_reserve` decides how much of the remaining chain a fix round has to be affordable
 before it may start. `full` reserves the fix, every judgement it invalidates and every stage
