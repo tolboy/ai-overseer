@@ -6299,8 +6299,13 @@ public final class TaskLoop {
     private static Path screenshotPath(Path root, Path directory, String text) {
         if (directory == null) return null;
         try {
+            Path project = root.toRealPath();
             Path file = root.resolve(Path.of(text)).toRealPath();
-            if (file.startsWith(directory) && Files.isRegularFile(file) && Files.size(file) > 0) return file;
+            if (directory.startsWith(project) && file.startsWith(directory)
+                    && Files.isRegularFile(file) && Files.size(file) > 0) {
+                // Keep the path in the caller's spelling of the project for attachments and reports.
+                return root.toAbsolutePath().normalize().resolve(project.relativize(file));
+            }
         } catch (InvalidPathException | java.io.IOException unreadable) {
             // Invalid or unreadable entries are not evidence.
         }
