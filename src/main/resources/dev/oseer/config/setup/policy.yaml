@@ -1,0 +1,186 @@
+version: 1
+
+# Which profiles may fill which role. This is the only file that names a vendor.
+roles:
+  reviewer:
+    profiles: [grok-review, claude-review]
+    strategy: rotate
+    # Hard constraint: a reviewer may not share a vendor with the implementer whose
+    # work it reviews. A model reviewing its own output shares its own blind spots,
+    # which is the only defensible reason to run more than one vendor at all.
+    require_independent_vendor: true
+  implementer:
+    profiles: [codex-implement]
+    strategy: first
+    require_independent_vendor: false
+
+  # Eyes on the result, not on the diff. Deliberately absent from this list until
+  # you turn it on: the machine harness already screenshots the page and asserts
+  # what is measurable, and this role costs a vendor call on top of that. Uncomment
+  # it once `codex-visual-qa` is verified, and it will run after review for any task
+  # whose contract sets `visual_qa.required: true`.
+  #
+  # visual_qa:
+  #   profiles: [codex-visual-qa]
+  #   strategy: first
+  #   require_independent_vendor: false
+
+  # A second planner. Declared, `oseer do --prepare auto|always` dispatches it once
+  # after the first planner's draft is compiled: it reads the contract Overseer
+  # wrote, not the draft, and objects with findings. A blocking objection sends the
+  # first planner back once with those findings; a second objection stops for a
+  # person before any writer is paid. Absent, preparation stays one call.
+  #
+  # plan_reviewer:
+  #   profiles: [agy-plan-review]
+  #   strategy: first
+  #   require_independent_vendor: false
+
+# A reader is resolved against every vendor that wrote into the candidate, not the
+# last implementer alone. `require_independent_vendor: false` on a reading role no
+# longer admits a same-vendor reader on its own: name the pair, two different
+# models of one vendor, and the reading is labelled `same_vendor_peer` — never
+# independent — and only on a task whose contract says
+# `review_assurance: same_vendor_peer`.
+#
+#   reviewer:
+#     profiles: [codex-review-sol]
+#     strategy: first
+#     require_independent_vendor: false
+#     same_vendor_peer: { implementer: codex-implement, reviewer: codex-review-sol }
+
+review:
+  # A low-risk task still passes every machine gate; it just does not pay a reviewer.
+  required_for_risk: [medium, high]
+  # Only a P1 stops the loop. Name P2/P3 here and a reader's non-blocking product
+  # defect goes back to the writer for a bounded repair before the human gate:
+  # repair_severities: [P1, P2, P3]
+  # A reader's contract_gap on a passing candidate: `gate` lists it for the person;
+  # `plan` sends it to the planner, which may only add checks and browser scenarios,
+  # and the chain continues with every reading taken again.
+  # contract_gaps: plan
+
+# The opt-in escalation ladder. After `after_blocking_reviews` readings of one task
+# objected with blocking product findings, the repair goes to the next rung's
+# writer and the objecting stage is re-read by that rung's reader, both pinned for
+# the rest of the chain. Rungs are climbed forward only; a rung's reader reads as a
+# co-author (`peer_review`); whatever independent readings the chain still owes are
+# resolved against every writer afterwards, and `independent_review_unavailable`
+# stops the run when none is left. The last rung still objected to ends the run as
+# `quality_exhausted`. Each rung costs a fix round from `max_fix_attempts`.
+#
+# escalation:
+#   after_blocking_reviews: 2
+#   rungs:
+#     - { implementer: claude-implement, reviewer: grok-review }
+#     - { implementer: codex-implement, reviewer: claude-review }
+
+# What happens when the vendor filling a role reports a spent subscription and
+# another profile could take over.
+#
+#   confirm  stop, name the successor, and wait for a person. The default.
+#   auto     switch straight away; the swap is still written to the ledger as a
+#            role_failover event naming both vendors and who authorised it.
+#   stop     never switch, even when a candidate exists.
+#
+# `confirm` is the default because a failover changes who wrote the work, and on a
+# small roster it can cost the run its independent reviewer: two vendors minus one
+# spent subscription leaves one, and a model reviewing its own output is the thing
+# running two vendors was for. That is a judgement about the value of the result,
+# so it is the operator's.
+#
+# Record the choice with `oseer approve <run-id> --decision switch`, then re-run
+# with `oseer run <task> --run-id <new> --continue <run-id>`. The authorisation is
+# that recorded decision: it names one role and one profile, and nothing else.
+failover:
+  on_quota_exhausted: confirm
+  # A call that produced no artifact (network, timeout, a location or eligibility
+  # refusal such as HTTP 403, missing or invalid artifact). A location or
+  # eligibility refusal is cause vendor_unavailable: it fails over like any other
+  # missing artifact, and that profile is skipped for the rest of the process.
+  # stop is the default and is today's behaviour. confirm and auto use the same
+  # role_failover event as a spent subscription, at most max_per_stage times in
+  # one role dispatch. A finding is not this. A look stage needs a second
+  # visual_qa profile in the roster before auto has anywhere to switch.
+  on_vendor_failure: stop
+  max_per_stage: 1
+
+# How much of the remaining chain a repair round has to be affordable before it is
+# allowed to start.
+#
+#   full     (default) the repair, every judgement it invalidates, and every stage
+#            still owed. The run either finishes or does not begin the attempt.
+#   partial  the repair plus whatever will read its result. Allows paid progress
+#            this run cannot finish: a review that then passes is a verdict a
+#            continuation reuses for nothing.
+#
+# `full` is the default because `partial` is a real trade rather than a strictly
+# better one. In its favour, declining to spend does not save the calls — only
+# raising the ceiling unlocks the rest of the chain. Against it, a repair can
+# introduce a regression rather than remove one, and a person may decide not to
+# continue the task at all. Either way the arithmetic is in `budget_plan` before
+# the first vendor is dispatched, and `--dry-run` prints it.
+budget:
+  repair_reserve: full
+
+# The order those roles run in, and what has to be true for each to run at all.
+# This block is optional; deleting it restores exactly the chain written below.
+# Reorder, drop or repeat stages here — nothing else has to change.
+#
+#   run:               role | machine_gates | visual_harness
+#   when:              every listed condition must hold, or the stage is skipped.
+#                      always · review_required · visual_qa_required ·
+#                      risk_low · risk_medium · risk_high
+#   on_fail:           stop | fix   (fix = hand the failure back, bounded by the
+#                      task's max_fix_attempts, then run this stage again)
+#   on_findings:       stop | fix   (a role that passed but filed P1 findings)
+#   recheck_after_fix: re-run this stage after any later stage's fix round, so a
+#                      fix cannot satisfy one check by breaking an earlier one
+#   sees:              the visual_harness stage whose screenshots a role receives
+#   evidence:          harness | agent — who takes a visual_qa role's screenshots.
+#                      `agent` needs no harness: the role drives the application
+#                      through its own MCP servers (a browser, a game engine, a
+#                      desktop window), saves what it judged into the run's
+#                      evidence, and lists it in screenshots_taken; Overseer checks
+#                      the files exist there and hashes them. Requires a profile
+#                      with capabilities.vision.acquires: true (see
+#                      profiles/claude-visual-qa-mcp.yaml).
+#
+# A role stage is skipped when `roles:` above does not name that role, so the
+# visual_qa stage below costs nothing until you turn the role on.
+workflow:
+  stages:
+    - stage: implement
+      run: role
+      role: implementer
+      on_fail: stop
+
+    - stage: gates
+      run: machine_gates
+      on_fail: fix
+      recheck_after_fix: true
+
+    - stage: review
+      run: role
+      role: reviewer
+      when: [review_required]
+      on_fail: stop
+      on_findings: fix
+      # A fix round for the browser or the visual role edits code after the
+      # reviewer passed. Without this, the candidate a human accepts contains a
+      # diff no independent vendor ever read.
+      recheck_after_fix: true
+
+    - stage: browser
+      run: visual_harness
+      when: [visual_qa_required]
+      on_fail: fix
+      recheck_after_fix: true
+
+    - stage: look
+      run: role
+      role: visual_qa
+      when: [visual_qa_required]
+      sees: browser
+      on_fail: stop
+      on_findings: fix

@@ -1,0 +1,34 @@
+{
+  "title": "Plan reviewer artifact",
+  "type": "object",
+  "required": ["role", "task_id", "status", "verdict", "summary", "findings"],
+  "properties": {
+    "role": { "const": "plan_reviewer" },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "enum": ["completed", "blocked", "aborted"] },
+    "verdict": { "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "message", "expected", "actual"],
+        "properties": {
+          "id": { "type": "string" },
+          "severity": { "enum": ["P1", "P2", "P3"] },
+          "category": {
+            "enum": ["acceptance_gap", "scope_gap", "access_gap", "visual_gap",
+                     "risk_mismatch", "ambiguity", "other"]
+          },
+          "field": { "type": "string" },
+          "message": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "confidence": { "enum": ["confirmed", "plausible"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "title": "Implementer artifact",
+  "type": "object",
+  "required": ["role", "task_id", "status", "summary", "files_changed"],
+  "properties": {
+    "role": { "const": "implementer" },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "enum": ["completed", "blocked"] },
+    "summary": { "type": "string" },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands_run": { "type": "array", "items": { "type": "string" } },
+    "remaining_risks": { "type": "array", "items": { "type": "string" } }
+  }
+}

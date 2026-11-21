@@ -1,16 +1,13 @@
 package dev.oseer.execution;
 
+import dev.oseer.io.SidecarLock;
 import dev.oseer.json.Json;
 import dev.oseer.json.JsonFile;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -90,8 +87,7 @@ public final class WorktreeLease {
                     held.closed = true;
                 }
             } finally {
-                try { held.lock.release(); }
-                finally { held.channel.close(); }
+                held.lock.close();
             }
         }
     }
@@ -103,8 +99,7 @@ public final class WorktreeLease {
         Path root = checkoutRoot(checkout);
         Owner nested = OWNED.get().get(root);
         if (nested != null) {
-            // Reentrancy is confined to this thread. Another controller in this JVM must
-            // compete for the OS lock even when it supplies exactly the same run id.
+            // Reentrancy is confined to this thread, even for the same run ID.
             nested.references++;
             CURRENT.get().push(nested);
             return new Scope(nested);
@@ -112,17 +107,13 @@ public final class WorktreeLease {
         Path directory = administration(root);
         Files.createDirectories(directory);
         Path stateFile = directory.resolve(STATE);
-        FileChannel channel = FileChannel.open(directory.resolve(LOCK),
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-        FileLock lock = null;
+        SidecarLock lock = SidecarLock.tryAcquire(directory.resolve(LOCK));
+        if (lock == null) {
+            throw new Refused("worktree_busy", stateFile,
+                    "Another Overseer controller owns this worktree. Wait for it to finish "
+                            + "or use a separate worktree; choosing a new run id does not isolate edits.");
+        }
         try {
-            try { lock = channel.tryLock(); }
-            catch (OverlappingFileLockException busy) { /* same refusal as another JVM */ }
-            if (lock == null) {
-                throw new Refused("worktree_busy", stateFile,
-                        "Another Overseer controller owns this worktree. Wait for it to finish "
-                                + "or use a separate worktree; choosing a new run id does not isolate edits.");
-            }
             if (attributes(stateFile) != null) {
                 Map<String, Object> previous;
                 try {
@@ -149,14 +140,12 @@ public final class WorktreeLease {
             // observation leaves a fence. Recovery additionally checks durable launch intent
             // and PID start times; a controller PID by itself is never enough.
             JsonFile.writeAtomically(stateFile, state);
-            Owner owner = new Owner(root, stateFile, channel, lock, state);
+            Owner owner = new Owner(root, stateFile, lock, state);
             OWNED.get().put(root, owner);
             CURRENT.get().push(owner);
             return new Scope(owner);
-        } catch (IOException | RuntimeException failure) {
-            try { if (lock != null) lock.release(); }
-            catch (IOException releaseFailed) { failure.addSuppressed(releaseFailed); }
-            try { channel.close(); }
+        } catch (IOException | RuntimeException | Error failure) {
+            try { lock.close(); }
             catch (IOException closeFailed) { failure.addSuppressed(closeFailed); }
             throw failure;
         }
@@ -257,59 +246,53 @@ public final class WorktreeLease {
         Path directory = administration(checkoutRoot(checkout));
         Files.createDirectories(directory);
         Path file = directory.resolve(STATE);
-        try (FileChannel channel = FileChannel.open(directory.resolve(LOCK),
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-            FileLock lock;
-            try { lock = channel.tryLock(); }
-            catch (OverlappingFileLockException busy) { lock = null; }
+        try (SidecarLock lock = SidecarLock.tryAcquire(directory.resolve(LOCK))) {
             if (lock == null) throw new Refused("worktree_busy", file, "The worktree controller is still running.");
-            try (FileLock held = lock) {
-                if (attributes(file) == null) return Map.of("ok", true, "code", "worktree_recovered");
-                Map<String, Object> previous;
-                try {
-                    if (!attributes(file).isRegularFile()) throw new IOException("not a regular state file");
-                    previous = Json.parseObject(Files.readString(file));
-                } catch (Exception unreadable) {
-                    throw new Refused("worktree_recovery_required", file,
-                            "Cannot read execution receipts; restore readable state before recovery.");
-                }
-                if ("released".equals(previous.get("state"))) {
-                    return Map.of("ok", true, "code", "worktree_recovered", "execution_state", file.toString());
-                }
-                List<Object> receipts = new java.util.ArrayList<>();
-                if ("active".equals(previous.get("state"))) receipts.add(previous.get("controller"));
-                boolean uncertain = !(previous.get("processes") instanceof List<?>)
-                        || !(previous.get("schema_version") instanceof Number schema) || schema.longValue() != 2
-                        || !("active".equals(previous.get("state")) || "recovery_required".equals(previous.get("state")))
-                        || !Boolean.FALSE.equals(previous.get("vendor_launch_pending"))
-                        || previous.containsKey("recovery_reason");
-                if (previous.get("processes") instanceof List<?> processes) receipts.addAll(processes);
-                if (previous.get("active_processes") instanceof List<?> processes) receipts.addAll(processes);
-                List<Object> live = new java.util.ArrayList<>();
-                for (Object receipt : receipts) {
-                    if (!(receipt instanceof Map<?, ?> identity) || !(identity.get("pid") instanceof Number pid)) {
-                        uncertain = true;
-                        continue;
-                    }
-                    ProcessHandle process = ProcessHandle.of(pid.longValue()).orElse(null);
-                    if (process == null || !process.isAlive()) continue;
-                    Object started = identity.get("started_at");
-                    var actual = process.info().startInstant();
-                    if (!(started instanceof String) || actual.isEmpty()) { uncertain = true; live.add(receipt); }
-                    else if (actual.get().toString().equals(started)) live.add(receipt);
-                }
-                if (!live.isEmpty()) throw new Refused("worktree_recovery_required", file,
-                        "Previous processes are still alive: " + Json.write(live) + ". Stop them before recovery.");
-                if (uncertain && !confirmStopped) throw new Refused("worktree_recovery_required", file,
-                        "Process receipts are incomplete. Inspect and stop previous vendor workers, then "
-                                + "run `oseer recover --confirm-stopped` to acknowledge that inspection.");
-                Map<String, Object> recovered = new LinkedHashMap<>(previous);
-                recovered.put("state", "released");
-                recovered.put("recovered_at", Instant.now().toString());
-                recovered.put("recovery_confirmed_by_operator", confirmStopped);
-                JsonFile.writeAtomically(file, recovered);
+            if (attributes(file) == null) return Map.of("ok", true, "code", "worktree_recovered");
+            Map<String, Object> previous;
+            try {
+                if (!attributes(file).isRegularFile()) throw new IOException("not a regular state file");
+                previous = Json.parseObject(Files.readString(file));
+            } catch (Exception unreadable) {
+                throw new Refused("worktree_recovery_required", file,
+                        "Cannot read execution receipts; restore readable state before recovery.");
+            }
+            if ("released".equals(previous.get("state"))) {
                 return Map.of("ok", true, "code", "worktree_recovered", "execution_state", file.toString());
             }
+            List<Object> receipts = new java.util.ArrayList<>();
+            if ("active".equals(previous.get("state"))) receipts.add(previous.get("controller"));
+            boolean uncertain = !(previous.get("processes") instanceof List<?>)
+                    || !(previous.get("schema_version") instanceof Number schema) || schema.longValue() != 2
+                    || !("active".equals(previous.get("state")) || "recovery_required".equals(previous.get("state")))
+                    || !Boolean.FALSE.equals(previous.get("vendor_launch_pending"))
+                    || previous.containsKey("recovery_reason");
+            if (previous.get("processes") instanceof List<?> processes) receipts.addAll(processes);
+            if (previous.get("active_processes") instanceof List<?> processes) receipts.addAll(processes);
+            List<Object> live = new java.util.ArrayList<>();
+            for (Object receipt : receipts) {
+                if (!(receipt instanceof Map<?, ?> identity) || !(identity.get("pid") instanceof Number pid)) {
+                    uncertain = true;
+                    continue;
+                }
+                ProcessHandle process = ProcessHandle.of(pid.longValue()).orElse(null);
+                if (process == null || !process.isAlive()) continue;
+                Object started = identity.get("started_at");
+                var actual = process.info().startInstant();
+                if (!(started instanceof String) || actual.isEmpty()) { uncertain = true; live.add(receipt); }
+                else if (actual.get().toString().equals(started)) live.add(receipt);
+            }
+            if (!live.isEmpty()) throw new Refused("worktree_recovery_required", file,
+                    "Previous processes are still alive: " + Json.write(live) + ". Stop them before recovery.");
+            if (uncertain && !confirmStopped) throw new Refused("worktree_recovery_required", file,
+                    "Process receipts are incomplete. Inspect and stop previous vendor workers, then "
+                            + "run `oseer recover --confirm-stopped` to acknowledge that inspection.");
+            Map<String, Object> recovered = new LinkedHashMap<>(previous);
+            recovered.put("state", "released");
+            recovered.put("recovered_at", Instant.now().toString());
+            recovered.put("recovery_confirmed_by_operator", confirmStopped);
+            JsonFile.writeAtomically(file, recovered);
+            return Map.of("ok", true, "code", "worktree_recovered", "execution_state", file.toString());
         }
     }
 
@@ -358,8 +341,7 @@ public final class WorktreeLease {
     private static final class Owner {
         final Path root;
         final Path stateFile;
-        final FileChannel channel;
-        final FileLock lock;
+        final SidecarLock lock;
         final Map<String, Object> state;
         final Thread thread = Thread.currentThread();
         final Map<Long, ProcessHandle> processes = new ConcurrentHashMap<>();
@@ -393,10 +375,9 @@ public final class WorktreeLease {
             } catch (Exception ignored) { /* durable active state remains a recovery fence */ }
         }
 
-        Owner(Path root, Path stateFile, FileChannel channel, FileLock lock, Map<String, Object> state) {
+        Owner(Path root, Path stateFile, SidecarLock lock, Map<String, Object> state) {
             this.root = root;
             this.stateFile = stateFile;
-            this.channel = channel;
             this.lock = lock;
             this.state = state;
             shutdownHook = new Thread(this::shutdown, "oseer-vendor-shutdown");

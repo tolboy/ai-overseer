@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.cli.Cli;
 import dev.oseer.config.ConfigLoader;
 import dev.oseer.config.PilotPrepareSpec;
 import dev.oseer.config.UserConfig;
@@ -341,8 +342,15 @@ public final class PilotPrepareTest implements Suite {
 
         check.rejects("parse requires --spec", "--spec",
                 () -> PilotPrepareCommand.parse(new String[] {"pilot", "prepare", "--output", "x"}));
-        check.contains("CLI help documents the command",
-                Files.readString(Path.of("src/main/java/dev/oseer/Main.java")),
+        var help = new java.io.ByteArrayOutputStream();
+        var originalOut = System.out;
+        try (var captured = new java.io.PrintStream(help, true, java.nio.charset.StandardCharsets.UTF_8)) {
+            System.setOut(captured);
+            check.eq("help exits successfully", 0, new Cli().run(new String[] {"pilot", "--help"}));
+        } finally {
+            System.setOut(originalOut);
+        }
+        check.contains("CLI help documents the command", help.toString(java.nio.charset.StandardCharsets.UTF_8),
                 "oseer pilot prepare --spec FILE --output DIR");
         PilotPrepareSpec sample = PilotPrepareSpec.parse(
                 Files.readString(Path.of("examples/pilot/prepare-spec.json")),

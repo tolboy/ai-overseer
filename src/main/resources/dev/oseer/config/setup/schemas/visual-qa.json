@@ -1,0 +1,39 @@
+{
+  "title": "Visual QA artifact",
+  "type": "object",
+  "required": ["role", "task_id", "status", "verdict", "summary", "findings"],
+  "properties": {
+    "role": { "const": "visual_qa" },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "enum": ["completed", "aborted"] },
+    "verdict": { "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "images_seen": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "screenshots_taken": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "path", "message", "expected", "actual", "confidence"],
+        "properties": {
+          "severity": { "enum": ["P1", "P2", "P3"] },
+          "path": { "type": "string" },
+          "viewport": { "type": "string" },
+          "message": { "type": "string" },
+          "scenario": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "confidence": { "enum": ["confirmed", "plausible"] }
+        }
+      }
+    }
+  }
+}

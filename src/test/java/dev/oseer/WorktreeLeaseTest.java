@@ -96,6 +96,10 @@ public final class WorktreeLeaseTest implements Suite {
                 check.eq("another thread cannot inherit ownership even with the same run id",
                         "worktree_busy", code);
             }
+            check.rejects("recovery cannot enter while the current process owns the lease",
+                    "The worktree controller is still running", () -> WorktreeLease.recover(root, false));
+            check.contains("local refusals preserve the OS lock against another JVM",
+                    finish(start(root, "try", root.toString())), "worktree_busy");
         }
         check.that("normal scope close clears thread ownership", !WorktreeLease.isHeld());
         check.eq("a later scope in the same JVM can acquire", "acquired", admission(root, "later"));

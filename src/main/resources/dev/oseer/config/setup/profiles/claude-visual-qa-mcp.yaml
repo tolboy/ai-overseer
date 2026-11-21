@@ -1,0 +1,62 @@
+version: 1
+profile: claude-visual-qa-mcp
+role: visual_qa
+vendor: claude
+model: opus
+effort: high
+command: claude
+runner: direct
+read_only: true
+
+# The servers this role may reach, in the Claude CLI's own --mcp-config format.
+# Overseer checks the file exists at dispatch and records its digest as a term of the
+# reading; it does not read the format. Write it at ~/.oseer/mcp/visual.json: for
+# example a browser automation server for a web page, a Unity bridge for a game, or
+# a desktop driver for a Tauri window. Grant only its tools below.
+mcp:
+  config: mcp/visual.json
+
+prompt_delivery: stdin
+args:
+  - "-p"
+  - "--output-format"
+  - "json"
+  - "--max-turns"
+  - "60"
+  - "--model"
+  - "{{model}}"
+  - "--effort"
+  - "{{effort}}"
+  - "--mcp-config"
+  - "{{mcp_config}}"
+  # Read is how it looks at the PNGs it saved; the mcp__ entry names the server
+  # declared in the file above. Replace `browser` with your server's name.
+  - "--allowedTools"
+  - "Read,Glob,mcp__browser,mcp__unity"
+
+capabilities:
+  vision:
+    delivery: workspace_file
+    verification: required
+    # It takes the screenshots itself and lists them in screenshots_taken.
+    acquires: true
+
+limits:
+  wall_clock_minutes: 30
+
+prompt_template: prompts/visual-qa.md
+json_schema: schemas/visual-qa.json
+artifact:
+  required_fields: [role, task_id, status, verdict, summary, findings]
+
+verification:
+  # The probe has to prove two things against YOUR server: that the role can drive
+  # the application through it, and that a file it saves is a real picture of the
+  # screen. Point it at a page or scene you can see yourself.
+  probe: 'claude -p "Using only the MCP server named in your configuration, open the application, take one screenshot, save it as probe.png in the current directory with your tools, then open probe.png with your Read tool and reply with the two most prominent words visible in it." --mcp-config mcp/visual.json --allowedTools Read,mcp__browser,mcp__unity --output-format json --model opus'
+  what_to_check:
+    - "probe.png exists afterwards and is a picture of the application, not a blank"
+    - "the two words are on that screen; a model that answered without opening the file has no evidence"
+    - "the MCP server named in mcp/visual.json actually started; a refused or missing tool is a failed probe"
+    - "whether a cost figure is reported, and under which key"
+  note: "Unverified template. Set verified_on only after the probe passed against the server you configured; the pixels it takes are only as trustworthy as that server."

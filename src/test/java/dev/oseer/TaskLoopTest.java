@@ -1,5 +1,9 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApprovalCommand;
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.Continuation;
+import dev.oseer.cli.RunPreflight;
 import dev.oseer.gate.GateRunner;
 import dev.oseer.config.ConfigLoader;
 import dev.oseer.config.RunOverride;
@@ -1048,7 +1052,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("and the profile that produced nothing", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("pin1", store.read("pin1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "pin1");
+        Continuation.Carried carried = Continuation.continuation(project, "pin1");
         check.eq("continue carries the stage the person approved",
                 "loop-review-b", carried.failover().get("review"));
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
@@ -1116,7 +1120,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("the successor is the other reviewer", "loop-review-2", pending.get("to_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("ex1", store.read("ex1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "ex1");
+        Continuation.Carried carried = Continuation.continuation(project, "ex1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "ex2",
                         false, carried.failover(), carried.continuation());
@@ -1471,7 +1475,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("after A dropped the connection", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cq1", store.read("cq1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "cq1");
+        Continuation.Carried carried = Continuation.continuation(project, "cq1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cq2",
                         false, carried.failover(), carried.continuation());
@@ -1561,7 +1565,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("after A produced nothing", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("bc1", store.read("bc1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "bc1");
+        Continuation.Carried carried = Continuation.continuation(project, "bc1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "bc2",
                         false, carried.failover(), carried.continuation());
@@ -1621,7 +1625,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("and remembers A", List.of("loop-review-a"), toB.get("exhausted_profiles"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cy1", store.read("cy1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried toSecond = Main.continuation(project, "cy1");
+        Continuation.Carried toSecond = Continuation.continuation(project, "cy1");
         TaskLoop.Outcome second = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cy2",
                         false, toSecond.failover(), toSecond.continuation());
@@ -1634,7 +1638,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("loop-review-a", "loop-review-b"), toC.get("exhausted_profiles"));
         check.eq("the confirmed A→B switch is already spent", 1L, toC.get("vendor_failovers"));
         store.resolve("cy2", store.read("cy2").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried toThird = Main.continuation(project, "cy2");
+        Continuation.Carried toThird = Continuation.continuation(project, "cy2");
         TaskLoop.Outcome third = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cy3",
                         false, toThird.failover(), toThird.continuation());
@@ -1714,7 +1718,7 @@ public final class TaskLoopTest implements Suite {
                 switches.stream().noneMatch(event -> "loop-review-a".equals(event.get("to"))));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("qv1", store.read("qv1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "qv1");
+        Continuation.Carried carried = Continuation.continuation(project, "qv1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "qv2",
                         false, carried.failover(), carried.continuation());
@@ -1799,7 +1803,7 @@ public final class TaskLoopTest implements Suite {
                 1L, pending.get("vendor_failovers"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("rf1", store.read("rf1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "rf1");
+        Continuation.Carried carried = Continuation.continuation(project, "rf1");
         int[] visualCalls = {0};
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner(),
                 (loaded, runId) -> stubVisual(++visualCalls[0] > 1))
@@ -1914,7 +1918,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("loop-review-a"), pending.get("vendor_failed_profiles"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("mix1", store.read("mix1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "mix1");
+        Continuation.Carried carried = Continuation.continuation(project, "mix1");
         check.eq("continue carries the profile the person approved",
                 "loop-review-c", carried.failover().get("review"));
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
@@ -1960,7 +1964,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("confirm stops for a person", "failover_requires_confirmation", asked.reason());
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cr1", store.read("cr1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "cr1");
+        Continuation.Carried carried = Continuation.continuation(project, "cr1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cr2",
                         false, carried.failover(), carried.continuation());
@@ -3302,7 +3306,7 @@ public final class TaskLoopTest implements Suite {
         dev.oseer.approval.ApprovalStore switchStore = new dev.oseer.approval.ApprovalStore(switched);
         switchStore.resolve("is1", switchStore.read("is1").updatedAt().toString(), "switch",
                 "operator", "");
-        Main.Carried carried = Main.continuation(switched, "is1");
+        Continuation.Carried carried = Continuation.continuation(switched, "is1");
         check.eq("the switch authorises the named successor",
                 Map.of("review-second", "loop-review"), carried.failover());
         check.that("and asks the loop to keep what was already judged",
@@ -3370,7 +3374,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("abort", "switch", "retry"), waitStore.read("fr1").options());
         waitStore.resolve("fr1", waitStore.read("fr1").updatedAt().toString(), "retry", "operator",
                 "the window rolled over");
-        Main.Carried carriedRetry = Main.continuation(waited, "fr1");
+        Continuation.Carried carriedRetry = Continuation.continuation(waited, "fr1");
         check.that("retry authorises no substitution", carriedRetry.failover().isEmpty());
         check.that("and keeps the verdicts", carriedRetry.continuation().reuseJudgements());
         TaskLoop.Outcome afterWait = new TaskLoop(new ProcessRunner())
@@ -3638,15 +3642,15 @@ public final class TaskLoopTest implements Suite {
                 .equals(pending.createdAt().plus(java.time.Duration.ofHours(1))));
         check.that("and the summary says when", ttl.summaryReport().get("gate_expires_at") != null);
         long later = pending.expiresAt().toEpochMilli() + 60_000L;
-        Main.ApproveEnv expired = new Main.ApproveEnv(() -> later, millis -> { },
+        ApproveEnv expired = new ApproveEnv(() -> later, millis -> { },
                 (root, gate) -> null, home);
-        Main.ApproveOutcome refused = Main.approveDecision(timed,
+        ApprovalCommand.ApproveOutcome refused = ApprovalCommand.approveDecision(timed,
                 new String[] {"approve", "gt1", "--decision", "accept"}, expired);
         check.that("an acceptance after the gate expired is refused", !refused.ok());
         check.eq("under its own code", "gate_expired", refused.report().get("code"));
         check.eq("and the decision is still pending", "pending",
                 new dev.oseer.approval.ApprovalStore(timed).read("gt1").state().jsonValue());
-        Main.ApproveOutcome acknowledged = Main.approveDecision(timed,
+        ApprovalCommand.ApproveOutcome acknowledged = ApprovalCommand.approveDecision(timed,
                 new String[] {"approve", "gt1", "--decision", "accept", "--acknowledge-expired"},
                 expired);
         check.that("an acknowledged acceptance after expiry is recorded", acknowledged.ok());
@@ -3657,9 +3661,9 @@ public final class TaskLoopTest implements Suite {
         loop(timedReject, home, "gt2");
         long past = new dev.oseer.approval.ApprovalStore(timedReject).read("gt2").expiresAt()
                 .toEpochMilli() + 60_000L;
-        Main.ApproveOutcome rejected = Main.approveDecision(timedReject,
+        ApprovalCommand.ApproveOutcome rejected = ApprovalCommand.approveDecision(timedReject,
                 new String[] {"approve", "gt2", "--decision", "reject", "--note", "stale"},
-                new Main.ApproveEnv(() -> past, millis -> { }, (root, gate) -> null, home));
+                new ApproveEnv(() -> past, millis -> { }, (root, gate) -> null, home));
         check.that("a rejection after expiry needs no acknowledgement", rejected.ok());
 
         Path untimed = newProject(sandbox, "gate-no-ttl");
@@ -3779,6 +3783,22 @@ public final class TaskLoopTest implements Suite {
         check.eq("the chain carries the charge to a continuation", 0.03,
                 ((Map<?, ?>) unpricedStopped.summaryReport().get("chain"))
                         .get("cost_cap_unpriced_charge_usd"));
+
+        retry(unpricedRetry, "sc7");
+        RunPreflight.recordPreflightFailure(unpricedRetry, UserConfig.load(home),
+                "hello", "sc8", "sc7", new IllegalArgumentException("unknown key 'budget'"));
+        Map<String, Object> preflight = readJson(unpricedRetry.resolve(".oseer/runs/sc8/task-run.json"));
+        check.eq("a failed preflight carries the strict-cap charge from the prior run", 0.03,
+                ((Map<?, ?>) preflight.get("chain")).get("cost_cap_unpriced_charge_usd"));
+
+        // At $0.07 the spent $0.012 and reserved $0.05 fit only if the $0.03 charge is lost.
+        editTask(unpricedRetry, "max_cost_usd: 0.06", "max_cost_usd: 0.07");
+        retry(unpricedRetry, "sc8");
+        TaskLoop.Outcome afterPreflight = continued(unpricedRetry, home, "sc9", "sc8");
+        check.eq("the inherited strict-cap charge blocks the next run", "budget_exhausted",
+                afterPreflight.reason());
+        check.eq("no call dispatches after the failed preflight", 0L,
+                afterPreflight.summaryReport().get("role_runs"));
 
         writeProfiles(home, sandbox, "strict-restore", 1, 1);
     }
@@ -4043,7 +4063,7 @@ public final class TaskLoopTest implements Suite {
         TaskLoop.Outcome onlyCall = loop(broken, home, "cpa");
         check.eq("the first run spends its only call", 1L, onlyCall.summaryReport().get("role_runs"));
         retry(broken, "cpa");
-        Map<String, Object> refused = Main.recordPreflightFailure(broken, UserConfig.load(home),
+        Map<String, Object> refused = RunPreflight.recordPreflightFailure(broken, UserConfig.load(home),
                 "hello", "cpb", "cpa", new IllegalArgumentException("unknown key 'budget'"));
         check.eq("a continuation that fails validation is recorded", "run_preflight_failed",
                 refused.get("reason"));

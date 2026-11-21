@@ -19,6 +19,7 @@ import java.util.Map;
  * receipts with {@link OrcaSettlement}.
  */
 public final class OrcaClient {
+    private static final Duration TAB_OPEN_TIMEOUT = Duration.ofSeconds(20);
 
     public record Rpc(boolean ok, int exitCode, boolean timedOut, long durationMillis,
                       Map<String, Object> envelope, Map<String, Object> result,
@@ -32,6 +33,11 @@ public final class OrcaClient {
 
     public OrcaClient(ProcessRunner processes) { this.processes = processes; this.transport = null; }
     public OrcaClient(Transport transport) { this.processes = null; this.transport = transport; }
+
+    public Rpc openTab(Path worktree, String url) throws Exception {
+        return invoke(worktree, TAB_OPEN_TIMEOUT,
+                List.of("tab", "create", "--worktree", "path:" + worktree, "--url", url));
+    }
 
     public Map<String, Object> status(Path workingDirectory) {
         try {

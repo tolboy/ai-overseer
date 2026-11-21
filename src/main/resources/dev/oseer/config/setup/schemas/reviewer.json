@@ -1,0 +1,55 @@
+{
+  "title": "Reviewer artifact",
+  "type": "object",
+  "required": ["role", "task_id", "status", "verdict", "summary", "findings"],
+  "properties": {
+    "role": { "const": "reviewer" },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "enum": ["completed", "aborted"] },
+    "verdict": { "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "path", "message", "expected", "actual", "confidence"],
+        "properties": {
+          "severity": { "enum": ["P1", "P2", "P3"] },
+          "path": { "type": "string" },
+          "line": { "type": "integer" },
+          "end_line": { "type": "integer" },
+          "quote": { "type": "string" },
+          "message": { "type": "string" },
+          "scenario": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "confidence": { "enum": ["confirmed", "plausible"] },
+          "category": {
+            "enum": ["product_defect", "investigation_evidence_gap", "access_required",
+                     "contract_gap", "tooling_failure", "quota_exhausted",
+                     "provider_unavailable", "review_disagreement"]
+          },
+          "id": { "type": "string" },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } },
+          "supersedes": { "type": "array", "items": { "type": "string" } },
+          "scope_relation": { "type": "string" }
+        }
+      }
+    },
+    "acceptance_review": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "assessment", "verdict"],
+        "properties": {
+          "command": { "type": "string" },
+          "evidence": { "type": "string" },
+          "assessment": { "type": "string" },
+          "verdict": { "enum": ["pass", "fail", "inconclusive"] }
+        }
+      }
+    }
+  }
+}

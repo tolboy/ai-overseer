@@ -1,0 +1,72 @@
+version: 1
+profile: agy-plan-review
+role: plan_reviewer
+vendor: google
+# agy encodes the thinking level in the model id (-high, -low). Overseer refuses a
+# declared effort that does not reach the vendor through {{effort}}, so none is set.
+model: gemini-3.8-flash-high
+command: agy
+runner: direct
+read_only: true
+
+# `-p` takes its value from the very next token, so the prompt cannot come through
+# stdin and a multi-line argument does not survive Windows argv. The prompt stays in
+# the file Overseer writes and this one line names it. No double quote in the line.
+prompt_delivery: argv
+args:
+  - "-p=Read the whole file {{prompt_file}} and do exactly what it asks. Open files only with your view_file tool. Never run a shell command and never create or edit a file. Your final answer is the single JSON object that file asks for, with nothing before or after it."
+  - "--output-format"
+  - "json"
+  - "--model"
+  - "{{model}}"
+  - "--mode"
+  - "plan"
+  - "--sandbox"
+  # Inside an Overseer run the prompt lives under the worktree's .oseer/runs, and
+  # headless agy auto-denies read_file there until the worktree is added.
+  - "--add-dir"
+  - "{{repo_root}}"
+  - "--print-timeout"
+  - "20m"
+  # Headless agy cannot prompt for the read_file permission and auto-denies it: the
+  # envelope then says SUCCESS with an empty response and denied_actions. This flag
+  # is what Orca launches the same CLI with. Measured 2026-09-18: with it, --mode
+  # plan and --sandbox do NOT stop the CLI from writing inside --add-dir, so the
+  # read-only guarantee for this role is Overseer's fingerprint around the call
+  # (role_violated_read_only discards the artifact), not the CLI. Tighter: an
+  # allow-rule for read_file under permissions.allow in agy's settings.json, and
+  # then drop this flag.
+  - "--dangerously-skip-permissions"
+
+limits:
+  wall_clock_minutes: 20
+
+prompt_template: prompts/plan-reviewer.md
+json_schema: schemas/plan-reviewer.json
+artifact:
+  required_fields: [role, task_id, status, verdict, summary, findings]
+
+quota:
+  # A 503 "No capacity available for model ..." is the vendor being unavailable, not
+  # a verdict on the contract. Only consulted when the call failed.
+  signatures: ["no capacity available", "experiencing high traffic"]
+
+verification:
+  # Can it read a file in the working directory with view_file and answer from its
+  # contents, in the JSON envelope Overseer parses. The probe passes its prompt
+  # inline; the profile passes a file pointer, which is the channel that has been
+  # measured live for the visual role on the same CLI.
+  #
+  # Without --add-dir the CLI answered about a policy.yaml that was not the one in
+  # the working directory and reported a write that never happened (2026-09-18):
+  # the directory has to be added, and the answer has to be checked. `expect` is
+  # that check — the stamp needs the shipped schema's title in the output, not
+  # only exit code 0.
+  probe: 'agy -p "Use only your view_file tool to read the file schemas/plan-reviewer.json in the current working directory and reply with nothing but the exact value of its top-level title field." --output-format json --mode plan --sandbox --add-dir . --print-timeout 3m --model gemini-3.8-flash-high --dangerously-skip-permissions'
+  expect: "Plan reviewer artifact"
+  what_to_check:
+    - "the answer is the value that is in the file, so view_file reached a real file"
+    - "response is non-empty; an empty response with denied_actions means a tool was refused"
+    - "status can read ERROR beside a correct response after a 503 retry; judge the response"
+    - "the envelope reports usage but no cost and no model: calls are unpriced and the model is a claim"
+  note: "The stamp needs the probe to answer from the file (expect). The visual role of this CLI was measured 2026-09-15; the planning reading is not yet a live claim."

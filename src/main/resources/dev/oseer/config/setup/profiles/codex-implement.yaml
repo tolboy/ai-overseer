@@ -1,0 +1,46 @@
+version: 1
+profile: codex-implement
+role: implementer
+vendor: codex
+command: codex
+runner: direct
+# This role writes to the workspace. The task must also grant
+# authority.workspace_write, or oseer refuses the run.
+read_only: false
+
+# `exec -` reads the prompt from standard input. That is not a style choice: codex
+# is installed by npm as a .cmd shim, Windows runs a .cmd through cmd.exe, and
+# cmd.exe cuts a multi-line argument at its first newline and drops every argument
+# after it. An inline "{{prompt}}" reached codex as one line with --json stripped
+# off, and the run looked normal. Overseer now refuses that combination outright.
+#
+# `--approve-for-me` is the non-interactive write flag. It cannot be combined with
+# `--sandbox` (Codex exits 2 saying so); it already routes approvals through the
+# workspace-write sandbox. Established by a 177ms refusal, then a 105s writing run.
+args: ["exec", "-", "--json", "--skip-git-repo-check", "--approve-for-me"]
+prompt_delivery: stdin
+
+limits:
+  wall_clock_minutes: 40
+
+prompt_template: prompts/implementer.md
+json_schema: schemas/implementer.json
+artifact:
+  required_fields: [role, task_id, status, summary, files_changed]
+
+# Established by running it against a spent subscription: exit 1, JSONL on stdout,
+# the refusal in a {"type":"error"} event. The default signatures already match it;
+# this is here as the place to add a wording Overseer does not know yet.
+quota:
+  signatures: []
+
+verification:
+  # The riskiest profile to guess at: it runs with write access. Probe it
+  # standalone before letting a loop drive it:
+  #   oseer profiles --verify codex-implement
+  probe: 'codex exec "Reply with exactly: ok" --json --skip-git-repo-check'
+  what_to_check:
+    - "exits 0 without prompting for approval"
+    - "edits files without an extra approval flag, or find the non-interactive flag"
+    - "which envelope key carries the final message"
+    - "whether a turn limit and a cost figure are available"

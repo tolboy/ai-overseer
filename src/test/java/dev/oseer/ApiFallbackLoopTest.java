@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.cli.Continuation;
 import com.sun.net.httpserver.HttpServer;
 import dev.oseer.approval.ApprovalStore;
 import dev.oseer.config.ConfigLoader;
@@ -252,8 +253,8 @@ public final class ApiFallbackLoopTest implements Suite {
                                 return new RoleExecutor.Result(true, "role_completed", Duration.ofMillis(1),
                                         Json.write(artifact), artifact, Map.of("cost_usd", 0.125));
                             });
-            Main.Carried carried = from == null
-                    ? new Main.Carried(Map.of(), TaskLoop.Continuation.NONE) : Main.continuation(project, from);
+            Continuation.Carried carried = from == null
+                    ? new Continuation.Carried(Map.of(), TaskLoop.Continuation.NONE) : Continuation.continuation(project, from);
             return loop.run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), id, false,
                     carried.failover(), carried.continuation());
         }

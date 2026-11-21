@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.cli.ContinuationClaim;
 import dev.oseer.config.Profile;
 import dev.oseer.config.RunOverride;
 import dev.oseer.config.TaskSpec;
@@ -321,8 +322,8 @@ public final class RunOverrideTest implements Suite {
     }
 
     private void bumpRunIds(Check check) {
-        check.eq("trailing number", "bakery-4", Main.bumpRunId("bakery-3"));
-        check.eq("no number", "run-abc-2", Main.bumpRunId("run-abc"));
+        check.eq("trailing number", "bakery-4", ContinuationClaim.bumpRunId("bakery-3"));
+        check.eq("no number", "run-abc-2", ContinuationClaim.bumpRunId("run-abc"));
     }
 
     private static Object nested(Map<String, Object> map, String a, String b) {

@@ -1,0 +1,42 @@
+version: 1
+profile: codex-visual-qa
+role: visual_qa
+vendor: codex
+command: codex
+runner: direct
+read_only: true
+
+# This is the only role that needs eyes, and `-i` is what gives it any. The
+# machine harness has already asserted what a machine can assert; this profile
+# exists for what it cannot — a control that is present, correct and unreadable,
+# a layout that collapses, text over text. Without `attachments.flag` the model
+# would receive filenames and review them as prose.
+args: ["exec", "-", "--json", "--skip-git-repo-check"]
+prompt_delivery: stdin
+attachments:
+  flag: "-i"
+capabilities:
+  vision:
+    delivery: cli_attachment
+    # `oseer profiles --verify` stamps the profile only after a human confirms
+    # that the probe described the supplied pixels rather than merely their path.
+    verification: required
+
+limits:
+  wall_clock_minutes: 15
+
+prompt_template: prompts/visual-qa.md
+json_schema: schemas/visual-qa.json
+artifact:
+  required_fields: [role, task_id, status, verdict, summary, findings]
+
+verification:
+  # Until verified_on is set the resolver refuses it and the loop falls back to
+  # the machine harness alone:
+  #   oseer profiles --verify codex-visual-qa
+  probe: 'codex exec "Describe this image in one sentence." -i some-screenshot.png --json --skip-git-repo-check'
+  what_to_check:
+    - "the image is actually read: the answer describes THIS screenshot, not a generic one"
+    - "-i accepts more than one file, repeated once per image"
+    - "exits 0 and puts the final message in the JSONL event stream"
+    - "whether a cost figure is reported, and under which key"

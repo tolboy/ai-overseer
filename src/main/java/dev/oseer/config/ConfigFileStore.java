@@ -1,10 +1,10 @@
 package dev.oseer.config;
 
+import dev.oseer.io.SidecarLock;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.AccessDeniedException;
@@ -19,8 +19,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
 
 /** Single-file optimistic edits. All cooperating writers use the persistent sidecar lock.
@@ -28,7 +26,6 @@ import java.util.function.Consumer;
  * An editor that ignores the lock can still race the final digest check and rename.
  * This is not a multi-file transaction or a power-loss durability guarantee. */
 public final class ConfigFileStore {
-    private static final ConcurrentHashMap<Path, Semaphore> LOCAL_LOCKS = new ConcurrentHashMap<>();
     public record Snapshot(Path file, String text, String sha256) {
         public Snapshot {
             if (!digest(text.getBytes(StandardCharsets.UTF_8)).equals(sha256))
@@ -84,43 +81,34 @@ public final class ConfigFileStore {
         validate.accept(candidate); // Never expose an unparseable candidate, even briefly.
         Path file = source.file().toRealPath();
         Path lockFile = file.resolveSibling(file.getFileName() + ".oseer-write.lock");
-        // On POSIX, closing a second descriptor can release the JVM's first OS lock.
-        // Refuse local contenders before opening another channel to the sidecar.
-        Semaphore local = LOCAL_LOCKS.computeIfAbsent(file, ignored -> new Semaphore(1));
-        if (!local.tryAcquire()) throw new Refused("config_busy", "another configuration edit is in progress; retry after reloading", null);
-        try {
-            // Never unlink this file: waiters must keep locking the same inode after a crash.
-            try (FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-                FileLock lock;
-                try { lock = channel.tryLock(); }
-                catch (OverlappingFileLockException busy) { lock = null; }
-                if (lock == null) throw new Refused("config_busy", "another configuration edit is in progress; retry after reloading", null);
-                try (FileLock held = lock) {
-                    guard.check();
-                    Snapshot current = read(file);
-                    expect(current, source.sha256());
-                    var dos = Files.getFileAttributeView(file, java.nio.file.attribute.DosFileAttributeView.class);
-                    if (dos != null && dos.readAttributes().isReadOnly())
-                        throw new AccessDeniedException(file.toString(), null, "configuration is read-only");
-                    Path staged = Files.createTempFile(file.getParent(), ".oseer-config-", ".tmp");
-                    try {
-                        copyPermissions(file, staged);
-                        writeAndForce(staged, candidate.getBytes(StandardCharsets.UTF_8));
-                        // Backups contain the exact accepted source, never a second racy copy.
-                        Path backup = backup(file, source.text().getBytes(StandardCharsets.UTF_8), backupLabel);
-                        guard.check();
-                        try { replace(source, staged, file); }
-                        catch (AtomicMoveNotSupportedException unsupported) {
-                            throw new Refused("atomic_replace_unsupported", "filesystem does not support atomic configuration replacement", source.sha256());
-                        }
-                        return new Saved(backup, source.sha256(), digest(candidate.getBytes(StandardCharsets.UTF_8)));
-                    } finally {
-                        Files.deleteIfExists(staged);
-                        // A completed backup remains useful even when replacement is refused.
-                    }
-                }
+        // Keep the lock file so all writers contend for the same inode.
+        try (SidecarLock lock = SidecarLock.tryAcquire(lockFile)) {
+            if (lock == null) {
+                throw new Refused("config_busy", "another configuration edit is in progress; retry after reloading", null);
             }
-        } finally { local.release(); }
+            guard.check();
+            Snapshot current = read(file);
+            expect(current, source.sha256());
+            var dos = Files.getFileAttributeView(file, java.nio.file.attribute.DosFileAttributeView.class);
+            if (dos != null && dos.readAttributes().isReadOnly())
+                throw new AccessDeniedException(file.toString(), null, "configuration is read-only");
+            Path staged = Files.createTempFile(file.getParent(), ".oseer-config-", ".tmp");
+            try {
+                copyPermissions(file, staged);
+                writeAndForce(staged, candidate.getBytes(StandardCharsets.UTF_8));
+                // Backups contain the exact accepted source, never a second racy copy.
+                Path backup = backup(file, source.text().getBytes(StandardCharsets.UTF_8), backupLabel);
+                guard.check();
+                try { replace(source, staged, file); }
+                catch (AtomicMoveNotSupportedException unsupported) {
+                    throw new Refused("atomic_replace_unsupported", "filesystem does not support atomic configuration replacement", source.sha256());
+                }
+                return new Saved(backup, source.sha256(), digest(candidate.getBytes(StandardCharsets.UTF_8)));
+            } finally {
+                Files.deleteIfExists(staged);
+                // A completed backup remains useful even when replacement is refused.
+            }
+        }
     }
 
     private void replace(Snapshot source, Path staged, Path file) throws IOException {

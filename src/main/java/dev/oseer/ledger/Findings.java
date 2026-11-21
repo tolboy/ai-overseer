@@ -415,6 +415,68 @@ public final class Findings {
         return open;
     }
 
+    /** The open findings of each stage's last reading, in stage order. */
+    public static List<Map<String, Object>> openByStage(Map<String, Object> summary) {
+        Map<String, List<Map<String, Object>>> latest = new LinkedHashMap<>();
+        if (summary.get("finding_history") instanceof List<?> history) {
+            for (Object item : history) {
+                if (!(item instanceof Map<?, ?> entry) || !(entry.get("findings") instanceof List<?> found)) continue;
+                // A round copied from an earlier run is not open on this candidate when it
+                // judged another tree, or when this run has already written and not re-read.
+                // Advance keeps the history so a repair can see it; the plan-3 stop listed
+                // plan-2's repaired P1s as left open because review never ran. Measured
+                // 2026-09-26. A round this run recorded has no source_run and stays.
+                if (staleImportedRound(summary, entry)) {
+                    latest.put(String.valueOf(entry.get("stage")), List.of());
+                    continue;
+                }
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (Object raw : found) {
+                    if (!(raw instanceof Map<?, ?> map)) continue;
+                    String status = String.valueOf(map.get("status"));
+                    if ("closed".equals(status) || "resolved".equals(status) || "superseded".equals(status)) continue;
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    map.forEach((key, value) -> row.put(String.valueOf(key), value));
+                    row.put("_stage", String.valueOf(entry.get("stage")));
+                    rows.add(row);
+                }
+                latest.put(String.valueOf(entry.get("stage")), rows);
+            }
+        }
+        List<Map<String, Object>> open = new ArrayList<>();
+        latest.values().forEach(open::addAll);
+        return open;
+    }
+
+    /**
+     * A finding round brought forward from another run, and not a description of the
+     * candidate this run is deciding.
+     *
+     * The summary's {@code candidate_fingerprint} is the tree at the start. A round this
+     * run recorded is about whatever the writer had produced by then, so it is not compared
+     * to that start. An imported round is: it matches only while the tree is still the one
+     * it judged and this run has not written since.
+     */
+    private static boolean staleImportedRound(Map<String, Object> summary, Map<?, ?> entry) {
+        Object source = entry.get("source_run");
+        if (!(source instanceof String from) || from.isBlank()) return false;
+        if (summary.get("run_id") instanceof String self && self.equals(from)) return false;
+        Object judged = entry.get("candidate_fingerprint");
+        Object current = summary.get("candidate_fingerprint");
+        if (current instanceof String fingerprint && judged instanceof String text
+                && !fingerprint.equals(text)) {
+            return true;
+        }
+        if (!(summary.get("steps") instanceof List<?> steps)) return false;
+        for (Object item : steps) {
+            if (item instanceof Map<?, ?> step && "implementer".equals(step.get("step"))
+                    && !Boolean.TRUE.equals(step.get("reused"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The ids of the findings that block acceptance, in report order. */
     public static List<String> blockingIds(List<Finding> findings) {
         List<String> ids = new ArrayList<>();
