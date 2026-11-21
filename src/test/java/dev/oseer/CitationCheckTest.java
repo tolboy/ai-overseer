@@ -146,6 +146,20 @@ public final class CitationCheckTest implements Suite {
                 visualFinding(tree, List.of(actual, other), "mobile.png").unverified());
         check.that("an authorized screenshot that goes missing cannot back the finding",
                 visualFinding(tree, List.of(current.resolve("missing.png")), "missing.png").unverified());
+        Findings.Finding firstView = derivedVisualFinding(tree, actual);
+        Findings.Finding nextView = derivedVisualFinding(tree, other);
+        check.eq("a new attempt directory does not rename the same visual finding", firstView.id(), nextView.id());
+        check.eq("the visual finding still names its actual screenshot", other.toString(), nextView.path());
+        check.eq("an explicit reviewer ID is preserved", "visual",
+                visualFinding(tree, List.of(other), other.toString()).id());
+    }
+
+    private static Findings.Finding derivedVisualFinding(Path tree, Path screenshot) {
+        Map<String, Object> row = finding("unused", "P1", "product_defect", screenshot.toString(),
+                Map.of("viewport", "390x844"));
+        row.remove("id");
+        return CitationCheck.verifyVisual(Findings.of(Map.of("findings", List.of(row))), tree,
+                List.of(screenshot)).getFirst();
     }
 
     private static Findings.Finding visualFinding(Path tree, List<Path> screenshots, String path) {

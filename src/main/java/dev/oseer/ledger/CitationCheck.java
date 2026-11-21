@@ -60,7 +60,25 @@ public final class CitationCheck {
     /** Visual findings cite one of the screenshots the controller authorized for this role. */
     public static List<Findings.Finding> verifyVisual(List<Findings.Finding> findings, Path tree,
                                                        List<Path> screenshots) {
-        return verify(findings, finding -> screenshotProblem(finding, tree, screenshots));
+        return verify(findings, finding -> screenshotProblem(finding, tree, screenshots)).stream()
+                .map(CitationCheck::visualIdentity).toList();
+    }
+
+    private static Findings.Finding visualIdentity(Findings.Finding finding) {
+        if (!"derived".equals(finding.idSource()) || !"product_defect".equals(finding.category())
+                || finding.path() == null || finding.path().isBlank()) return finding;
+        try {
+            Path name = Path.of(finding.path()).getFileName();
+            if (name == null || name.toString().isBlank()) return finding;
+            // The evidence directory changes with each run and attempt. The screenshot
+            // name and viewport can still identify the same view on the same candidate.
+            String viewport = finding.raw().get("viewport") instanceof String value ? value.strip() : "";
+            String id = Findings.derive("visual:" + name + ":" + viewport, finding.message());
+            return new Findings.Finding(id, finding.idSource(), finding.category(), finding.categorySource(),
+                    finding.severity(), finding.path(), finding.message(), finding.raw());
+        } catch (InvalidPathException malformed) {
+            return finding;
+        }
     }
 
     private static List<Findings.Finding> verify(List<Findings.Finding> findings,

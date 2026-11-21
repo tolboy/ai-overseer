@@ -361,7 +361,7 @@ public final class Findings {
      * punctuation dropped — so that reformatting alone does not mint a new finding. Nothing
      * here understands meaning; see the class comment for what that costs.
      */
-    private static String derive(String path, String message) {
+    static String derive(String path, String message) {
         String normalised = message.toLowerCase(java.util.Locale.ROOT)
                 .replaceAll("\\s+", " ")
                 .replaceAll("[\\s.,;:!?]+$", "")
