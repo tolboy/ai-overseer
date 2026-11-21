@@ -97,6 +97,18 @@ public final class OrcaClient {
                 envelope, result, process.stdout(), process.stderr());
     }
 
+    static String nestedString(Map<String, Object> result, String container, String key) {
+        Object nested = result == null ? null : result.get(container);
+        if (nested instanceof Map<?, ?> map && map.get(key) != null) return String.valueOf(map.get(key));
+        Object direct = result == null ? null : result.get(key);
+        return direct == null ? null : String.valueOf(direct);
+    }
+
+    static String tail(String text, int limit) {
+        if (text == null) return "";
+        return text.length() <= limit ? text : text.substring(text.length() - limit);
+    }
+
     @SuppressWarnings("unchecked")
     public static Map<String, Object> summarize(Map<String, Object> envelope) {
         Map<String, Object> summary = new LinkedHashMap<>();

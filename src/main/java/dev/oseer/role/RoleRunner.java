@@ -809,6 +809,11 @@ public final class RoleRunner {
                 && confirmedSwitch.get("api_fallback_profiles") instanceof List<?> names
                 && !names.isEmpty();
 
+        RoleFailoverPolicy failoverPolicy = new RoleFailoverPolicy(user,
+                new RoleFailoverPolicy.Stage(role, stageName, writers, overlay),
+                new RoleFailoverPolicy.Exclusions(exhausted, vendorFailedThisDispatch, unavailable),
+                this::available);
+
         for (int attempt = 1; ; attempt++) {
             RoleResolver.Resolution resolution;
             String pinned = pinFor(stageName, role);
@@ -1083,7 +1088,7 @@ public final class RoleRunner {
                     + "  dispatching, up to " + profile.wallClockMinutes() + " min");
 
             if (recordConfirmedSwitch(ledger, role, roleInvocationId, stageKey, profile, roleFailovers)
-                    && countsAsVendorFailover(confirmedVendorSwitches.get(stageKey).get("cause"))) {
+                    && RoleFailoverPolicy.countsAsVendorFailover(confirmedVendorSwitches.get(stageKey).get("cause"))) {
                 // The substitution a person approved is one use of the stage's bound.
                 // It is counted when that profile is dispatched, before its result, so a
                 // failure of the successor cannot spend another switch the policy did not allow.
@@ -1166,7 +1171,8 @@ public final class RoleRunner {
                 }
             }
 
-            Map<String, Object> attemptRow = attemptRecord(attempt, profile, result, inheritsUnfinishedWork);
+            Map<String, Object> attemptRow = RoleAttemptEvidence.receipt(
+                    attempt, profile, result, inheritsUnfinishedWork);
             // Still an attempt in every record; only the budget gives the call back.
             boolean charged = !Boolean.FALSE.equals(result.evidence().get("vendor_turn_started"));
             if (!charged) {
@@ -1175,7 +1181,7 @@ public final class RoleRunner {
             }
             attempts.add(attemptRow);
             if (report.get("cost_usd") instanceof Number number) spent += number.doubleValue();
-            journalAttempt(ledger, role, roleInvocationId, report, attemptRow);
+            RoleAttemptEvidence.journal(ledger, role, roleInvocationId, report, attemptRow);
             if (charged) gate.settleAttempt(report.get("cost_usd"), profile.maxCostUsd());
             else gate.release();
 
@@ -1189,7 +1195,7 @@ public final class RoleRunner {
                 report.put("failure", "role_process_unsettled");
                 report.put("vendor_attempts", attempts);
                 report.put("attempts_cost_usd", spent);
-                rememberFailovers(report, roleFailovers);
+                RoleAttemptEvidence.includeFailovers(report, roleFailovers);
                 Path path = ledger.writeReport("role-" + reportStem, report);
                 ledger.append("role_run", report);
                 return new Outcome(false, "role_process_unsettled", role, profile.name(),
@@ -1234,10 +1240,8 @@ public final class RoleRunner {
                 quotaEvent.put("role_invocation_id", roleInvocationId);
                 quotaEvent.put("quota", result.evidence().getOrDefault("quota", Map.of()));
                 ledger.append("role_quota_exhausted", quotaEvent);
-                Successor quotaNext = apiFallbackActive
-                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch, profile)
-                        : failoverCandidate(role, user, writers, rotation, profile);
-                noteBlocked(ledger, report, quotaNext.blocked());
+                RoleFailoverPolicy.Successor quotaNext = failoverPolicy.next(profile, rotation, apiFallbackActive);
+                RoleAttemptEvidence.journalBlocked(ledger, report, quotaNext.blocked(), progress);
                 Profile candidate = quotaNext.profile();
                 if (candidate != null) {
                     String mode = user.policy().failoverMode();
@@ -1257,7 +1261,7 @@ public final class RoleRunner {
                                     + "in force");
                             report.put("vendor_attempts", attempts);
                             report.put("attempts_cost_usd", spent);
-                            rememberFailovers(report, roleFailovers);
+                            RoleAttemptEvidence.includeFailovers(report, roleFailovers);
                             Path path = ledger.writeReport("role-" + reportStem, report);
                             ledger.append("role_run", report);
                             return new Outcome(false, result.code(), role, profile.name(),
@@ -1268,7 +1272,7 @@ public final class RoleRunner {
                         // It joins the same list a vendor-failure switch and a confirmed
                         // switch join, so a continuation that already recorded A→B and then
                         // switches B→C on quota counts both.
-                        Map<String, Object> failover = failoverEvent(role, profile, candidate,
+                        Map<String, Object> failover = RoleAttemptEvidence.failover(role, profile, candidate,
                                 result, preAuthorized ? "human_switch_decision" : "policy_auto");
                         if (apiFallbackActive) failover.put("api_fallback_profiles", spec.apiFallbackProfiles());
                         failover.put("role_invocation_id", roleInvocationId);
@@ -1282,7 +1286,7 @@ public final class RoleRunner {
                         continue;
                     }
                     if ("confirm".equals(mode)) {
-                        Map<String, Object> pending = failoverEvent(role, profile, candidate,
+                        Map<String, Object> pending = RoleAttemptEvidence.failover(role, profile, candidate,
                                 result, "pending_human_confirmation");
                         if (apiFallbackActive) pending.put("api_fallback_profiles", spec.apiFallbackProfiles());
                         pending.put("independence_after_switch",
@@ -1306,7 +1310,7 @@ public final class RoleRunner {
                         report.put("failover_pending", pending);
                         report.put("vendor_attempts", attempts);
                         report.put("attempts_cost_usd", spent);
-                        rememberFailovers(report, roleFailovers);
+                        RoleAttemptEvidence.includeFailovers(report, roleFailovers);
                         report.put("resolution", "policy failover.on_quota_exhausted is 'confirm'. "
                                 + "Record the choice with `oseer approve <run-id> --decision switch`, "
                                 + "then re-run with `--continue <run-id>`; or set "
@@ -1328,16 +1332,11 @@ public final class RoleRunner {
                         ? "another profile could fill this role, but failover.on_quota_exhausted is 'stop'"
                         : !quotaNext.blocked().isEmpty()
                         ? "another profile could fill this role, but failover refused it ("
-                          + quotaNext.blocked().get(0).get("rule") + ")"
+                          + quotaNext.blocked().getFirst().rule() + ")"
                         : "every profile able to fill this role reported a spent subscription; "
                           + "add a profile from another vendor, or wait for the quota window "
                           + "named in the vendor message and re-run");
-            } else if (!result.ok() && ((apiSideFailure(result.code(), profile)
-                        && !Thread.currentThread().isInterrupted()
-                        && !"cancelled".equals(result.evidence().get("api_retry_stopped"))
-                        && !"cancel".equals(result.evidence().get("failure_phase")))
-                    || (vendorFailure(result.code()) && !"api".equals(profile.runner())
-                        && profile.harness() == null))) {
+            } else if (RoleFailoverPolicy.canFailOver(result, profile, Thread.currentThread().isInterrupted())) {
                 // A finding is a successful call. A gate failure and a human rejection never
                 // enter this method. This branch is only a call that left nothing a later
                 // stage can believe: the vendor did not answer, or the answer was not an artifact.
@@ -1351,16 +1350,14 @@ public final class RoleRunner {
                 int maxSwitches = user.policy().maxVendorFailovers();
                 String mode = user.policy().vendorFailureModeFor(role);
                 boolean bounded = vendorFailovers >= maxSwitches;
-                apiFallbackActive |= apiSideFailure(result.code(), profile);
-                Successor next = apiFallbackActive
-                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch, profile)
-                        : seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch, profile);
-                noteBlocked(ledger, report, next.blocked());
+                apiFallbackActive |= RoleFailoverPolicy.apiSideFailure(result.code(), profile);
+                RoleFailoverPolicy.Successor next = failoverPolicy.next(profile, rotation, apiFallbackActive);
+                RoleAttemptEvidence.journalBlocked(ledger, report, next.blocked(), progress);
                 Profile candidate = next.profile();
                 boolean preAuthorized = candidate != null && (candidate.name().equals(
                         authorizedFailover.get(stageKey))
                         || candidate.name().equals(authorizedFailover.get(role)));
-                String cause = vendorFailureCause(result.code());
+                String cause = RoleFailoverPolicy.vendorFailureCause(result.code());
                 String setting = spec.vendorFailureMode() != null
                         ? "roles." + role + ".on_vendor_failure" : "failover.on_vendor_failure";
                 // A --use pin is the operator naming this profile. Vendor-failure auto does
@@ -1373,11 +1370,13 @@ public final class RoleRunner {
                     report.put("api_fallback_profiles", spec.apiFallbackProfiles());
                 }
                 if (pinHolds && "stop".equals(pinMode)) {
-                    Map<String, Object> pinBlock = blockEvent("pinned", profile, candidate,
+                    var refusedSwitch = new RoleFailoverPolicy.BlockedSwitch("pinned", profile, candidate,
                             "stage " + stageKey + " is pinned with --use; failover.on_pinned is stop, "
                                     + "so " + profile.name() + " was not switched to " + candidate.name()
                                     + ". Set failover.on_pinned: confirm to ask, or auto to switch unattended");
-                    List<Map<String, Object>> held = new ArrayList<>(next.blocked());
+                    Map<String, Object> pinBlock = RoleAttemptEvidence.blockedSwitch(refusedSwitch);
+                    List<Map<String, Object>> held = new ArrayList<>(
+                            next.blocked().stream().map(RoleAttemptEvidence::blockedSwitch).toList());
                     held.add(pinBlock);
                     ledger.append("role_failover_blocked", pinBlock);
                     progress.line("      failover refused: " + profile.name() + " -> " + candidate.name()
@@ -1394,13 +1393,13 @@ public final class RoleRunner {
                                 + "in force");
                         report.put("vendor_attempts", attempts);
                         report.put("attempts_cost_usd", spent);
-                        rememberFailovers(report, roleFailovers);
+                        RoleAttemptEvidence.includeFailovers(report, roleFailovers);
                         Path path = ledger.writeReport("role-" + reportStem, report);
                         ledger.append("role_run", report);
                         return new Outcome(false, result.code(), role, profile.name(),
                                 profile.vendor(), resolution.rejected(), path, report);
                     }
-                    Map<String, Object> failover = failoverEvent(role, profile, candidate, result,
+                    Map<String, Object> failover = RoleAttemptEvidence.failover(role, profile, candidate, result,
                             preAuthorized ? "human_switch_decision" : "policy_auto", cause, setting);
                     if (apiFallbackActive) failover.put("api_fallback_profiles", spec.apiFallbackProfiles());
                     failover.put("role_invocation_id", roleInvocationId);
@@ -1415,7 +1414,7 @@ public final class RoleRunner {
                     continue;
                 } else if (candidate != null && !bounded
                         && ("confirm".equals(mode) || (pinHolds && "confirm".equals(pinMode)))) {
-                    Map<String, Object> pending = failoverEvent(role, profile, candidate, result,
+                    Map<String, Object> pending = RoleAttemptEvidence.failover(role, profile, candidate, result,
                             "pending_human_confirmation", cause, setting);
                     if (apiFallbackActive) pending.put("api_fallback_profiles", spec.apiFallbackProfiles());
                     pending.put("independence_after_switch", independenceNote(candidate, writers));
@@ -1443,7 +1442,7 @@ public final class RoleRunner {
                     report.put("failover_pending", pending);
                     report.put("vendor_attempts", attempts);
                     report.put("attempts_cost_usd", spent);
-                    rememberFailovers(report, roleFailovers);
+                    RoleAttemptEvidence.includeFailovers(report, roleFailovers);
                     report.put("resolution", pinHolds
                             ? "stage " + stageKey + " is pinned with --use and failover.on_pinned is "
                                     + "'confirm'. Record the choice with `oseer approve <run-id> "
@@ -1469,7 +1468,7 @@ public final class RoleRunner {
                             + setting + " is 'stop'");
                 } else if (!next.blocked().isEmpty() && candidate == null) {
                     report.put("resolution", "automatic failover refused: "
-                            + next.blocked().get(0).get("rule"));
+                            + next.blocked().getFirst().rule());
                 } else if (!next.rejected().isEmpty()) {
                     report.put("failover_rejected", next.rejected());
                     report.put("resolution", "no other profile can fill this role: "
@@ -1493,7 +1492,7 @@ public final class RoleRunner {
 
             report.put("vendor_attempts", attempts);
             report.put("attempts_cost_usd", spent);
-            rememberFailovers(report, roleFailovers);
+            RoleAttemptEvidence.includeFailovers(report, roleFailovers);
             if (attempts.size() > 1) {
                 report.put("failed_over_from", attempts.stream()
                         .limit(attempts.size() - 1L)
@@ -1507,244 +1506,9 @@ public final class RoleRunner {
         }
     }
 
-    /**
-     * How long to pause before a rate-limit retry: the seconds the vendor asked for when its
-     * message carried a plain `retry after N seconds` or `Retry-After: N`, else the policy's
-     * backoff doubled per attempt. Bounded to fifteen minutes either way, and a time of day the
-     * vendor printed without a date is never parsed into an instant.
-     */
+    /** Delay before a rate-limit retry, bounded by the failover policy. */
     public static long retryPauseMillis(Map<String, Object> evidence, Policy.RateLimitRetry retry, int attempt) {
-        long seconds = -1;
-        if (evidence != null && evidence.get("quota") instanceof Map<?, ?> quota
-                && quota.get("vendor_message") instanceof String message) {
-            java.util.regex.Matcher named = java.util.regex.Pattern
-                    .compile("(?i)retry[- ]after:?\\s*(\\d{1,4})\\s*(s|sec|seconds?)?\\b")
-                    .matcher(message);
-            if (named.find()) seconds = Long.parseLong(named.group(1));
-        }
-        if (seconds < 0) seconds = retry.backoffSeconds() * (1L << Math.max(0, attempt - 1));
-        return Math.min(seconds, 900L) * 1000L;
-    }
-
-    /**
-     * Which profile could fill this role once the exhausted ones are removed, or null when
-     * none can. Asked before continuing so that the last vendor's failure is reported as its
-     * own outcome rather than as an unresolvable role, and so that an operator being asked to
-     * confirm a switch is told who would take over.
-     *
-     * Profiles that already returned no artifact in this dispatch are excluded. Naming one
-     * of them would record a switch to a profile the next iteration cannot run.
-     */
-    private Successor failoverCandidate(String role, UserConfig user, RoleResolver.Writers writers,
-                                        long rotation, Profile from) {
-        return seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch, from);
-    }
-
-    /**
-     * The next profile that could take this role, and why the others cannot.
-     *
-     * {@code vendorFailed} names profiles that already returned no artifact in this
-     * dispatch. They are skipped with their own reason, not labelled as a spent plan.
-     * A subscription CLI is not offered a paid API of the same model family unless the
-     * policy says {@code allow}. That filter runs after the resolver's own verdict so the
-     * refusal is not recorded as a missing executable.
-     */
-    private Successor seekSuccessor(String role, UserConfig user, RoleResolver.Writers writers,
-                                    long rotation, Set<String> vendorFailed, Profile from) {
-        List<Map<String, Object>> blocked = new ArrayList<>();
-        try {
-            List<RoleResolver.Candidate> verdicts = new RoleResolver().candidates(role, user.policy(),
-                    user.profiles(), writers, profile -> {
-                        if (overlay.problem(stageName, profile, user.profiles()) != null) return false;
-                        Profile effective = overlay.adapt(stageName, profile, user.profiles());
-                        return !exhausted.contains(effective.name())
-                                && !unavailable.contains(effective.name())
-                                && !vendorFailed.contains(effective.name())
-                                && available(effective);
-                    }, exhausted, vendorFailed, unavailable);
-            Policy.RoleSpec spec = user.policy().roles().get(role);
-            List<Profile> eligible = new ArrayList<>();
-            Map<String, String> rejected = new LinkedHashMap<>();
-            for (RoleResolver.Candidate verdict : verdicts) {
-                if (!verdict.eligible()) {
-                    rejected.put(verdict.profile(), verdict.rejected());
-                    continue;
-                }
-                Profile effective = overlay.adapt(stageName, user.profiles().get(verdict.profile()),
-                        user.profiles());
-                if (!admitsFamily(user.policy(), from, effective, blocked)) continue;
-                eligible.add(effective);
-            }
-            if (eligible.isEmpty() || spec == null) return new Successor(null, rejected, blocked);
-            List<Profile> starters = eligible.stream().filter(item -> !spec.standby(item.name())).toList();
-            if (!starters.isEmpty()) eligible = starters;
-            int index = "first".equals(spec.strategy()) ? 0 : Math.floorMod(rotation, eligible.size());
-            return new Successor(eligible.get(index), rejected, blocked);
-        } catch (RuntimeException none) {
-            return new Successor(null, Map.of(), blocked);
-        }
-    }
-
-    private record Successor(Profile profile, Map<String, String> rejected,
-                             List<Map<String, Object>> blocked) {}
-
-    /** Explicit API fallback order, filtered through the ordinary admission rules. */
-    private Successor seekApiSuccessor(String role, UserConfig user, RoleResolver.Writers writers,
-                                      Set<String> vendorFailed, Profile from) {
-        List<Map<String, Object>> blocked = new ArrayList<>();
-        List<RoleResolver.Candidate> candidates = new RoleResolver().candidates(role,
-                user.policy(), user.profiles(), writers, profile -> {
-                    if (overlay.problem(stageName, profile, user.profiles()) != null) return false;
-                    return available(overlay.adapt(stageName, profile, user.profiles()));
-                }, exhausted, vendorFailed, unavailable);
-        Map<String, RoleResolver.Candidate> byName = new LinkedHashMap<>();
-        candidates.forEach(candidate -> byName.put(candidate.profile(), candidate));
-        Map<String, String> rejected = new LinkedHashMap<>();
-        for (String name : user.policy().roles().get(role).apiFallbackProfiles()) {
-            RoleResolver.Candidate candidate = byName.get(name);
-            if (candidate == null) rejected.put(name, "profile_not_in_roster");
-            else if (!candidate.eligible()) rejected.put(name, candidate.rejected());
-            else {
-                Profile chosen = overlay.adapt(stageName, user.profiles().get(name), user.profiles());
-                if (!admitsFamily(user.policy(), from, chosen, blocked)) continue;
-                return new Successor(chosen, rejected, blocked);
-            }
-        }
-        return new Successor(null, rejected, blocked);
-    }
-
-    /**
-     * A grok/codex/claude subscription CLI must not be moved onto a paid API serving that
-     * same family. Cross-family (grok CLI to a DeepSeek API) is a different rule: the pin.
-     */
-    private static boolean admitsFamily(Policy policy, Profile from, Profile to,
-                                        List<Map<String, Object>> blocked) {
-        if (from == null || to == null || policy == null) return true;
-        if (!"never".equals(policy.subscriptionToSameFamilyApi())) return true;
-        if (!subscriptionCli(from) || !paidApi(to) || !sameFamily(from, to)) return true;
-        blocked.add(blockEvent("subscription_to_same_family_api", from, to,
-                "a subscription CLI is not failed over onto a paid API of the same model family; "
-                        + "set failover.subscription_to_same_family_api: allow to permit it"));
-        return false;
-    }
-
-    static boolean subscriptionCli(Profile profile) {
-        if (profile.harness() != null) return false;
-        if (!"direct".equals(profile.runner()) && !"orca".equals(profile.runner())) return false;
-        String family = familyOf(profile);
-        return "x-ai".equals(family) || "openai".equals(family) || "anthropic".equals(family);
-    }
-
-    static boolean paidApi(Profile profile) {
-        return "api".equals(profile.runner()) || profile.harness() != null;
-    }
-
-    static String familyOf(Profile profile) {
-        String vendor = Profile.canonicalVendor(profile.vendor());
-        String modelVendor = Profile.canonicalVendor(profile.modelVendor());
-        for (String token : new String[] {vendor, modelVendor}) {
-            if ("x-ai".equals(token) || "openai".equals(token) || "anthropic".equals(token)) return token;
-        }
-        String model = profile.model() == null ? "" : profile.model().toLowerCase(java.util.Locale.ROOT);
-        if (model.startsWith("x-ai/") || model.startsWith("grok")) return "x-ai";
-        if (model.startsWith("openai/") || model.startsWith("gpt-")) return "openai";
-        if (model.startsWith("anthropic/") || model.startsWith("claude")) return "anthropic";
-        return null;
-    }
-
-    static boolean sameFamily(Profile left, Profile right) {
-        String one = familyOf(left);
-        return one != null && one.equals(familyOf(right));
-    }
-
-    private static Map<String, Object> blockEvent(String rule, Profile from, Profile to, String detail) {
-        Map<String, Object> event = new LinkedHashMap<>();
-        event.put("rule", rule);
-        event.put("from_profile", from.name());
-        event.put("from_vendor", from.vendor());
-        event.put("to_profile", to.name());
-        event.put("to_vendor", to.vendor());
-        event.put("from", from.name());
-        event.put("to", to.name());
-        event.put("detail", detail);
-        return event;
-    }
-
-    private void noteBlocked(EvidenceLedger ledger, Map<String, Object> report,
-                             List<Map<String, Object>> blocked) throws Exception {
-        if (blocked == null || blocked.isEmpty()) return;
-        report.put("failover_blocked", List.copyOf(blocked));
-        for (Map<String, Object> event : blocked) {
-            ledger.append("role_failover_blocked", event);
-            progress.line("      failover refused: " + event.get("from") + " -> " + event.get("to")
-                    + " (" + event.get("rule") + ")");
-        }
-    }
-
-    // Auth, identity, parse, cancellation and admission/configuration errors are
-    // deliberately absent. A different provider cannot repair those safely. Truncation is
-    // here: the answer hit this profile's output cap, so nothing was judged, and a declared
-    // fallback with its own cap (or a CLI reviewer) can produce the whole artifact. Measured
-    // 2026-11-16 on hello-loop: a GLM review stopped at 4096 output tokens and went straight
-    // to a person although codex-review was configured as the next fallback.
-    private static boolean transientApiFailure(String code) {
-        return code != null && Set.of("role_api_network_error", "role_api_timeout",
-                "role_api_rate_limited", "role_api_provider_error", "role_api_output_truncated").contains(code);
-    }
-
-    /**
-     * An API stall takes the API fallback list. The same code from a direct CLI takes the
-     * roster, because a CLI has no {@code api_fallback_profiles}. Putting the code in
-     * {@link #transientApiFailure} would send the CLI down the API list.
-     */
-    private static boolean apiSideFailure(String code, Profile profile) {
-        return transientApiFailure(code)
-                || ("role_stalled".equals(code) && "api".equals(profile.runner()));
-    }
-
-    /**
-     * Codes that mean the vendor produced nothing a later stage can believe.
-     *
-     * A timeout that already wrote a valid artifact does not arrive here: the executor
-     * returns ok and leaves {@code timed_out} on the attempt. {@code role_timeout} stays
-     * in this set for the call that left no complete artifact.
-     */
-    private static final Set<String> VENDOR_FAILURE_CODES = Set.of(
-            "role_command_failed",
-            "role_timeout",
-            "role_artifact_unparseable",
-            "role_artifact_incomplete",
-            "role_artifact_schema_violation",
-            "role_local_endpoint_unreachable",
-            "role_local_http_error",
-            "role_vendor_unavailable",
-            "role_stalled");
-
-    private static boolean vendorFailure(String code) {
-        // Harness admission/configuration/identity failures describe the execution boundary.
-        // Paying another writer cannot repair it and may obscure edits from earlier turns.
-        if (code == null || code.startsWith("role_harness_")
-                || "harness_coding_unproven".equals(code)) return false;
-        return VENDOR_FAILURE_CODES.contains(code);
-    }
-
-    /**
-     * The ledger {@code cause} for a missing artifact. The role's own code stays on
-     * {@code role_code}, so a network failure and a schema failure are not collapsed
-     * into one token where the evidence is read.
-     */
-    private static String vendorFailureCause(String code) {
-        return switch (code) {
-            case "role_command_failed", "role_local_endpoint_unreachable",
-                    "role_local_http_error", "role_api_network_error",
-                    "role_api_provider_error", "role_api_rate_limited" -> "vendor_call_failed";
-            case "role_timeout", "role_api_timeout" -> "role_timeout";
-            case "role_stalled" -> "role_stalled";
-            case "role_artifact_unparseable", "role_artifact_incomplete",
-                    "role_artifact_schema_violation", "role_api_output_truncated" -> "artifact_invalid";
-            case "role_vendor_unavailable" -> "vendor_unavailable";
-            default -> code;
-        };
+        return RoleFailoverPolicy.retryPauseMillis(evidence, retry, attempt);
     }
 
     /**
@@ -1764,79 +1528,10 @@ public final class RoleRunner {
         if (pending == null || confirmedSwitchRecorded.contains(stageKey)) return false;
         if (!chosen.name().equals(String.valueOf(pending.get("to_profile")))) return false;
         confirmedSwitchRecorded.add(stageKey);
-        Map<String, Object> event = new LinkedHashMap<>();
-        event.put("role", role);
-        event.put("from_profile", pending.get("from_profile"));
-        event.put("from_vendor", pending.get("from_vendor"));
-        event.put("to_profile", pending.get("to_profile"));
-        event.put("to_vendor", pending.get("to_vendor"));
-        event.put("from", pending.get("from_profile"));
-        event.put("to", pending.get("to_profile"));
-        event.put("cause", pending.get("cause"));
-        event.put("authorized_by", "human");
-        event.put("policy_setting", "confirm");
-        if (pending.get("role_code") != null) event.put("role_code", pending.get("role_code"));
-        if (pending.get("api_fallback_profiles") != null) {
-            event.put("api_fallback_profiles", pending.get("api_fallback_profiles"));
-        }
-        event.put("role_invocation_id", roleInvocationId);
+        Map<String, Object> event = RoleAttemptEvidence.confirmedSwitch(role, roleInvocationId, pending);
         ledger.append("role_failover", event);
         roleFailovers.add(event);
         return true;
-    }
-
-    /** A missing artifact, as opposed to a spent subscription. The bound counts only these. */
-    private static boolean countsAsVendorFailover(Object cause) {
-        String value = cause == null ? "" : String.valueOf(cause);
-        return "vendor_call_failed".equals(value)
-                || "role_timeout".equals(value)
-                || "role_stalled".equals(value)
-                || "artifact_invalid".equals(value)
-                || "vendor_unavailable".equals(value);
-    }
-
-    private static void rememberFailovers(Map<String, Object> report,
-                                          List<Map<String, Object>> roleFailovers) {
-        if (roleFailovers.isEmpty()) return;
-        report.put("role_failovers", List.copyOf(roleFailovers));
-        // Each attempt builds a fresh report, so the line printed at the switch would
-        // otherwise die with the attempt that failed. The report that is kept is the
-        // last one, and it has to name every from→to itself.
-        if (!report.containsKey("failover_notice")) {
-            StringBuilder notice = new StringBuilder();
-            for (Map<String, Object> event : roleFailovers) {
-                if (!notice.isEmpty()) notice.append("; ");
-                notice.append(event.get("from")).append(" -> ").append(event.get("to"));
-            }
-            report.put("failover_notice", notice.toString());
-        }
-    }
-
-    private static Map<String, Object> failoverEvent(String role, Profile from, Profile to,
-                                                     RoleExecutor.Result result, String authorizedBy) {
-        return failoverEvent(role, from, to, result, authorizedBy, "role_quota_exhausted", null);
-    }
-
-    private static Map<String, Object> failoverEvent(String role, Profile from, Profile to,
-                                                     RoleExecutor.Result result, String authorizedBy,
-                                                     String cause, String policySetting) {
-        Map<String, Object> event = new LinkedHashMap<>();
-        event.put("role", role);
-        event.put("from_profile", from.name());
-        event.put("from_vendor", from.vendor());
-        event.put("to_profile", to.name());
-        event.put("to_vendor", to.vendor());
-        event.put("from", from.name());
-        event.put("to", to.name());
-        event.put("cause", cause);
-        event.put("authorized_by", authorizedBy);
-        if ("role_quota_exhausted".equals(cause)) {
-            event.put("quota", result.evidence().getOrDefault("quota", Map.of()));
-        } else {
-            event.put("role_code", result.code());
-            if (policySetting != null) event.put("policy_setting", policySetting);
-        }
-        return event;
     }
 
     /**
@@ -1871,8 +1566,7 @@ public final class RoleRunner {
         // Every other non-empty attempt list keeps the old reading: the role was already
         // failing over from quota when resolution gave out.
         boolean sawVendorFailure = attempts.stream()
-                .anyMatch(row -> vendorFailure(String.valueOf(row.get("code")))
-                        || transientApiFailure(String.valueOf(row.get("code"))));
+                .anyMatch(row -> RoleFailoverPolicy.missingArtifact(String.valueOf(row.get("code"))));
         boolean quota = !sawVendorFailure && (!attempts.isEmpty()
                 || failure.rejected().containsValue("quota_exhausted_this_run"));
         String code = quota ? "role_quota_exhausted"
@@ -1887,7 +1581,7 @@ public final class RoleRunner {
         if (!attempts.isEmpty()) {
             details.put("vendor_attempts", attempts);
             details.put("attempts_cost_usd", spent);
-            rememberFailovers(details, roleFailovers);
+            RoleAttemptEvidence.includeFailovers(details, roleFailovers);
             if (quota) {
                 details.put("exhausted_profiles", List.copyOf(exhausted));
                 details.put("resolution", "every profile able to fill this role reported a spent "
@@ -1903,74 +1597,6 @@ public final class RoleRunner {
         unresolved.put("message", String.valueOf(failure.getMessage()));
         ledger.append(code, unresolved);
         return new Outcome(false, code, role, null, null, failure.rejected(), null, details);
-    }
-
-    private void journalAttempt(EvidenceLedger ledger, String role, String roleInvocationId,
-                                Map<String, Object> report, Map<String, Object> attempt)
-            throws Exception {
-        Map<String, Object> event = new LinkedHashMap<>(attempt);
-        event.put("role", role);
-        event.put("stage", report.get("stage"));
-        event.put("task_id", report.get("task_id"));
-        event.put("workflow_run_id", report.get("workflow_run_id"));
-        event.put("role_invocation_id", roleInvocationId);
-        event.put("vendor_attempt", attempt.get("attempt"));
-        event.put("measurement_context", report.get("measurement_context"));
-        event.put("role_contract", report.get("role_contract"));
-        if (report.get("findings") != null) event.put("findings", report.get("findings"));
-        ledger.append("vendor_attempt", event);
-    }
-
-    private Map<String, Object> attemptRecord(int attempt, Profile profile, RoleExecutor.Result result,
-                                              boolean inheritsUnfinishedWork) {
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("attempt", (long) attempt);
-        entry.put("vendor_attempt_id", java.util.UUID.randomUUID().toString());
-        entry.put("profile", profile.name());
-        entry.put("vendor", profile.vendor());
-        entry.put("runner", profile.runner());
-        entry.put("effort_requested", profile.effort());
-        entry.put("model_requested", profile.model());
-        for (String key : List.of("effort_transmitted", "effort_reported", "effort_delivery",
-                "effort_transmission", "effort_verification")) {
-            if (result.evidence().containsKey(key)) entry.put(key, result.evidence().get(key));
-        }
-        if (result.evidence().containsKey("launch")) entry.put("launch", result.evidence().get("launch"));
-        Object reportedModel = result.evidence().get("model_reported");
-        if (reportedModel instanceof String value && !value.isBlank()) {
-            entry.put("model_reported", value);
-            entry.put("model", value);
-        }
-        entry.put("ok", result.ok());
-        entry.put("code", result.code());
-        entry.put("duration_millis", result.duration().toMillis());
-        Object cost = result.evidence().get("cost_usd");
-        if (cost != null) entry.put("cost_usd", cost);
-        Object tokens = result.evidence().get("tokens");
-        if (tokens != null) entry.put("tokens", tokens);
-        // A later success replaces the top-level API evidence. Keep each failed endpoint's
-        // structured receipt with its own attempt, including unknown cost and delivery.
-        for (String key : List.of("connection", "connection_fingerprint", "provider",
-                "model_requested", "model_reported", "model_served", "correlation_id",
-                "api_attempts", "api_attempt_count", "api_retries", "api_retry_policy",
-                "api_retry_stopped", "failure_phase", "delivery", "http_status",
-                "request_id", "cost_status", "unpriced_attempts", "reported_cost_usd_subtotal", "relay",
-                "may_be_billed")) {
-            if (result.evidence().containsKey(key)) entry.put(key, result.evidence().get(key));
-        }
-        Object raw = result.evidence().get("raw_stdout");
-        if (raw != null) entry.put("raw_stdout", raw);
-        Object quota = result.evidence().get("quota");
-        if (quota != null) entry.put("quota", quota);
-        Object unavailableEvidence = result.evidence().get("vendor_unavailable");
-        if (unavailableEvidence != null) entry.put("vendor_unavailable", unavailableEvidence);
-        // The failed call stays readable after a switch. The home corpus allowlist drops
-        // these tails; the local attempt does not.
-        for (String tail : List.of("stderr_tail", "stdout_tail", "exit_code", "timed_out", "stalled", "start_error")) {
-            if (result.evidence().containsKey(tail)) entry.put(tail, result.evidence().get(tail));
-        }
-        if (inheritsUnfinishedWork) entry.put("inherited_unfinished_work", true);
-        return entry;
     }
 
     @SuppressWarnings("unchecked")

@@ -5,7 +5,6 @@ import dev.oseer.approval.HumanDecision;
 import dev.oseer.config.ConfigLoader;
 import dev.oseer.config.Policy;
 import dev.oseer.config.RunOverride;
-import dev.oseer.config.RoutingSettings;
 import dev.oseer.config.TaskSpec;
 import dev.oseer.config.UserConfig;
 import dev.oseer.config.OverseerTree;
@@ -36,6 +35,22 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static dev.oseer.run.WorkflowAdmission.allowsSameVendorPeer;
+import static dev.oseer.run.WorkflowAdmission.initialPreviewWriters;
+import static dev.oseer.run.WorkflowAdmission.judgeGap;
+import static dev.oseer.run.WorkflowAdmission.judgesCandidate;
+import static dev.oseer.run.WorkflowAdmission.overlayGap;
+import static dev.oseer.run.WorkflowAdmission.readerGap;
+import static dev.oseer.run.WorkflowAdmission.selectableProfiles;
+import static dev.oseer.run.WorkflowAdmission.skipReason;
+import static dev.oseer.run.WorkflowAdmission.strictBounds;
+import static dev.oseer.run.WorkflowAdmission.strictCapGap;
+import static dev.oseer.run.WorkflowAdmission.toolingGap;
+import static dev.oseer.run.WorkflowAdmission.withPreviewWriter;
+import static dev.oseer.run.WorkflowPreview.budgetPreview;
+import static dev.oseer.run.WorkflowPreview.cast;
+import static dev.oseer.run.WorkflowPreview.modelSelectionEnabled;
 
 /**
  * The bounded loop. By default:
@@ -1386,476 +1401,38 @@ public final class TaskLoop {
         return new Outcome(true, "ready_for_human", "human_gate", file, summary);
     }
 
-    /**
-     * The first judging stage no reader could fill against its preceding writers, as the chain would
-     * dispatch, or null when every one can be. Asked once, before the first paid call.
-     *
-     * The writer is the profile the roster would actually choose, so a `first` strategy is
-     * answered exactly and a rotating one is answered for the profile whose turn it is. A
-     * chain with no writing stage has nothing to differ from here; its provenance question is
-     * answered by the writer set instead.
-     */
-    private static Map<String, Object> readerGap(Path root, Workflow workflow, UserConfig user,
-                                                 TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                                 RoleRunner roles) {
-        RoleResolver.Writers wouldWrite = initialPreviewWriters(task);
-        boolean hasReader = false;
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            int position = workflow.rotationPositionOf(stage);
-            boolean reader = judgesCandidate(stage, task);
-            hasReader |= reader;
-            RoleResolver.Writers judgedBy = reader
-                    ? wouldWrite : RoleResolver.Writers.NONE;
-            dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    judgedBy, position);
-            if (chosen != null) {
-                wouldWrite = withPreviewWriter(wouldWrite, chosen);
-                continue;
-            }
-            // A missing writer is a routing failure, not proof that the following readers
-            // are impossible. Neither preflight nor preview advances rotation or dispatches.
-            if (!reader || (!task.reviewOnly() && wouldWrite.vendors().isEmpty())) continue;
-            Map<String, String> refused = roles.explainFill(user, stage.name(), stage.role(),
-                    wouldWrite, position);
-            if (refused == null && !task.reviewOnly()) continue;
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("role", stage.role());
-            gap.put("needed_for", stage.name());
-            gap.put("blocked_at", "preflight");
-            gap.put("rejected_profiles", refused == null ? Map.of() : refused);
-            gap.put("writer_vendors", wouldWrite.vendors().stream().sorted().toList());
-            gap.put("writer_profiles", wouldWrite.profiles().stream().sorted().toList());
-            // Keep the single-writer fields for existing consumers.
-            if (wouldWrite.vendors().size() == 1)
-                gap.put("must_differ_from_vendor", wouldWrite.vendors().iterator().next());
-            if (wouldWrite.profiles().size() == 1)
-                gap.put("writer_profile", wouldWrite.profiles().iterator().next());
-            gap.put("exhausted_profiles", List.copyOf(roles.exhaustedProfiles()));
-            gap.put("message", "no profile can fill role '" + stage.role() + "' for stage '"
-                    + stage.name() + "' after the preceding writers " + wouldWrite.profiles()
-                    + " (vendors " + wouldWrite.vendors() + ") have written the candidate ("
-                    + (refused == null ? Map.of() : refused) + "). Add a profile from another vendor"
-                    + (task.reviewOnly() ? "" : ", or declare a same_vendor_peer pair in policy.yaml and set "
-                    + "review_assurance: same_vendor_peer on the task if that weaker check is acceptable")
-                    + "; nothing was dispatched.");
-            return gap;
-        }
-        if (task.reviewOnly() && !hasReader) {
-            return Map.of("role", "reviewer", "blocked_at", "preflight",
-                    "message", "mode: review requires an active review stage. Configure a reviewer in "
-                            + "policy.yaml and a workflow stage whose conditions match this task.");
-        }
-        return null;
-    }
-
-    static boolean allowsSameVendorPeer(TaskSpec.ResolvedTask task) {
-        return !task.reviewOnly() && "same_vendor_peer".equals(task.reviewAssurance());
-    }
-
-    private static RoleResolver.Writers initialPreviewWriters(TaskSpec.ResolvedTask task) {
-        return new RoleResolver.Writers(new java.util.HashSet<>(task.priorWriters()),
-                java.util.Set.of(), true, allowsSameVendorPeer(task));
-    }
-
-    private static RoleResolver.Writers withPreviewWriter(RoleResolver.Writers written,
-                                                          dev.oseer.config.Profile profile) {
-        if (profile.readOnly()) return written;
-        java.util.Set<String> vendors = new java.util.HashSet<>(written.vendors());
-        java.util.Set<String> profiles = new java.util.HashSet<>(written.profiles());
-        vendors.add(profile.vendor());
-        profiles.add(profile.name());
-        return new RoleResolver.Writers(vendors, profiles, written.known(), written.peerAllowed());
-    }
-
-    /**
-     * The paying profile with no declared per-call bound, when the task asked for a strict
-     * money cap, or null when every candidate declares one.
-     *
-     * Routing does not only consult {@link Policy.RoleSpec#profiles()}: a {@code --use} pin,
-     * a {@code --host} twin, an escalation rung and an authorised substitution can all select
-     * a verified profile from the operator's roster. A cap that ignored those spent under a
-     * number it had never reserved.
-     */
-    private static Map<String, Object> strictCapGap(Workflow workflow, UserConfig user,
-                                                    TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                                    RunOverride overlay,
-                                                    Map<String, String> substitutions) {
-        if (user.policy() == null) return null;
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            for (dev.oseer.config.Profile profile : selectableProfiles(stage, user, overlay,
-                    substitutions)) {
-                if (profile.maxCostUsd() != null) continue;
-                Map<String, Object> gap = new LinkedHashMap<>();
-                gap.put("stage", stage.name());
-                gap.put("role", stage.role());
-                gap.put("profile", profile.name());
-                gap.put("message", "budgets.cost_cap: strict needs a proven upper bound for every "
-                        + "call it may admit, and profile '" + profile.name() + "' (stage '"
-                        + stage.name()
-                        + "') declares no limits.max_cost_usd. Declare one from that vendor's "
-                        + "measured worst case, or set cost_cap: threshold to keep max_cost_usd as "
-                        + "a threshold on reported spend; nothing was dispatched.");
-                return gap;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * The worst-case price of each paying stage under a strict cap: the largest declared
-     * bound among the profiles routing can actually select. Preparation stages are already
-     * spent when the loop starts and do not need reserving. The dispatch gate then overwrites
-     * the stage with the selected profile's own bound.
-     */
-    private static Map<String, Double> strictBounds(Workflow workflow, UserConfig user,
-                                                    TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                                    RunOverride overlay,
-                                                    Map<String, String> substitutions) {
-        Map<String, Double> bounds = new LinkedHashMap<>();
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            double worst = 0;
-            for (dev.oseer.config.Profile profile : selectableProfiles(stage, user, overlay,
-                    substitutions)) {
-                if (profile.maxCostUsd() != null) {
-                    worst = Math.max(worst, profile.maxCostUsd());
-                }
-            }
-            bounds.put(stage.name(), worst);
-        }
-        return bounds;
-    }
-
-    /**
-     * Every profile this stage might dispatch: the policy list, a pin, a host twin of those,
-     * an escalation rung of the same role, and a substitution a person already authorised.
-     */
-    private static List<dev.oseer.config.Profile> selectableProfiles(Workflow.Stage stage,
-            UserConfig user, RunOverride overlay, Map<String, String> substitutions) {
-        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-        Policy.RoleSpec spec = user.policy() == null ? null : user.policy().roles().get(stage.role());
-        if (spec != null) names.addAll(spec.profiles());
-        if (overlay != null) {
-            String pin = overlay.pinnedProfile(stage.name());
-            if (pin != null) names.add(pin);
-        }
-        if (substitutions != null) {
-            String named = substitutions.get(stage.name());
-            if (named == null) named = substitutions.get(stage.role());
-            if (named != null) names.add(named);
-        }
-        Policy.Escalation ladder = user.policy() == null ? null : user.policy().escalation();
-        if (ladder != null) {
-            for (Policy.Escalation.Rung rung : ladder.rungs()) {
-                if ("implementer".equals(stage.role())) names.add(rung.implementer());
-                else if ("reviewer".equals(stage.role())) names.add(rung.reviewer());
-            }
-        }
-        List<dev.oseer.config.Profile> profiles = new ArrayList<>();
-        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
-        for (String name : names) {
-            dev.oseer.config.Profile profile = user.profiles().get(name);
-            if (profile == null) continue;
-            if (overlay != null) profile = overlay.adapt(stage.name(), profile, user.profiles());
-            if (profile == null || !seen.add(profile.name())) continue;
-            profiles.add(profile);
-        }
-        return profiles;
-    }
-
-    /**
-     * The budget plan this loop records, from the same skip predicate it routes by.
-     *
-     * The preparation reservation calls this before the planner is paid so {@code run.json}
-     * and the summary written a moment later cannot disagree about which stages count or
-     * whether the cap can finish them.
-     */
-    static CallPlan planFor(Workflow workflow, UserConfig user, TaskSpec.ResolvedTask task,
-                            List<String> preparationStages) {
-        boolean reviewByRisk = user.policy() != null && user.policy().reviewRequired(task.risk());
-        return new CallPlan(workflow,
-                stage -> skipReason(stage, user, task, reviewByRisk) != null,
-                preparationStages);
-    }
-
-    private static Map<String, Object> budgetPreview(CallPlan plan, UserConfig user, TaskSpec.ResolvedTask task) {
-        Map<String, Object> result = new LinkedHashMap<>(plan.toMap(task.budget().maxRoleRuns(),
-                user.policy() == null ? "full" : user.policy().repairReserve()));
-        if (task.budget().maxElapsedMinutes() != null) {
-            result.put("time_reserve", "not reserved: budgets.max_elapsed_minutes ("
-                    + task.budget().maxElapsedMinutes() + ") bounds the execution time of this "
-                    + "run and every continuation of it. No vendor call starts with less than "
-                    + "a minute left, and each call's wall clock is lowered to what is left. A "
-                    + "call's duration is not predicted, so a repair is never refused in advance "
-                    + "for time; gates and the baseline are bounded by timeout_minutes instead");
-        }
-        return result;
-    }
-
-    /**
-     * Why a stage will not run at all, or null when it will.
-     *
-     * Static, and asked through {@link #planFor} on purpose. The loop asks it to decide what
-     * to execute; the preparation reservation asks it so the plan it records cannot name a
-     * reviewer that risk had already excluded, or fail to reserve one that risk had brought
-     * back.
-     */
     /** Up to ten paths, then how many more: enough to act on without flooding a line. */
     static String namedPaths(List<String> paths) {
         if (paths.size() <= 10) return String.join(", ", paths);
         return String.join(", ", paths.subList(0, 10)) + " and " + (paths.size() - 10) + " more";
     }
 
-    private static String skipReason(Workflow.Stage stage, UserConfig user,
-                                     TaskSpec.ResolvedTask task, boolean reviewByRisk) {
-        if (stage.kind() == Workflow.Kind.ROLE) {
-            // A review-only task judges a candidate somebody else already wrote. A writing
-            // stage would add an author the readers then have to differ from — and a planned
-            // implementer used to do exactly that in the preview, refusing a reader whose
-            // vendor nobody was ever going to dispatch as a writer.
-            if (task.reviewOnly() && !RoleResolver.judges(stage.role())) return "review_only";
-            boolean configured = user.policy() != null
-                    && user.policy().roles().containsKey(stage.role());
-            if (!configured) return "role_not_configured";
-        }
-        for (String condition : stage.when()) {
-            if (!holds(condition, task, reviewByRisk)) return "condition_not_met:" + condition;
-        }
-        return null;
+    /** Plans the same set of stages for preparation reservations and execution. */
+    static CallPlan planFor(Workflow workflow, UserConfig user, TaskSpec.ResolvedTask task,
+                            List<String> preparationStages) {
+        return WorkflowAdmission.planFor(workflow, user, task, preparationStages);
     }
 
-    private static boolean judgesCandidate(Workflow.Stage stage, TaskSpec.ResolvedTask task) {
-        return stage.kind() == Workflow.Kind.ROLE && (stage.onFindings() != null
-                || (task.reviewOnly() && RoleResolver.judges(stage.role())));
-    }
-
-    /**
-     * Who would fill each stage, resolved from the roster before anything is paid.
-     *
-     * The header used to print the chain as stage names — `implement -> review -> look` —
-     * which answers what will happen and not who will do it. Everything an operator actually
-     * changes lives in the second question: which vendor, which model, at what effort, on
-     * which runner, and whether a `--use` they typed landed on the stage they meant. Finding
-     * that out required reading the summary of a run that had already been paid for.
-     *
-     * A preview, and honestly labelled as one. Rotation is read without advancing, preceding
-     * writable profiles join the declared prior writers, and a mid-run failover can still
-     * put a different vendor in a chair — the row says who the roster names now, which is the
-     * question being asked now.
-     */
-    private List<Map<String, Object>> cast(Path root, Workflow workflow, UserConfig user,
-                                           TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                           RoleRunner roles, RunOverride overlay) {
-        List<Map<String, Object>> rows = new ArrayList<>();
-        RoleResolver.Writers written = initialPreviewWriters(task);
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("stage", stage.name());
-            row.put("role", stage.role());
-            dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE,
-                    workflow.rotationPositionOf(stage));
-            if (chosen == null) {
-                row.put("profile", null);
-                Map<String, String> why = roles.explainFill(user, stage.name(), stage.role(),
-                        judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE,
-                        workflow.rotationPositionOf(stage));
-                row.put("unresolved", why == null ? Map.of() : why);
-            } else {
-                row.put("profile", chosen.name());
-                row.put("vendor", chosen.vendor());
-                row.put("model", chosen.model());
-                row.put("effort", chosen.effort());
-                row.put("runner", chosen.runner());
-                putFallbacks(row, user, stage.role(), chosen.name());
-                // Named by the overlay is not the same as changed by it. A refused overlay
-                // is about to stop the run, and a row that still said "this run only" would
-                // be describing a dispatch that is not going to happen.
-                if (overlay.stages().contains(stage.name())) {
-                    row.put("from_overlay",
-                            overlay.problem(stage.name(), chosen, user.profiles(),user) == null);
-                }
-                written = withPreviewWriter(written, chosen);
-            }
-            if (stage.fixWith() != null && !task.reviewOnly()
-                    && ("fix".equals(stage.onFail()) || "fix".equals(stage.onFindings()))) {
-                dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix",
-                        stage.fixWith(), RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
-                if (fixer != null) row.put("fix_profile", fixer.name());
-            }
-            rows.add(row);
-        }
-        return rows;
-    }
-
-    /**
-     * What a run of {@code loaded} would dispatch at each role stage, and what would stop it,
-     * without dispatching or advancing anything: the settings panel's answer for one task.
-     *
-     * Built from the preflight's own calls, in its order. The task's {@code use:} is pinned
-     * and overlaid on the runner as the loop does it, the workflow is the one the task runs
-     * (agent evidence swaps the browser stage), writable roles accumulate in order and every reader
-     * that judges findings is peeked against it with the task's {@code review_assurance}, and
-     * an overlay the chosen profile cannot deliver is refused with {@link RunOverride#problem},
-     * the check {@code overlayGap} stops a run on. A table built from the policy alone named
-     * the policy's writer for a task that pins another, and called a same-vendor peer the task
-     * allows {@code peer_not_allowed_by_task}.
-     *
-     * The overlay is the task's own: flags given to one run and handovers are not on disk yet.
-     */
+    /** Lists the roles the saved task settings would dispatch. */
     public static List<Map<String, Object>> dispatchPreview(Path root, ConfigLoader.Loaded loaded,
                                                             UserConfig user,
                                                             RoleResolver.Availability availability) {
-        return dispatchPreview(root, loaded, user, availability, RunOverride.NONE);
+        return WorkflowPreview.dispatchPreview(root, loaded, user, availability);
     }
 
+    /** Lists the roles after applying this invocation's settings. */
     public static List<Map<String, Object>> dispatchPreview(Path root, ConfigLoader.Loaded loaded,
                                                             UserConfig user,
                                                             RoleResolver.Availability availability,
                                                             RunOverride invocation) {
-        TaskSpec.ResolvedTask task = loaded.resolved();
-        Workflow workflow = user.policy() != null ? user.policy().workflow() : Workflow.builtIn();
-        if (task.visualQa().agentEvidence()) workflow = workflow.forAgentEvidence();
-        boolean reviewByRisk = user.policy() != null && user.policy().reviewRequired(task.risk());
-        RunOverride overlay = loaded.task().use().merged(invocation).withWriterFixes(workflow);
-        RoleRunner roles = new RoleRunner(new ProcessRunner()).availability(availability);
-        overlay.pin(roles);
-        roles.overlay(overlay);
-        RoleResolver.Writers written = initialPreviewWriters(task);
-        List<Map<String, Object>> rows = new ArrayList<>();
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("stage", stage.name());
-            row.put("role", stage.role());
-            rows.add(row);
-            String skipped = skipReason(stage, user, task, reviewByRisk);
-            if (skipped != null) {
-                row.put("skipped", skipped);
-                continue;
-            }
-            RoleResolver.Writers judgedBy = judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE;
-            int position = workflow.rotationPositionOf(stage);
-            dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    judgedBy, position);
-            if (chosen == null) {
-                row.put("profile", null);
-                Map<String, String> why = roles.explainFill(user, stage.name(), stage.role(), judgedBy, position);
-                row.put("unresolved", why == null ? Map.of() : why);
-                continue;
-            }
-            row.put("profile", chosen.name());
-            row.put("vendor", chosen.vendor());
-            row.put("model", chosen.model());
-            row.put("effort", chosen.effort());
-            row.put("runner", chosen.runner());
-            putFallbacks(row, user, stage.role(), chosen.name());
-            if (judgedBy != RoleResolver.Writers.NONE) {
-                row.put("judged_against", judgedBy.profiles().stream().sorted().toList());
-            }
-            if (overlay.stages().contains(stage.name())) {
-                String problem = overlay.problem(stage.name(), chosen, user.profiles(),user);
-                row.put("from_overlay", problem == null);
-                if (problem != null) {
-                    row.put("refused", "run_override_undeliverable");
-                    row.put("message", problem);
-                }
-            }
-            written = withPreviewWriter(written, chosen);
-        }
-        return rows;
+        return WorkflowPreview.dispatchPreview(root, loaded, user, availability, invocation);
     }
 
-    /**
-     * Settings-only preview for a fresh invocation. Uses the loop's own resolver, skip
-     * predicate, call arithmetic and settings preflights, without a run reservation,
-     * prompts, probes, rotation advances or dispatch. Workspace and live adapter checks
-     * still belong to the CLI dry run; this is not an authorization to execute.
-     */
+    /** Returns the roster, estimated call count, and settings problems for a fresh run. */
     public static Map<String, Object> settingsPreview(Path root, ConfigLoader.Loaded loaded,
                                                       UserConfig user, RunOverride invocation,
                                                       RoleResolver.Availability availability) {
-        TaskSpec.ResolvedTask task = loaded.resolved();
-        Workflow workflow = user.policy() == null ? Workflow.builtIn() : user.policy().workflow();
-        if (task.visualQa().agentEvidence()) workflow = workflow.forAgentEvidence();
-        boolean reviewByRisk = user.policy() != null && user.policy().reviewRequired(task.risk());
-        RunOverride overlay = loaded.task().use().merged(invocation).withWriterFixes(workflow);
-        RoleRunner roles = new RoleRunner(new ProcessRunner()).availability(availability);
-        overlay.pin(roles);
-        roles.overlay(overlay);
-        List<Map<String, Object>> dispatch = dispatchPreview(root, loaded, user, availability, invocation);
-        CallPlan plan = planFor(workflow, user, task, List.of());
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("would_run", dispatch);
-        result.put("budget_plan", budgetPreview(plan, user, task));
-        List<Map<String, Object>> problems = new ArrayList<>();
-        if (user.policyPresent() && user.policy() == null) {
-            problems.add(Map.of("code", "policy_invalid", "message", "policy.yaml does not parse"));
-        }
-        TaskLoop loop = new TaskLoop(new ProcessRunner());
-        Map<String, Object> gap = loop.overlayGap(root, workflow, user, task, reviewByRisk, roles, overlay);
-        if (gap != null) problems.add(gap);
-        gap = judgeGap(workflow, user, task, reviewByRisk, roles);
-        if (gap != null) problems.add(gap);
-        gap = loop.toolingGap(root, workflow, user, task, reviewByRisk, roles);
-        if (gap != null) problems.add(gap);
-        gap = readerGap(root, workflow, user, task, reviewByRisk, roles);
-        if (gap != null) {
-            gap = new LinkedHashMap<>(gap);
-            gap.put("code", "independent_review_unavailable");
-            problems.add(gap);
-        }
-        if (task.budget().strictCostCap()) {
-            gap = strictCapGap(workflow, user, task, reviewByRisk, overlay, Map.of());
-            if (gap != null) {
-                gap = new LinkedHashMap<>(gap);
-                gap.put("code", "cost_cap_unenforceable");
-                problems.add(gap);
-            } else {
-                // Prove only an impossible cap here: even the cheapest declared option at
-                // every owed stage cannot fit. Actual dispatch still reserves selected and
-                // outstanding worst-case bounds, including later failovers and repairs.
-                double minimum = 0;
-                for (Workflow.Stage stage : workflow.stages()) {
-                    if (stage.kind() != Workflow.Kind.ROLE || skipReason(stage, user, task, reviewByRisk) != null) continue;
-                    minimum += selectableProfiles(stage, user, overlay, Map.of()).stream()
-                            .filter(p -> p.maxCostUsd() != null).mapToDouble(p -> p.maxCostUsd()).min().orElse(0);
-                }
-                result.put("strict_minimum_bound_usd", minimum);
-                if (task.budget().maxCostUsd() > 0 && minimum > task.budget().maxCostUsd())
-                    problems.add(Map.of("code", "budget_insufficient", "message",
-                            "Strict cost cap is below even the minimum declared bounds of required calls: " + minimum));
-            }
-        }
-        for (Map<String, Object> row : dispatch) {
-            if (row.containsKey("skipped") || row.get("profile") != null) continue;
-            problems.add(Map.of("code", "no_eligible_profile", "stage", row.get("stage"),
-                    "message", "No eligible profile: " + row.get("unresolved")));
-        }
-        if (task.budget().maxRoleRuns() > 0 && task.budget().maxRoleRuns() < plan.minimumToFinish()) {
-            problems.add(Map.of("code", "budget_insufficient", "message",
-                    "Call cap is below the minimum needed to finish"));
-        }
-        result.put("problems", problems);
-        result.put("settings_ok", problems.isEmpty());
-        return result;
-    }
-
-    /** The role's declared fallbacks other than the chosen profile, for the cast a person approves. */
-    private static void putFallbacks(Map<String, Object> row, UserConfig user, String role, String chosen) {
-        var spec = user.policy() == null || role == null ? null : user.policy().roles().get(role);
-        if (spec == null || spec.apiFallbackProfiles().isEmpty()) return;
-        List<String> standby = spec.apiFallbackProfiles().stream().filter(name -> !name.equals(chosen)).toList();
-        if (standby.isEmpty()) return;
-        row.put("fallbacks", standby);
-        row.put("on_vendor_failure", user.policy().vendorFailureModeFor(role));
+        return WorkflowPreview.settingsPreview(root, loaded, user, invocation, availability);
     }
 
     /** The cast as a person reads it: one stage per line, aligned, with the overlay marked. */
@@ -1910,31 +1487,14 @@ public final class TaskLoop {
         }
     }
 
-    private static boolean modelSelectionEnabled(UserConfig user){
-        try{return RoutingSettings.load(user.home()).modelSelectionEnabled();}catch(Exception invalid){return false;}
+    /** Returns the admitted roster for manual classification. */
+    public static List<TaskRouting.Target> classificationTargets(Path root, ConfigLoader.Loaded loaded,
+                                                                 UserConfig user,
+                                                                 RoleResolver.Availability availability)
+            throws Exception {
+        return WorkflowPreview.classificationTargets(root, loaded, user, availability);
     }
-    /** Manual classification inspects the same admitted roster without dispatching roles or pinging models. */
-    public static List<TaskRouting.Target> classificationTargets(Path root,ConfigLoader.Loaded loaded,UserConfig user,
-                                                               RoleResolver.Availability available)throws Exception{
-        var targets=new ArrayList<TaskRouting.Target>();
-        if(!modelSelectionEnabled(user)){
-            for(var row:dispatchPreview(root,loaded,user,available)){
-                if(!(row.get("profile") instanceof String name))continue;
-                var profile=user.profiles().get(name);if(profile==null)continue;
-                if(row.get("effort") instanceof String effort)profile=profile.withEffort(effort);
-                targets.add(new TaskRouting.Target(String.valueOf(row.get("stage")),String.valueOf(row.get("role")),profile));
-            }
-            return targets;
-        }
-        var workflow=user.policy().workflow();if(loaded.resolved().visualQa().agentEvidence())workflow=workflow.forAgentEvidence();
-        var overlay=loaded.task().use().withWriterFixes(workflow);
-        var roles=new RoleRunner(new ProcessRunner()).availability(available);overlay.pin(roles);roles.overlay(overlay);
-        var active=new ArrayList<Workflow.Stage>();
-        for(var stage:workflow.stages())if(stage.kind()==Workflow.Kind.ROLE&&skipReason(stage,user,loaded.resolved(),user.policy().reviewRequired(loaded.resolved().risk()))==null)active.add(stage);
-        var prepared=ModelRoutingPlan.prepare(root,user,loaded.resolved(),active,workflow,roles,overlay,null,text->{},null);
-        if(prepared.gap()!=null)throw new IllegalArgumentException("classification has no admitted candidates: "+prepared.gap());
-        return prepared.targets();
-    }
+
     private static RunOverride priorModelSelection(Path root,String runId,UserConfig user)throws java.io.IOException{
         Path file=root.resolve(".oseer/runs").resolve(runId).resolve("task-run.json");
         if(!Files.isRegularFile(file))return RunOverride.NONE;
@@ -1971,184 +1531,6 @@ public final class TaskLoop {
         Files.writeString(directory.resolve(dev.oseer.ledger.EvidenceLedger.RUN_OVERRIDE),
                 Json.writePretty(overlay.toMap()) + System.lineSeparator(),
                 java.nio.charset.StandardCharsets.UTF_8);
-    }
-
-    /**
-     * The operator's overlay, checked against the roster before anyone is paid.
-     *
-     * Three faults are knowable from configuration alone and all three used to surface as
-     * something other than themselves. A stage name nobody in this workflow answers to
-     * simply did nothing, silently — the commonest way to type one of these flags wrong.
-     * An effort a runner cannot deliver was written into the evidence and never sent. A
-     * {@code host: orca} on a profile with tool grants dropped them and kept the stamp. So
-     * this runs first among the preflights: it is the cheapest of them, and the one whose
-     * mistakes are a person's typing rather than a roster that has thinned.
-     */
-    private Map<String, Object> overlayGap(Path root, Workflow workflow, UserConfig user,
-                                           TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                           RoleRunner roles, RunOverride overlay) {
-        if (overlay == null || overlay.isEmpty()) return null;
-        java.util.Set<String> named = new java.util.LinkedHashSet<>();
-        for (Workflow.Stage stage : workflow.stages()) named.add(stage.name());
-        for (String stage : overlay.stages()) {
-            if (named.contains(stage)) continue;
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("stage", stage);
-            gap.put("code", "run_override_unknown_stage");
-            gap.put("stop_reason", "run_override_invalid");
-            gap.put("known_stages", List.copyOf(named));
-            gap.put("message", "no stage called '" + stage + "' in this workflow, so the overlay "
-                    + "naming it would do nothing. The stages that run are " + named
-                    + ". Overlays are keyed by stage, not by role: two reviewer stages share a "
-                    + "role and only one of them is the one you meant.");
-            return gap;
-        }
-        // Machine gates and the browser harness have no profile, effort or host to change.
-        // An overlay naming one was accepted and then skipped by every loop below, so
-        // `--host browser=orca` ran exactly what it would have run without it.
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() == Workflow.Kind.ROLE || !overlay.stages().contains(stage.name())) continue;
-            List<String> roleStages = workflow.stages().stream()
-                    .filter(candidate -> candidate.kind() == Workflow.Kind.ROLE)
-                    .map(Workflow.Stage::name).toList();
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("stage", stage.name());
-            gap.put("kind", stage.kind().name().toLowerCase(java.util.Locale.ROOT));
-            gap.put("code", "run_override_not_a_role_stage");
-            gap.put("stop_reason", "run_override_invalid");
-            gap.put("role_stages", roleStages);
-            gap.put("message", "stage '" + stage.name() + "' is "
-                    + (stage.kind() == Workflow.Kind.MACHINE_GATES ? "the machine gates"
-                        : "the browser harness")
-                    + ", which no profile fills, so --use, --effort and --host have nothing to "
-                    + "change there and would be ignored. The stages an overlay can change are "
-                    + roleStages + "; nothing was dispatched.");
-            return gap;
-        }
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            // `peek` has already applied whatever the overlay could honour, so what comes
-            // back is either the adapted profile — asked again, it reports no problem — or
-            // the untouched one, which is exactly the case with something to say.
-            dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    RoleResolver.Writers.NONE, workflow.rotationPositionOf(stage));
-            if (chosen == null) continue;
-            String problem = overlay.problem(stage.name(), chosen, user.profiles(),user);
-            if (problem == null) continue;
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("stage", stage.name());
-            gap.put("role", stage.role());
-            gap.put("profile", chosen.name());
-            gap.put("code", "run_override_undeliverable");
-            gap.put("stop_reason", "run_override_invalid");
-            gap.put("message", problem);
-            return gap;
-        }
-        return null;
-    }
-
-    /**
-     * The first judging stage nobody can fill because its candidates may write, or null.
-     *
-     * The resolver refuses such a profile outright. Checked here, before anyone is paid and
-     * ahead of the reader and tooling checks, because both would describe the same roster
-     * wrongly: as a missing independent vendor, or as a visual profile to verify.
-     */
-    private static Map<String, Object> judgeGap(Workflow workflow, UserConfig user,
-                                                TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                                RoleRunner roles) {
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE || !RoleResolver.judges(stage.role())) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            String message = dev.oseer.run.Preparation.writableJudge(roles, user, stage.name(),
-                    stage.role());
-            if (message == null) continue;
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("stage", stage.name());
-            gap.put("role", stage.role());
-            gap.put("code", RoleResolver.JUDGE_NOT_READ_ONLY);
-            gap.put("blocked_at", "preflight");
-            gap.put("message", message);
-            return gap;
-        }
-        return null;
-    }
-
-    /**
-     * The tools a stage's profile would need, checked before anyone is paid.
-     *
-     * Two faults are visible from the roster alone. A stage that declares `evidence: agent`
-     * needs a visual profile that declared it takes its own screenshots; a profile that
-     * names an MCP configuration needs the file to exist. Either one found at dispatch has
-     * already spent the implementer and every reader before it — measured on the harness's
-     * missing browser, where the same lesson cost an implementer and a passed review.
-     */
-    private Map<String, Object> toolingGap(Path root, Workflow workflow, UserConfig user,
-                                           TaskSpec.ResolvedTask task, boolean reviewByRisk,
-                                           RoleRunner roles) {
-        for (Workflow.Stage stage : workflow.stages()) {
-            if (stage.kind() != Workflow.Kind.ROLE) continue;
-            if (skipReason(stage, user, task, reviewByRisk) != null) continue;
-            dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    RoleResolver.Writers.NONE, workflow.rotationPositionOf(stage));
-            // Nobody to fill a required visual role used to fall through to dispatch, so the
-            // writer and both readers ran and then the look stage died unverified. Bakery
-            // would have paid that bill. Surface it here, with the resolver's reasons.
-            if (chosen == null) {
-                if (!"visual_qa".equals(stage.role())) continue;
-                Map<String, Object> gap = new LinkedHashMap<>();
-                gap.put("stage", stage.name());
-                gap.put("role", stage.role());
-                gap.put("code", "visual_qa_unavailable");
-                gap.put("stop_reason", "visual_qa_unavailable");
-                Map<String, String> rejected = roles.explainFill(user, stage.name(), stage.role(),
-                        RoleResolver.Writers.NONE, workflow.rotationPositionOf(stage));
-                gap.put("rejected_profiles", rejected == null ? Map.of() : rejected);
-                gap.put("message", "visual QA is required and no eligible profile can fill stage '"
-                        + stage.name() + "'"
-                        + (rejected == null || rejected.isEmpty() ? "." : ": " + rejected)
-                        + " For an MCP camera, run the profile's probe against your server, then "
-                        + "`oseer profiles --verify <profile> --confirm`. Do not start the loop "
-                        + "until that stamp exists.");
-                return gap;
-            }
-            Map<String, Object> gap = new LinkedHashMap<>();
-            gap.put("stage", stage.name());
-            gap.put("role", stage.role());
-            gap.put("profile", chosen.name());
-            if (chosen.mcpConfig() != null && !Files.isRegularFile(user.resolve(chosen.mcpConfig()))) {
-                gap.put("code", "mcp_config_missing");
-                gap.put("stop_reason", "mcp_config_missing");
-                gap.put("message", "profile '" + chosen.name() + "' names mcp.config "
-                        + chosen.mcpConfig() + ", which does not exist under the config home. "
-                        + "Write the vendor's MCP configuration there, or remove mcp.config and "
-                        + "the {{mcp_config}} argument from the profile.");
-                return gap;
-            }
-            if (stage.acquiresEvidence() && (chosen.vision() == null || !chosen.vision().acquires())) {
-                gap.put("code", "visual_qa_no_acquiring_profile");
-                gap.put("stop_reason", "visual_qa_unavailable");
-                gap.put("message", "stage '" + stage.name() + "' declares evidence: agent, so the "
-                        + "visual role has to take its own screenshots, and profile '" + chosen.name()
-                        + "' does not declare capabilities.vision.acquires: true. Declare it on a "
-                        + "profile whose tools can drive the application, or give the stage a "
-                        + "harness with sees:.");
-                return gap;
-            }
-        }
-        return null;
-    }
-
-    private static boolean holds(String condition, TaskSpec.ResolvedTask task, boolean reviewByRisk) {
-        return switch (condition) {
-            case "review_required" -> task.reviewOnly() || reviewByRisk;
-            case "visual_qa_required" -> task.visualQa().required();
-            case "risk_low" -> "low".equals(task.risk());
-            case "risk_medium" -> "medium".equals(task.risk());
-            case "risk_high" -> "high".equals(task.risk());
-            default -> true;
-        };
     }
 
     public static boolean roleFailureRequiresOperator(String code) {
@@ -4277,7 +3659,7 @@ public final class TaskLoop {
 
         /** Why this stage is not running at all, or null when it is. */
         private String skipReason(Workflow.Stage stage) {
-            return TaskLoop.skipReason(stage, user, task, reviewByRisk);
+            return WorkflowAdmission.skipReason(stage, user, task, reviewByRisk);
         }
 
         private long recordFindings(Workflow.Stage stage, RoleRunner.Outcome outcome) throws Exception {

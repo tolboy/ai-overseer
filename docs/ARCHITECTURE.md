@@ -8,6 +8,9 @@ The Java entry point configures UTF-8 console output and delegates to the comman
 `dev.oseer.cli`. Commands translate arguments and report outcomes. Decision import, decision-page
 sessions, continuation claims and operator supervision have separate owners. The task loop's
 failure policy, budget accounting and continuation evidence live in `dev.oseer.run`.
+Workflow admission and previews share profile, tooling and budget checks. Role failover
+policy and attempt evidence are independent of role dispatch. Orca worker observation and
+settlement use the worker monitor, while dashboard and timeline read a shared run projection.
 JSON report keys and persisted records remain compatibility boundaries. New internal models can
 use records and enums, with explicit mapping where they cross one of those boundaries.
 

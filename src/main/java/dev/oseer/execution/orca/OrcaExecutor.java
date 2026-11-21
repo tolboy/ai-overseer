@@ -20,6 +20,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static dev.oseer.execution.orca.OrcaClient.nestedString;
+import static dev.oseer.execution.orca.OrcaClient.tail;
+
 /**
  * Runs a role through Orca's supervised worker lifecycle.
  *
@@ -48,20 +51,20 @@ import java.util.Map;
 public final class OrcaExecutor implements RoleExecutor {
 
     private static final Duration START_TIMEOUT = Duration.ofMinutes(2);
-    private static final Duration CHECK_WINDOW = Duration.ofSeconds(60);
     private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(20);
 
     private final GitRepository git;
     private final OrcaClient orca;
+    private final OrcaWorkerMonitor workers;
 
     public OrcaExecutor(ProcessRunner processes, GitRepository git) {
-        this.git = git;
-        this.orca = new OrcaClient(processes);
+        this(new OrcaClient(processes), git);
     }
 
     public OrcaExecutor(OrcaClient orca, GitRepository git) {
         this.git = git;
         this.orca = orca;
+        this.workers = new OrcaWorkerMonitor(orca);
     }
 
     @Override
@@ -144,7 +147,7 @@ public final class OrcaExecutor implements RoleExecutor {
         // Ask about the worker this run already owns before creating anything. Whether it is
         // alive decides every branch below, and asking costs one read-only probe.
         if (prior != null && prior.active()) {
-            OrcaClient.Rpc probe = showWorker(request.projectRoot(), PROBE_TIMEOUT, prior.dispatchId());
+            OrcaClient.Rpc probe = workers.show(request.projectRoot(), prior.dispatchId());
             OrcaRecovery.Assessment recovery = OrcaRecovery.assess(probe.envelope(), prior.dispatchId());
             Map<String, Object> report = new LinkedHashMap<>();
             report.put("dispatch_id", prior.dispatchId());
@@ -187,7 +190,7 @@ public final class OrcaExecutor implements RoleExecutor {
                         + "Restore its original profile or inspect and fence that dispatch before a fresh run");
                 return fail("role_orca_launch_contract_changed", evidence, Duration.ZERO, "");
             }
-            OrcaClient.Rpc launchProbe = showWorker(request.projectRoot(), PROBE_TIMEOUT, prior.dispatchId());
+            OrcaClient.Rpc launchProbe = workers.show(request.projectRoot(), prior.dispatchId());
             OrcaLaunch.Verification verified = OrcaLaunch.verify(profile, launchProbe.envelope());
             evidence.put("launch", verified.evidence());
             if (!launchProbe.ok() || !prior.dispatchId().equals(OrcaSettlement.dispatchId(launchProbe.envelope()))
@@ -402,7 +405,7 @@ public final class OrcaExecutor implements RoleExecutor {
             if (!ready) {
                 // Read before fencing: once the worker is stopped its tab is gone, and the
                 // screen is the only place that says why the first turn never started.
-                initialTurn = recordAgentScreen(request.projectRoot(), dispatchId, unobserved, evidence);
+                initialTurn = workers.recordAgentScreen(request.projectRoot(), dispatchId, unobserved, evidence);
             }
             boolean blocked = evidence.get("agent_blocked_on") != null;
             if (!ready && dispatchId != null && !blocked
@@ -422,7 +425,7 @@ public final class OrcaExecutor implements RoleExecutor {
                 if (turnPending) evidence.put("worker_turn", "unobserved");
             } else if (!ready) {
                 boolean fenced = dispatchId != null
-                        && stopWorker(request.projectRoot(), dispatchId, evidence);
+                        && workers.stopWorker(request.projectRoot(), dispatchId, evidence);
                 if (fenced) {
                     markWorker(lifecycle, workerKey, OrcaLifecycle.State.STOPPED, "start_failed", evidence);
                     // A first-run question on the screen is the one start failure that proves
@@ -453,13 +456,13 @@ public final class OrcaExecutor implements RoleExecutor {
             // Inspect the durable options on the exact dispatch, even if worker-start also
             // included a receipt. This is the same contract a resumed controller will read.
             OrcaClient.Rpc launchReceipt = dispatchId == null ? started
-                    : showWorker(request.projectRoot(), PROBE_TIMEOUT, dispatchId);
+                    : workers.show(request.projectRoot(), dispatchId);
             OrcaLaunch.Verification verified = OrcaLaunch.verify(profile, launchReceipt.envelope());
             evidence.put("launch", verified.evidence());
             boolean identityMatches = taskId.equals(OrcaSettlement.taskId(launchReceipt.envelope()))
                     && dispatchId != null && dispatchId.equals(OrcaSettlement.dispatchId(launchReceipt.envelope()));
             if (!launchReceipt.ok() || !identityMatches || !verified.ok()) {
-                boolean fenced = dispatchId != null && stopWorker(request.projectRoot(), dispatchId, evidence);
+                boolean fenced = dispatchId != null && workers.stopWorker(request.projectRoot(), dispatchId, evidence);
                 if (fenced) markWorker(lifecycle, workerKey, OrcaLifecycle.State.STOPPED, "launch_unverified", evidence);
                 else retainCoordinator = true;
                 String code = fenced ? "role_orca_launch_unverified" : "role_orca_lifecycle_unaccounted";
@@ -484,8 +487,9 @@ public final class OrcaExecutor implements RoleExecutor {
             nameWorkerRow(request.projectRoot(), dispatchId, request, profile, evidence);
         }
 
-        OrcaSettlement.Outcome settlement = waitForSettlement(request.projectRoot(), taskId, dispatchId,
-                runId, coordinatorHandle, deadline, turnPending, evidence);
+        var dispatch = new OrcaWorkerMonitor.Dispatch(request.projectRoot(), taskId, dispatchId,
+                runId, coordinatorHandle);
+        OrcaSettlement.Outcome settlement = workers.await(dispatch, () -> remaining(deadline), turnPending, evidence);
         evidence.put("settlement", settlement.kind().name().toLowerCase());
         evidence.put("settlement_reason", settlement.reason());
         if (settlement.deliveryId() != null) evidence.put("orca_delivery_id", settlement.deliveryId());
@@ -497,11 +501,11 @@ public final class OrcaExecutor implements RoleExecutor {
             evidence.put("worker_turn_observed_by", settlement.type());
         }
 
-        if (TURN_START_BLOCKED.equals(settlement.reason())) {
+        if (OrcaWorkerMonitor.TURN_START_BLOCKED.equals(settlement.reason())) {
             // A start Orca could not see, and the screen now shows why: the agent is sitting on
             // a first-run question and never took the task. Fenced exactly as a start that
             // failed outright, and not charged, because no model was asked anything.
-            boolean fenced = stopWorker(request.projectRoot(), dispatchId, evidence);
+            boolean fenced = workers.stopWorker(request.projectRoot(), dispatchId, evidence);
             if (!fenced) {
                 retainCoordinator = true;
                 evidence.put("coordinator_retained", true);
@@ -549,15 +553,7 @@ public final class OrcaExecutor implements RoleExecutor {
                 || settlement.kind() == OrcaSettlement.Kind.FAILED;
         boolean lifecycleAccounted = true;
         if (terminalSettlement && dispatchId != null) {
-            OrcaClient.Rpc released = orca.invoke(request.projectRoot(), Duration.ofSeconds(30),
-                    List.of("orchestration", "worker-release", "--dispatch", dispatchId));
-            evidence.put("worker_release_ok", released.ok());
-            evidence.put("worker_release", released.result());
-            if (!released.ok()) {
-                evidence.put("worker_release_error_code", OrcaSettlement.errorCode(released.envelope()));
-                evidence.put("worker_release_stderr", tail(released.stderr(), 1000));
-            }
-            if (released.ok()) {
+            if (workers.releaseWorker(request.projectRoot(), dispatchId, evidence)) {
                 markWorker(lifecycle, workerKey, OrcaLifecycle.State.SETTLED,
                         settlement.kind().name().toLowerCase(), evidence);
             } else {
@@ -569,7 +565,7 @@ public final class OrcaExecutor implements RoleExecutor {
                 || settlement.kind() == OrcaSettlement.Kind.CHECKPOINT
                 || settlement.kind() == OrcaSettlement.Kind.UNKNOWN) {
             lifecycleAccounted = dispatchId != null
-                    && stopWorker(request.projectRoot(), dispatchId, evidence);
+                    && workers.stopWorker(request.projectRoot(), dispatchId, evidence);
             if (lifecycleAccounted) {
                 markWorker(lifecycle, workerKey, OrcaLifecycle.State.STOPPED,
                         settlement.kind().name().toLowerCase(), evidence);
@@ -579,8 +575,7 @@ public final class OrcaExecutor implements RoleExecutor {
             }
         }
         boolean deliveryAccounted = lifecycleAccounted
-                && acknowledge(request.projectRoot(), runId, coordinatorHandle,
-                        settlement.deliveryId(), evidence);
+                && workers.acknowledge(dispatch, settlement.deliveryId(), evidence);
         if (!deliveryAccounted) {
             retainCoordinator = true;
             evidence.put("coordinator_retained", true);
@@ -592,7 +587,7 @@ public final class OrcaExecutor implements RoleExecutor {
             evidence.put("delivery_accounted", true);
         }
 
-        OrcaClient.Rpc transcript = readTranscript(request.projectRoot(), dispatchId, remaining(deadline));
+        OrcaClient.Rpc transcript = workers.readTranscript(request.projectRoot(), dispatchId, remaining(deadline));
         String raw = transcript != null ? transcript.stdout() : started == null ? "" : started.stdout();
         writeRaw(request, raw, transcript == null ? "" : transcript.stderr());
         if (transcript != null) {
@@ -696,7 +691,7 @@ public final class OrcaExecutor implements RoleExecutor {
                     + uncertain.getMessage());
             return fail("role_orca_lifecycle_unaccounted", evidence, elapsed(deadline, profile), "");
         } finally {
-            if (!retainCoordinator) closeCoordinator(request.projectRoot(), coordinatorHandle, evidence);
+            if (!retainCoordinator) workers.closeCoordinator(request.projectRoot(), coordinatorHandle, evidence);
         }
     }
 
@@ -735,7 +730,7 @@ public final class OrcaExecutor implements RoleExecutor {
                                Map<String, Object> evidence) {
         if (dispatchId == null) return;
         try {
-            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
+            OrcaClient.Rpc shown = workers.show(root, dispatchId);
             String terminal = OrcaSettlement.agentTerminalHandle(shown.envelope());
             if (terminal == null) {
                 evidence.put("worker_row_named", false);
@@ -798,156 +793,6 @@ public final class OrcaExecutor implements RoleExecutor {
         }
     }
 
-    /**
-     * The settlement reason for a start that Orca could not see and whose screen then showed a
-     * first-run question. The caller fences it as a start failure, not as a stalled worker.
-     */
-    private static final String TURN_START_BLOCKED = "turn_start_blocked";
-
-    private OrcaSettlement.Outcome waitForSettlement(Path root, String taskId, String dispatchId,
-                                                     String runId, String coordinatorHandle,
-                                                     long deadline, boolean turnPending,
-                                                     Map<String, Object> evidence)
-            throws Exception {
-        OrcaSettlement.Outcome last = new OrcaSettlement.Outcome(
-                OrcaSettlement.Kind.CHECKPOINT, taskId, dispatchId, null, Map.of(), "not_waited");
-        OrcaSettlement.Outcome lastProvenAgentWait = null;
-        OrcaSettlement.Outcome latestAgentObservation = null;
-        OrcaSettlement.Outcome lastQuestion = null;
-        while (positive(remaining(deadline))) {
-            Duration beforeCheck = remaining(deadline);
-            Duration window = beforeCheck.compareTo(CHECK_WINDOW) < 0 ? beforeCheck : CHECK_WINDOW;
-            List<String> checkArgs = new ArrayList<>(List.of(
-                    "orchestration", "check",
-                    "--wait",
-                    "--types", "worker_done,escalation,question",
-                    "--timeout-ms", String.valueOf(Math.max(1, window.toMillis()))));
-            if (runId != null) {
-                checkArgs.add("--run");
-                checkArgs.add(runId);
-            }
-            checkArgs.add("--terminal");
-            checkArgs.add(coordinatorHandle);
-            Duration checkBudget = bounded(remaining(deadline), window.plusSeconds(5));
-            if (!positive(checkBudget)) break;
-            OrcaClient.Rpc checked = orca.invoke(root, checkBudget, checkArgs);
-            last = OrcaSettlement.fromCheck(checked.envelope(), taskId, dispatchId);
-            if (last.kind() == OrcaSettlement.Kind.COMPLETED
-                    || last.kind() == OrcaSettlement.Kind.ESCALATED
-                    || last.kind() == OrcaSettlement.Kind.FAILED) {
-                return last;
-            }
-            if (last.kind() == OrcaSettlement.Kind.QUESTION) {
-                if (turnPending) {
-                    turnPending = false;
-                    evidence.put("worker_turn", "observed");
-                    evidence.put("worker_turn_observed_by", "question");
-                    evidence.put("worker_turn_observed_at", Instant.now().toString());
-                }
-                // A question is a healthy wait, not an ending: the agent is alive and blocked on
-                // an answer. Take delivery of it and keep watching, so an answer given while
-                // this controller is still running lets the same worker finish here — and so
-                // the FIFO advances instead of replaying this question to every later attach.
-                acknowledge(root, runId, coordinatorHandle, last.deliveryId(), evidence);
-                lastQuestion = new OrcaSettlement.Outcome(last.kind(), last.taskId(),
-                        last.dispatchId(), last.type(), last.payload(), last.reason(),
-                        null, last.messageId());
-                evidence.put("question_pending", last.messageId());
-                continue;
-            }
-            // Agent Dashboard can prove that the exact native agent session is parked on a
-            // prompt only a person can answer. That wait is healthy: keep this controller
-            // alive so answering it from Orca/mobile lets the same worker continue. Remember
-            // the last proven state only so a wall-clock expiry says "needs a person" rather
-            // than pretending the agent merely ran out of time. An absent observation never
-            // clears a prior wait; only Orca's explicit null does.
-            Duration observationBudget = bounded(remaining(deadline), Duration.ofSeconds(15));
-            if (dispatchId != null && positive(observationBudget)) {
-                OrcaClient.Rpc worker = showWorker(root, observationBudget, dispatchId);
-                OrcaSettlement.Outcome observed = OrcaSettlement.fromWorkerShow(worker.envelope());
-                latestAgentObservation = observed;
-                evidence.put("agent_wait_observation", observed.reason());
-                if (observed.kind() == OrcaSettlement.Kind.QUESTION) {
-                    lastProvenAgentWait = observed;
-                    evidence.put("agent_wait", observed.payload());
-                } else if (observed.kind() == OrcaSettlement.Kind.CHECKPOINT
-                        && "agent_wait_checked_clear".equals(observed.reason())) {
-                    lastProvenAgentWait = null;
-                    evidence.remove("agent_wait");
-                }
-                if (turnPending) {
-                    // Until a turn is seen, the screen is still a start screen and is read for
-                    // what it waits on. Not after: a working agent's screen is its work, and a
-                    // file that says "update now" is not a prompt the agent is stuck on.
-                    String seen = OrcaSettlement.turnObserved(worker.envelope());
-                    if (seen != null) {
-                        turnPending = false;
-                        evidence.put("worker_turn", "observed");
-                        evidence.put("worker_turn_observed_by", seen);
-                        evidence.put("worker_turn_observed_at", Instant.now().toString());
-                    } else if (noteScreen(nestedString(worker.result(), "terminal", "preview"),
-                            evidence) != null) {
-                        return new OrcaSettlement.Outcome(OrcaSettlement.Kind.UNKNOWN, taskId,
-                                dispatchId, "turn_start", Map.of("blocked_on",
-                                        evidence.get("agent_blocked_on")), TURN_START_BLOCKED);
-                    }
-                }
-            }
-            Duration showBudget = bounded(remaining(deadline), Duration.ofSeconds(15));
-            if (!positive(showBudget)) break;
-            OrcaClient.Rpc shown = orca.invoke(root, showBudget,
-                    List.of("orchestration", "dispatch-show", "--task", taskId,
-                            "--from", coordinatorHandle));
-            OrcaSettlement.Outcome shownOutcome = OrcaSettlement.fromDispatchShow(shown.envelope());
-            if (shownOutcome.kind() == OrcaSettlement.Kind.COMPLETED
-                    || shownOutcome.kind() == OrcaSettlement.Kind.FAILED
-                    || shownOutcome.kind() == OrcaSettlement.Kind.ESCALATED) {
-                return shownOutcome;
-            }
-            last = shownOutcome.kind() == OrcaSettlement.Kind.UNKNOWN ? last : shownOutcome;
-        }
-        evidence.put("wait_exhausted", true);
-        // An unanswered question outranks every other reason the clock ran out: the worker did
-        // not stall, it asked something and nobody replied inside the role's budget.
-        if (lastQuestion != null) return lastQuestion;
-        if (latestAgentObservation != null
-                && latestAgentObservation.kind() == OrcaSettlement.Kind.QUESTION) {
-            return latestAgentObservation;
-        }
-        if (lastProvenAgentWait != null && latestAgentObservation != null
-                && latestAgentObservation.kind() == OrcaSettlement.Kind.UNKNOWN) {
-            Map<String, Object> payload = new LinkedHashMap<>(lastProvenAgentWait.payload());
-            payload.put("latest_observation", latestAgentObservation.reason());
-            return new OrcaSettlement.Outcome(OrcaSettlement.Kind.QUESTION, taskId, dispatchId,
-                    "agent_wait", payload, "agent_wait_last_seen_unverifiable");
-        }
-        return last;
-    }
-
-    private static boolean positive(Duration duration) {
-        return duration != null && !duration.isZero() && !duration.isNegative();
-    }
-
-    private static Duration bounded(Duration remaining, Duration cap) {
-        if (!positive(remaining)) return Duration.ZERO;
-        return remaining.compareTo(cap) < 0 ? remaining : cap;
-    }
-
-    // The compact Orca view omits the durable launch receipt and worker observation.
-    private OrcaClient.Rpc showWorker(Path root, Duration timeout, String dispatchId) throws Exception {
-        return orca.invoke(root, timeout, List.of("orchestration", "worker-show", "--dispatch", dispatchId, "--full"));
-    }
-
-    private OrcaClient.Rpc readTranscript(Path root, String dispatchId, Duration timeout) {
-        if (dispatchId == null || timeout.isZero() || timeout.isNegative()) return null;
-        try {
-            return orca.invoke(root, timeout.compareTo(Duration.ofSeconds(20)) < 0 ? timeout : Duration.ofSeconds(20),
-                    List.of("orchestration", "worker-read", "--dispatch", dispatchId, "--source", "auto"));
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
     private void writeRaw(Request request, String stdout, String stderr) throws Exception {
         Path rawDirectory = request.runDirectory().resolve("raw");
         Files.createDirectories(rawDirectory);
@@ -991,194 +836,9 @@ public final class OrcaExecutor implements RoleExecutor {
         return spec.toString().replace('\r', ' ').replace('\n', ' ');
     }
 
-    private boolean acknowledge(Path root, String runId, String coordinatorHandle,
-                                String deliveryId, Map<String, Object> evidence) {
-        if (deliveryId == null) return true;
-        try {
-            List<String> args = new ArrayList<>(List.of(
-                    "orchestration", "check", "--ack", deliveryId,
-                    "--terminal", coordinatorHandle));
-            if (runId != null) args.addAll(List.of("--run", runId));
-            OrcaClient.Rpc acknowledged = orca.invoke(root, Duration.ofSeconds(20), args);
-            evidence.put("delivery_ack_ok", acknowledged.ok());
-            return acknowledged.ok();
-        } catch (Exception failure) {
-            evidence.put("delivery_ack_ok", false);
-            evidence.put("delivery_ack_error", String.valueOf(failure.getMessage()));
-            return false;
-        }
-    }
-
-    /**
-     * Fence one dispatch, and say why if it could not be fenced.
-     *
-     * A failed fence is the one outcome that blocks every later stage in this worktree, so the
-     * operator is owed more than a false: the first attempt at this recorded only the boolean,
-     * and a live timeout then reported an unaccounted lifecycle with nothing to act on.
-     */
-    /**
-     * The agent tab's last screen for a worker whose first turn never started, and what it was
-     * waiting on when Overseer recognises it.
-     *
-     * Measured 2026-09-22 on Orca 1.4.207: a Claude reviewer in a fresh worktree sat on Claude
-     * Code's once-per-repository trust question until Overseer fenced it, and the report said
-     * only `role_orca_start_failed` with Orca's receipt. The question itself was in the
-     * worker's `terminal.preview`, and it names the one click that fixes it.
-     */
-    private String recordAgentScreen(Path root, String dispatchId, boolean watchTurn,
-                                     Map<String, Object> evidence) {
-        if (dispatchId == null) return null;
-        try {
-            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
-            String seen = watchTurn ? OrcaSettlement.turnObserved(shown.envelope()) : null;
-            if (seen != null) {
-                evidence.put("worker_turn", "observed");
-                evidence.put("worker_turn_observed_by", seen);
-                evidence.put("worker_turn_observed_at", Instant.now().toString());
-                return seen;
-            }
-            noteScreen(nestedString(shown.result(), "terminal", "preview"), evidence);
-        } catch (Exception unreadable) {
-            // The screen is a diagnosis, not a condition of fencing; the stop goes ahead.
-        }
-        return null;
-    }
-
-    /** Keep a start screen's tail and name what it waits on; returns that name, or null. */
-    private static String noteScreen(String screen, Map<String, Object> evidence) {
-        if (screen == null || screen.isBlank()) return null;
-        evidence.put("agent_screen_tail", tail(screen, 1500));
-        String blockedOn = blockedOn(screen);
-        if (blockedOn == null) return null;
-        evidence.put("agent_blocked_on", blockedOn);
-        evidence.put("resolution", "folder_trust".equals(blockedOn)
-                ? "the agent CLI stopped on its first-run question for this repository "
-                        + "(Claude Code: \"Is this a project you created or one you trust?\"). "
-                        + "Answer Yes once in an Orca tab in this worktree; Claude records it "
-                        + "for the whole repository, so later worktrees do not ask again"
-                : "the agent CLI asked to update before it would start. Choose Skip or update "
-                        + "it once in an Orca tab, then retry");
-        return blockedOn;
-    }
-
     /** What a first-run screen is waiting on, or null when Overseer does not recognise it. */
     public static String blockedOn(String screen) {
-        if (screen == null) return null;
-        String lower = screen.toLowerCase(java.util.Locale.ROOT);
-        if (lower.contains("trust this folder") || lower.contains("one you trust")
-                || lower.contains("do you trust")) {
-            return "folder_trust";
-        }
-        if (lower.contains("update available") || lower.contains("update now")) {
-            return "cli_update_prompt";
-        }
-        return null;
-    }
-
-    private boolean stopWorker(Path root, String dispatchId, Map<String, Object> evidence) {
-        try {
-            OrcaClient.Rpc stopped = orca.invoke(root, Duration.ofSeconds(30),
-                    List.of("orchestration", "worker-stop", "--dispatch", dispatchId));
-            evidence.put("worker_stop_ok", stopped.ok());
-            evidence.put("worker_stop", stopped.result());
-            if (stopped.ok()) {
-                closeWorkerTab(root, dispatchId, evidence);
-                return true;
-            }
-            evidence.put("worker_stop_exit_code", (long) stopped.exitCode());
-            evidence.put("worker_stop_timed_out", stopped.timedOut());
-            evidence.put("worker_stop_error_code", OrcaSettlement.errorCode(stopped.envelope()));
-            evidence.put("worker_stop_stderr", tail(stopped.stderr(), 1000));
-            evidence.put("worker_stop_stdout", tail(stopped.stdout(), 1000));
-            boolean fenced = fencedAnyway(root, dispatchId, evidence);
-            if (fenced) closeWorkerTab(root, dispatchId, evidence);
-            return fenced;
-        } catch (Exception failure) {
-            evidence.put("worker_stop_ok", false);
-            evidence.put("worker_stop_error", String.valueOf(failure.getMessage()));
-            return false;
-        }
-    }
-
-    /**
-     * Ask the dispatch itself whether it is still running, after Orca refused to stop it.
-     *
-     * A refusal is not a failure to fence. A worker that timed out and had its terminal closed
-     * answers {@code dispatch_inactive} — Orca declining to stop something that is already
-     * stopped — and treating that as an unaccounted lifecycle blocks every later stage in the
-     * worktree over a worker that is provably gone. Measured on Orca 1.4.196: the timed-out
-     * dispatch reported {@code status: failed}, {@code stage: process_exited},
-     * {@code observation.status: exited}, and {@code worker-list} showed nothing in flight.
-     *
-     * The reverse still fails closed. If the probe says the dispatch is live, or says nothing
-     * usable, the fence is unproven and the caller must not let anything else share the tree.
-     */
-    private boolean fencedAnyway(Path root, String dispatchId, Map<String, Object> evidence) {
-        try {
-            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
-            OrcaRecovery.Assessment after = OrcaRecovery.assess(shown.envelope(), dispatchId);
-            boolean fenced = after.verdict() == OrcaRecovery.Verdict.SETTLED
-                    || after.verdict() == OrcaRecovery.Verdict.GONE;
-            Map<String, Object> verification = new LinkedHashMap<>();
-            verification.put("method", "worker_show_after_refused_stop");
-            verification.put("verdict", after.verdict().name().toLowerCase());
-            verification.put("reason", after.reason());
-            verification.put("fenced", fenced);
-            evidence.put("worker_stop_verification", verification);
-            return fenced;
-        } catch (Exception unreachable) {
-            evidence.put("worker_stop_verification", Map.of(
-                    "method", "worker_show_after_refused_stop",
-                    "fenced", false,
-                    "error", String.valueOf(unreachable.getMessage())));
-            return false;
-        }
-    }
-
-    /**
-     * Close the agent tab a fence just stopped.
-     *
-     * {@code worker-stop} ends the dispatch and leaves the terminal. Measured 2026-09-26
-     * on Orca 1.4.212: a Codex worker fenced on its update screen stayed open as a
-     * {@code pwsh.exe} tab sitting on "Update available". The coordinator tab is closed
-     * separately; this is the worker's own tab.
-     */
-    private void closeWorkerTab(Path root, String dispatchId, Map<String, Object> evidence) {
-        if (dispatchId == null) return;
-        try {
-            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
-            String handle = OrcaSettlement.agentTerminalHandle(shown.envelope());
-            if (handle == null) {
-                evidence.put("worker_tab_close_ok", false);
-                evidence.put("worker_tab_close_error", "worker-show named no agent terminal");
-                return;
-            }
-            OrcaClient.Rpc closed = orca.invoke(root, Duration.ofSeconds(20),
-                    List.of("terminal", "close", "--terminal", handle, "--tab"));
-            evidence.put("worker_tab_close_ok", closed.ok());
-            evidence.put("worker_tab", handle);
-        } catch (Exception failure) {
-            evidence.put("worker_tab_close_ok", false);
-            evidence.put("worker_tab_close_error", String.valueOf(failure.getMessage()));
-        }
-    }
-
-    private void closeCoordinator(Path root, String handle, Map<String, Object> evidence) {
-        try {
-            OrcaClient.Rpc closed = orca.invoke(root, Duration.ofSeconds(20),
-                    List.of("terminal", "close", "--terminal", handle, "--tab"));
-            evidence.put("coordinator_close_ok", closed.ok());
-        } catch (Exception failure) {
-            evidence.put("coordinator_close_ok", false);
-            evidence.put("coordinator_close_error", String.valueOf(failure.getMessage()));
-        }
-    }
-
-    private static String nestedString(Map<String, Object> result, String container, String key) {
-        Object nested = result == null ? null : result.get(container);
-        if (nested instanceof Map<?, ?> map && map.get(key) != null) return String.valueOf(map.get(key));
-        Object direct = result == null ? null : result.get(key);
-        return direct == null ? null : String.valueOf(direct);
+        return OrcaWorkerMonitor.blockedOn(screen);
     }
 
     static String selectorArgument(String selector) {
@@ -1241,11 +901,6 @@ public final class OrcaExecutor implements RoleExecutor {
 
     private static String string(Object value) {
         return value == null ? null : String.valueOf(value);
-    }
-
-    private static String tail(String text, int limit) {
-        if (text == null) return "";
-        return text.length() <= limit ? text : text.substring(text.length() - limit);
     }
 
     /** A matching Orca launch receipt proves delivery to the worker, not provider execution. */

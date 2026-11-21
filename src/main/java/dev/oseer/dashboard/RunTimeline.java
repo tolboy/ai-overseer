@@ -175,7 +175,7 @@ public final class RunTimeline {
         // decision.json pending; the ledger is the record of what was asked.
         if (decisionRecord != null && "pending".equals(decisionRecord.get("state"))) {
             try {
-                if (Dashboard.decisionSuperseded(runsRoot, runId)) {
+                if (DashboardState.decisionSuperseded(runsRoot, runId)) {
                     decisionRecord.put("state", "superseded");
                 }
             } catch (IOException unread) { /* a sibling that cannot be read does not change this decision */ }
@@ -605,7 +605,7 @@ public final class RunTimeline {
             }
         }
         if (view != null) {
-            Map<String, Object> visible = Dashboard.publicAttempt(view);
+            Map<String, Object> visible = DashboardState.attemptView(view);
             row.put("kind", "role");
             for (String key : List.of("stage", "role", "profile", "vendor", "model", "runner", "code", "cost_usd")) {
                 if (visible.get(key) != null) row.put(key, visible.get(key));
