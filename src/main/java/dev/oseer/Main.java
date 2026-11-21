@@ -86,6 +86,7 @@ public final class Main {
                 case "approve" -> approve(args);
                 case "decide" -> decide(args);
                 case "land" -> land(args);
+                case "pr", "publish" -> pullRequest(args);
                 case "pilot" -> pilot(args);
                 case "probe" -> probe(args);
                 default -> {
@@ -2756,6 +2757,13 @@ public final class Main {
         return outcome.ok() ? 0 : 1;
     }
 
+    private static int pullRequest(String[] args) throws Exception {
+        dev.oseer.run.PullRequestCommand.Outcome outcome =
+                new dev.oseer.run.PullRequestCommand(new ProcessRunner()).run(args);
+        System.out.println(Json.write(outcome.report()));
+        return outcome.ok() ? 0 : 1;
+    }
+
     /**
      * A waiver of one contract_gap-only stop: the finding the person named, and every open
      * contract_gap it closed with it.
@@ -3148,6 +3156,17 @@ public final class Main {
                   oseer land <run-id>         plan the commit, branch and request for an
                                                accepted run; --commit/--push/--pull-request
                                                carry it out. Merges nothing
+                    --update-pr N            verify and plan an update to an existing GitHub PR
+                    --expect-head SHA         pin the observed PR head for --push or --emit-bundle
+                    --emit-bundle FILE        export the fast-forward for a relay host
+                    --pr-snapshot FILE       export offline using saved PR metadata JSON
+                  oseer pr N [--remote NAME]   read GitHub PR metadata and inline review comments
+                    --metadata-only            omit comments for credential-less bundle relay
+                    --comment ID              select a review comment (repeatable)
+                    --reply-file FILE        preview a reply to one selected comment
+                    --post --expect-head SHA send the reply to the pinned PR
+                  oseer publish RUN --pr N   preview a review from a run of the current PR head
+                    --post --expect-head SHA publish the reviewed findings
 
                 `do` and `run` narrate the stages on stderr while they work — which role is
                 dispatched, to which vendor, what it cost and where it went next. stdout stays

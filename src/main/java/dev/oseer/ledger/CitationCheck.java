@@ -307,12 +307,12 @@ public final class CitationCheck {
             }
             Object rawLine = finding.raw().get("line");
             if (rawLine != null) {
-                line = positive(rawLine);
+                line = positiveLine(rawLine);
                 if (line == null) badNumber = true;
             }
             Object rawEnd = finding.raw().get("end_line");
             if (rawEnd != null) {
-                end = positive(rawEnd);
+                end = positiveLine(rawEnd);
                 if (end == null) badNumber = true;
             }
             if (line == null) line = pathLine;
@@ -362,7 +362,7 @@ public final class CitationCheck {
         return false;
     }
 
-    private static Integer positive(Object raw) {
+    static Integer positiveLine(Object raw) {
         if (raw instanceof Number number) {
             long value = number.longValue();
             if (value >= 1 && value <= Integer.MAX_VALUE) return (int) value;

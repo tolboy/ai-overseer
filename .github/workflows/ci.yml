@@ -66,6 +66,32 @@ jobs:
           call bin\oseer.cmd --version || exit /b 1
           call bin\oseer.cmd --help || exit /b 1
 
+      - name: Try the portable package (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh package.sh
+          archive="$PWD/out/dist/ai-overseer.zip"
+          unpacked="$(mktemp -d)"
+          cd "$unpacked"
+          jar xf "$archive"
+          sh ai-overseer/bin/oseer --version
+          sh ai-overseer/bin/oseer --help
+
+      - name: Try the portable package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\package.cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'oseer package'
+          Expand-Archive -LiteralPath 'out\dist\ai-overseer.zip' -DestinationPath $unpacked
+          Set-Location $unpacked
+          & .\ai-overseer\bin\oseer.cmd --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\ai-overseer\bin\oseer.cmd --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   demo:
     name: Demo fixture (no vendor call)
     runs-on: ubuntu-latest

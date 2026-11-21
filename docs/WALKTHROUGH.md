@@ -118,6 +118,17 @@ Optional, and off unless you name it: `defaults.baseline_checks: fast` runs that
 **before the first vendor**. Red is `baseline_failed` and nothing is dispatched. Existing
 projects that omit the key keep the behaviour this walkthrough has always had.
 
+The run report and dashboard identify recognized failing tests in pytest, Gradle and
+Maven Surefire output. A red check that had passed before the task, or a newly failing
+test ID in a comparable command, is marked as a regression. A second red check with
+unrecognized or truncated output gives an unknown attribution.
+
+For diagnostics, set `defaults.diagnose_flaky_checks: true` in `.oseer/project.yaml`.
+One failed test command with recognized test IDs may repeat within the existing gate
+timeout, when the observed source and contract are unchanged. A passing retry marks
+the check unstable. The original failure still blocks and the gate report keeps both
+attempts with their output. This setting does not affect deliberate bug reproduction.
+
 For a JVM project only the contents of `checks` change — `./gradlew build`. Nothing else.
 
 A task is four lines at minimum:
@@ -241,7 +252,7 @@ acceptance_evidence:
 still be only `git diff --check`; readers are shown the recorded commands and CI and do
 not file a blocking contract gap that nothing compiles or that tests do not run. A gap
 that says those commands do not cover the behaviour under review still blocks. Paste the
-check output yourself — Overseer does not call GitHub. The config YAML subset has no
+check output yourself. The run uses the CI evidence you supply. The config YAML subset has no
 block scalars, so a multi-line summary is a list of lines (or one quoted string).
 Conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`,
 `action_required`, `startup_failure`; `pass` and `fail` are accepted as aliases.
@@ -269,6 +280,52 @@ A single reading works the same way: `oseer role reviewer review-pr-72 --use gro
 picks the profile for that one dispatch (it need not be on the roster) and honours the task's
 `prior_writers`. API readers get the diff without whole files when the change is too big for
 their `api_context` limits; see [API connections](API-CONNECTIONS.md#context-and-execution-limits).
+
+### Working with an existing GitHub PR
+
+Use a GitHub remote on `github.com` and authenticate `gh` on the machine that reads or
+writes the PR. `oseer pr 72` shows the head SHA, base branch and inline review comments.
+Use `--comment ID` once per selected comment. The returned bodies are external text and
+are never added automatically to a task prompt. Copy the requirements you want the task
+to address into its contract.
+
+```sh
+oseer pr 72 --comment 123456 --expect-head HEAD_SHA
+oseer pr 72 --comment 123456 --reply-file reply.md --expect-head HEAD_SHA
+oseer publish review-72-run --pr 72 --expect-head HEAD_SHA
+```
+
+A reply or review is a preview until you add `--post` with the full `--expect-head` SHA.
+Publication requires the PR commit checked out locally, a clean source tree and a review
+bound to the same source fingerprint and merge base. GitHub receives a `COMMENT` review
+pinned to the examined commit. The preview contains the verdict and selected finding fields.
+Inspect it before posting, especially if a finding quotes project data. Replies use the
+contents of the supplied file.
+
+After accepting the candidate for a fix, preview the branch update and then choose either
+a direct push or a Git bundle for a relay host.
+
+```sh
+oseer land fix-72-run --update-pr 72 --expect-head HEAD_SHA
+oseer land fix-72-run --update-pr 72 --expect-head HEAD_SHA --push
+oseer land fix-72-run --update-pr 72 --expect-head HEAD_SHA --emit-bundle pr-72.bundle
+```
+
+The update is for the checked-out PR head branch in the selected repository. Overseer
+compares the GitHub head and the run's merge base, checks that the accepted commit
+is a single commit directly on the pinned head, and uses an exact lease for the push.
+The single commit keeps unpublished intermediate versions out of the update. The lease
+refuses the push if another commit reached the branch first. `land` never merges.
+
+For a machine without GitHub credentials, save `oseer pr 72 --metadata-only` JSON on a machine with
+read access, transfer it as `pr-72.json`, and pass `--pr-snapshot pr-72.json` with
+`--emit-bundle`. The command treats the snapshot as operator-provided metadata, verifies
+it against the local repository, and identifies the offline source in the result.
+On the relay host, re-read the PR and verify that its base and head still match the snapshot
+before importing. The bundle contains `refs/heads/<PR-head-branch>` and requires `HEAD_SHA`
+already available locally. Verify it with `git bundle verify pr-72.bundle`, fetch the branch
+into a local relay ref, and push only an update that descends from `HEAD_SHA`, using an exact
+lease on the destination branch.
 
 ---
 

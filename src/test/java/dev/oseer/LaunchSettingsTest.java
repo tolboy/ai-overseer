@@ -99,8 +99,10 @@ public final class LaunchSettingsTest implements Suite {
                 case "orchestration run-create", "orchestration run-use" -> rpc(Map.of("run", Map.of("id", "orca-run")));
                 case "orchestration task-create" -> rpc(Map.of("task", Map.of("id", "task")));
                 case "orchestration worker-start" -> rpc(Map.of("ready", true, "dispatchId", "dispatch", "taskId", "task", "launch", launch(effort)));
-                case "orchestration worker-show" -> rpc(Map.of("dispatch", Map.of("id", "dispatch", "task_id", "task", "status", "dispatched"),
-                        "worker", Map.of("agent_terminal_handle", "worker", "startOptions", Map.of("launch", launch(effort)))));
+                case "orchestration worker-show" -> args.contains("--full")
+                        ? rpc(Map.of("dispatch", Map.of("id", "dispatch", "task_id", "task", "status", "dispatched"),
+                                "worker", Map.of("agent_terminal_handle", "worker", "startOptions", Map.of("launch", launch(effort)))))
+                        : rpc(Map.of("dispatchId", "dispatch", "taskId", "task", "state", "ready"));
                 case "orchestration worker-stop" -> {
                     if (uncertainStop) throw new java.io.IOException("stop unconfirmed");
                     yield rpc(Map.of("stopped", true));

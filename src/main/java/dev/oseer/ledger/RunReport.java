@@ -2,6 +2,7 @@ package dev.oseer.ledger;
 
 import dev.oseer.config.OverseerTree;
 import dev.oseer.config.Workflow;
+import dev.oseer.gate.CheckDiagnostics;
 import dev.oseer.git.GitRepository;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
@@ -199,6 +200,9 @@ public final class RunReport {
                     stage.put("reused_from", step.get("reused_from"));
                 }
                 stage.put("commands", body.get("commands"));
+                if (body.get("environment_command") != null) {
+                    stage.put("environment_command", body.get("environment_command"));
+                }
                 stage.put("changed_paths", body.get("changed_paths"));
                 stage.put("violations", body.get("violations"));
                 stage.put("report", step.get("report"));
@@ -211,7 +215,34 @@ public final class RunReport {
             }
             stages.add(stage);
         }
+        addCheckDiagnostics(stages);
         return stages;
+    }
+
+    private static void addCheckDiagnostics(List<Map<String, Object>> stages) {
+        List<Map<String, Object>> baseline = new ArrayList<>();
+        for (Map<String, Object> stage : stages) {
+            if (!"baseline".equals(stage.get("phase")) || !(stage.get("commands") instanceof List<?> commands)) continue;
+            for (Object item : commands) {
+                if (item instanceof Map<?, ?> command) baseline.add(CheckDiagnostics.observation(command, stage));
+            }
+        }
+        for (Map<String, Object> stage : stages) {
+            if (!List.of("baseline", "acceptance").contains(String.valueOf(stage.get("phase")))
+                    || !(stage.get("commands") instanceof List<?> commands)) continue;
+            List<Object> annotated = new ArrayList<>();
+            for (Object item : commands) {
+                if (!(item instanceof Map<?, ?> raw)) { annotated.add(item); continue; }
+                Map<String, Object> observation = CheckDiagnostics.observation(raw, stage);
+                CheckDiagnostics.attribute(observation, baseline, "baseline".equals(stage.get("phase")));
+                Map<String, Object> command = new LinkedHashMap<>(cast(raw));
+                for (String key : List.of("attribution", "failed_tests", "new_failed_tests", "pre_existing_failed_tests")) {
+                    if (observation.containsKey(key)) command.put(key, observation.get(key));
+                }
+                annotated.add(command);
+            }
+            stage.put("commands", annotated);
+        }
     }
 
     /**
@@ -703,6 +734,14 @@ public final class RunReport {
                     money(stage.get("cost_usd")),
                     text(tokens.get("input")) + "/" + text(tokens.get("output")),
                     text(stage.get("duration_millis"))));
+            for (Object detail : list(stage.get("commands"))) {
+                if (!(detail instanceof Map<?, ?> command) || command.get("attribution") == null) continue;
+                out.append("  check ").append(text(command.get("command"))).append("  ")
+                        .append(command.get("attribution"));
+                if (command.get("failed_tests") instanceof List<?> tests) out.append("  tests=").append(tests);
+                if (command.get("new_failed_tests") instanceof List<?> fresh) out.append("  new=").append(fresh);
+                out.append('\n');
+            }
         }
 
         List<Object> vendors = list(report.get("vendors"));

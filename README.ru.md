@@ -14,6 +14,10 @@ Java, **ноль зависимостей**, сборка одним `javac`. И
 правом записи в репозиторий, не должен тащить за собой supply-chain из сотни артефактов —
 и должен собираться без сети.
 
+Переносимый ZIP собирается командой `sh package.sh` или `package.cmd` на Windows.
+Распакуйте `out/dist/ai-overseer.zip` и запустите лаунчер из любого проекта.
+Для запуска нужна Java 21 или новее. [Первый запуск из архива](docs/FIRST-RUN.md).
+
 ```
 ./build.sh          # или build.cmd на Windows
 ./test.sh           # или test.cmd
@@ -32,7 +36,8 @@ Read-only текстовые роли и проверенные native OpenCode 
 
 ## Первый запуск
 
-Соберите Overseer один раз. Дальше одна команда — цель и проект:
+[Руководство первого запуска](docs/FIRST-RUN.md) показывает, как проверить проект и
+подтвердить план в браузере. Для запуска из терминала укажите цель и проект:
 
 ```text
 C:\path\to\ai-overseer\bin\oseer.cmd do --project C:\path\to\repo --scope code "Add a Settings button"

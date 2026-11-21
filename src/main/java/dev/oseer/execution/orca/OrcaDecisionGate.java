@@ -131,10 +131,7 @@ public final class OrcaDecisionGate {
                             List.of("orchestration", "run-create",
                                     "--objective", oneLine("oseer " + decision.runId() + ": " + objective),
                                     "--from", handle));
-                    if (!made[0].ok()) return null;
-                    String created = nested(made[0].result(), "run", "id");
-                    return created != null ? created
-                            : string(OrcaSettlement.first(made[0].result(), "runId", "id", "run_id"));
+                    return made[0].ok() ? OrcaSettlement.runId(made[0].envelope()) : null;
                 });
                 String orcaRunId = owned.id();
                 OrcaClient.Rpc run = made[0];
@@ -169,7 +166,11 @@ public final class OrcaDecisionGate {
                                 "--options", OrcaClient.jsonArgument(decision.options()),
                                 "--from", handle));
                 String gateId = nested(created.result(), "gate", "id");
-                if (!created.ok() || gateId == null) {
+                if (gateId == null && taskId.equals(OrcaSettlement.taskId(created.envelope()))
+                        && "pending".equals(created.result().get("status"))) {
+                    gateId = string(OrcaSettlement.first(created.result(), "gateId", "gate_id"));
+                }
+                if (!created.ok() || gateId == null || gateId.isBlank()) {
                     return new Publication(false, "gate_refused", null,
                             detailOf(created));
                 }
@@ -210,7 +211,7 @@ public final class OrcaDecisionGate {
 
     private static Answer readFrom(OrcaClient orca, Path root, OrcaLifecycle.Gate gate) throws Exception {
         OrcaClient.Rpc listed = orca.invoke(root, Duration.ofSeconds(20),
-                List.of("orchestration", "gate-list", "--run", gate.orcaRunId()));
+                List.of("orchestration", "gate-list", "--run", gate.orcaRunId(), "--full"));
         if (!listed.ok()) return null;
         return answerFrom(listed.envelope(), gate.gateId());
     }

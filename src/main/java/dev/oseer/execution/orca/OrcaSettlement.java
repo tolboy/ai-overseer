@@ -123,6 +123,16 @@ public final class OrcaSettlement {
         return id == null ? null : String.valueOf(id);
     }
 
+    public static String runId(Map<String, Object> envelope) {
+        if (!envelopeOk(envelope)) return null;
+        Map<String, Object> result = resultOf(envelope);
+        if (result.get("run") instanceof Map<?, ?> run && run.get("id") instanceof String id && !id.isBlank()) {
+            return id;
+        }
+        Object id = first(result, "runId", "id", "run_id");
+        return id instanceof String text && !text.isBlank() ? text : null;
+    }
+
     public static String taskId(Map<String, Object> envelope) {
         Map<String, Object> result = resultOf(envelope);
         Object nested = result.get("task");

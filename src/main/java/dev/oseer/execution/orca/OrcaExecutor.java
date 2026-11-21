@@ -144,8 +144,7 @@ public final class OrcaExecutor implements RoleExecutor {
         // Ask about the worker this run already owns before creating anything. Whether it is
         // alive decides every branch below, and asking costs one read-only probe.
         if (prior != null && prior.active()) {
-            OrcaClient.Rpc probe = orca.invoke(request.projectRoot(), PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", prior.dispatchId()));
+            OrcaClient.Rpc probe = showWorker(request.projectRoot(), PROBE_TIMEOUT, prior.dispatchId());
             OrcaRecovery.Assessment recovery = OrcaRecovery.assess(probe.envelope(), prior.dispatchId());
             Map<String, Object> report = new LinkedHashMap<>();
             report.put("dispatch_id", prior.dispatchId());
@@ -188,8 +187,7 @@ public final class OrcaExecutor implements RoleExecutor {
                         + "Restore its original profile or inspect and fence that dispatch before a fresh run");
                 return fail("role_orca_launch_contract_changed", evidence, Duration.ZERO, "");
             }
-            OrcaClient.Rpc launchProbe = orca.invoke(request.projectRoot(), PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", prior.dispatchId()));
+            OrcaClient.Rpc launchProbe = showWorker(request.projectRoot(), PROBE_TIMEOUT, prior.dispatchId());
             OrcaLaunch.Verification verified = OrcaLaunch.verify(profile, launchProbe.envelope());
             evidence.put("launch", verified.evidence());
             if (!launchProbe.ok() || !prior.dispatchId().equals(OrcaSettlement.dispatchId(launchProbe.envelope()))
@@ -454,9 +452,8 @@ public final class OrcaExecutor implements RoleExecutor {
             }
             // Inspect the durable options on the exact dispatch, even if worker-start also
             // included a receipt. This is the same contract a resumed controller will read.
-            OrcaClient.Rpc launchReceipt = dispatchId == null ? started : orca.invoke(
-                    request.projectRoot(), PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+            OrcaClient.Rpc launchReceipt = dispatchId == null ? started
+                    : showWorker(request.projectRoot(), PROBE_TIMEOUT, dispatchId);
             OrcaLaunch.Verification verified = OrcaLaunch.verify(profile, launchReceipt.envelope());
             evidence.put("launch", verified.evidence());
             boolean identityMatches = taskId.equals(OrcaSettlement.taskId(launchReceipt.envelope()))
@@ -738,8 +735,7 @@ public final class OrcaExecutor implements RoleExecutor {
                                Map<String, Object> evidence) {
         if (dispatchId == null) return;
         try {
-            OrcaClient.Rpc shown = orca.invoke(root, PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
             String terminal = OrcaSettlement.agentTerminalHandle(shown.envelope());
             if (terminal == null) {
                 evidence.put("worker_row_named", false);
@@ -867,8 +863,7 @@ public final class OrcaExecutor implements RoleExecutor {
             // clears a prior wait; only Orca's explicit null does.
             Duration observationBudget = bounded(remaining(deadline), Duration.ofSeconds(15));
             if (dispatchId != null && positive(observationBudget)) {
-                OrcaClient.Rpc worker = orca.invoke(root, observationBudget,
-                        List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+                OrcaClient.Rpc worker = showWorker(root, observationBudget, dispatchId);
                 OrcaSettlement.Outcome observed = OrcaSettlement.fromWorkerShow(worker.envelope());
                 latestAgentObservation = observed;
                 evidence.put("agent_wait_observation", observed.reason());
@@ -936,6 +931,11 @@ public final class OrcaExecutor implements RoleExecutor {
     private static Duration bounded(Duration remaining, Duration cap) {
         if (!positive(remaining)) return Duration.ZERO;
         return remaining.compareTo(cap) < 0 ? remaining : cap;
+    }
+
+    // The compact Orca view omits the durable launch receipt and worker observation.
+    private OrcaClient.Rpc showWorker(Path root, Duration timeout, String dispatchId) throws Exception {
+        return orca.invoke(root, timeout, List.of("orchestration", "worker-show", "--dispatch", dispatchId, "--full"));
     }
 
     private OrcaClient.Rpc readTranscript(Path root, String dispatchId, Duration timeout) {
@@ -1029,8 +1029,7 @@ public final class OrcaExecutor implements RoleExecutor {
                                      Map<String, Object> evidence) {
         if (dispatchId == null) return null;
         try {
-            OrcaClient.Rpc shown = orca.invoke(root, PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
             String seen = watchTurn ? OrcaSettlement.turnObserved(shown.envelope()) : null;
             if (seen != null) {
                 evidence.put("worker_turn", "observed");
@@ -1116,8 +1115,7 @@ public final class OrcaExecutor implements RoleExecutor {
      */
     private boolean fencedAnyway(Path root, String dispatchId, Map<String, Object> evidence) {
         try {
-            OrcaClient.Rpc shown = orca.invoke(root, PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
             OrcaRecovery.Assessment after = OrcaRecovery.assess(shown.envelope(), dispatchId);
             boolean fenced = after.verdict() == OrcaRecovery.Verdict.SETTLED
                     || after.verdict() == OrcaRecovery.Verdict.GONE;
@@ -1148,8 +1146,7 @@ public final class OrcaExecutor implements RoleExecutor {
     private void closeWorkerTab(Path root, String dispatchId, Map<String, Object> evidence) {
         if (dispatchId == null) return;
         try {
-            OrcaClient.Rpc shown = orca.invoke(root, PROBE_TIMEOUT,
-                    List.of("orchestration", "worker-show", "--dispatch", dispatchId));
+            OrcaClient.Rpc shown = showWorker(root, PROBE_TIMEOUT, dispatchId);
             String handle = OrcaSettlement.agentTerminalHandle(shown.envelope());
             if (handle == null) {
                 evidence.put("worker_tab_close_ok", false);

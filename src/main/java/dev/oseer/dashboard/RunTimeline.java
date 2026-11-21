@@ -1,5 +1,6 @@
 package dev.oseer.dashboard;
 
+import dev.oseer.gate.CheckDiagnostics;
 import dev.oseer.json.Json;
 
 import java.io.IOException;
@@ -416,6 +417,8 @@ public final class RunTimeline {
             if (GATE_REPORTS.contains(name)) report = readJson(dir.resolve(name), runsRoot);
         }
         if (report == null) report = findGateReport(dir, runsRoot);
+        if ("gates".equals(row.get("step"))) row.put("phase", "acceptance");
+        if ("baseline".equals(row.get("step"))) row.put("phase", "baseline");
         if (report != null) gateDetails(row, report);
     }
 
@@ -437,6 +440,7 @@ public final class RunTimeline {
             for (Map<String, Object> command : commands) {
                 if (command.get("duration_ms") instanceof Number number) millis += number.longValue();
                 else known = false;
+                if (command.get("diagnostic_duration_ms") instanceof Number retry) millis += retry.longValue();
             }
             if (known) row.put("duration_ms", millis);
         }
@@ -449,41 +453,28 @@ public final class RunTimeline {
         if (!(report.get("commands") instanceof List<?> list)) return commands;
         for (Object raw : list) {
             if (!(raw instanceof Map<?, ?> command)) continue;
-            Map<String, Object> visible = new LinkedHashMap<>();
-            for (String key : List.of("command", "exit_code", "timed_out", "duration_ms")) copyScalar(visible, command, key);
-            boolean passed = command.get("exit_code") instanceof Number code && code.longValue() == 0
-                    && !Boolean.TRUE.equals(command.get("timed_out"));
-            visible.put("ok", passed);
-            commands.add(visible);
+            commands.add(CheckDiagnostics.observation(command, report));
         }
         return commands;
     }
 
-    /**
-     * Where a red acceptance check came from. The loop stops on a red baseline before any
-     * vendor, so a baseline command that is red at acceptance was green when the task began:
-     * that is a regression of this task. A command that was not in the baseline has no record
-     * of its earlier state, and that is said rather than guessed.
-     */
+    /** Annotate actual observations. An intentionally red reproduction is separate evidence. */
     private static void attribute(List<Map<String, Object>> steps, Map<?, ?> baseline) {
-        Map<String, Boolean> before = new LinkedHashMap<>();
-        if (baseline != null && baseline.get("commands") instanceof List<?> list) {
-            for (Object raw : list) {
-                if (raw instanceof Map<?, ?> command && command.get("command") instanceof String text) {
-                    before.put(text, Boolean.TRUE.equals(command.get("ok")));
-                }
-            }
-        }
+        List<?> before = baseline.get("commands") instanceof List<?> list ? list : List.of();
         for (Map<String, Object> step : steps) {
-            if (!"gate".equals(step.get("kind")) || "baseline".equals(step.get("step"))
-                    || "reproduction".equals(step.get("phase"))) continue;
+            if (!"gate".equals(step.get("kind"))
+                    || !List.of("baseline", "acceptance").contains(String.valueOf(step.get("phase")))) continue;
             if (!(step.get("commands") instanceof List<?> commands)) continue;
             for (Object raw : commands) {
                 if (!(raw instanceof Map<?, ?> rawCommand)) continue;
                 @SuppressWarnings("unchecked") Map<String, Object> command = (Map<String, Object>) rawCommand;
-                if (Boolean.TRUE.equals(command.get("ok"))) continue;
-                Boolean earlier = command.get("command") instanceof String text ? before.get(text) : null;
-                command.put("attribution", earlier == null ? "no_baseline" : earlier ? "regression" : "pre_existing");
+                CheckDiagnostics.attribute(command, before, "baseline".equals(step.get("phase")));
+            }
+        }
+        for (Object item : before) {
+            if (item instanceof Map<?, ?> raw) {
+                @SuppressWarnings("unchecked") Map<String, Object> command = (Map<String, Object>) raw;
+                CheckDiagnostics.attribute(command, List.of(), true);
             }
         }
     }
@@ -492,8 +483,15 @@ public final class RunTimeline {
     private static void maskCommands(Map<String, Object> row) {
         if (row.get("commands") instanceof List<?> commands) {
             for (Object item : commands) {
-                if (item instanceof Map<?, ?> command && command.get("command") instanceof String text) {
-                    ((Map<String, Object>) command).put("command", redact(text));
+                if (item instanceof Map<?, ?> raw) {
+                    Map<String, Object> command = (Map<String, Object>) raw;
+                    if (command.get("command") instanceof String text) command.put("command", redact(text));
+                    for (String key : List.of("failed_tests", "new_failed_tests", "pre_existing_failed_tests")) {
+                        if (command.get(key) instanceof List<?> ids) {
+                            command.put(key, ids.stream().filter(String.class::isInstance).map(String.class::cast)
+                                    .map(RunTimeline::redact).toList());
+                        }
+                    }
                 }
             }
         }
