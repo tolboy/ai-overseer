@@ -1175,11 +1175,16 @@ public final class RoleRunner {
             }
 
             if (result.artifact() != null) {
-                // Both downgrades happen before the report is written. The loop reads the
-                // vendor file, not this list, and applies the same adjustment there.
-                List<Findings.Finding> found = CitationCheck.verify(Findings.adjusted(
+                List<Findings.Finding> found = Findings.adjusted(
                         Findings.of(result.artifact()), task.manualVerification(),
-                        task.acceptanceEvidence().recordsRealAcceptance()), root);
+                        task.acceptanceEvidence().recordsRealAcceptance());
+                if (!"visual_qa".equals(role)) {
+                    found = CitationCheck.verify(found, root);
+                } else if (attachments != null && !attachments.isEmpty()) {
+                    found = CitationCheck.verifyVisual(found, root, attachments);
+                }
+                // A self-acquiring visual role's screenshots are checked after it returns
+                // to the task loop. Only that checked list can verify its finding citations.
                 if (!found.isEmpty()) {
                     report.put("findings", found.stream().map(Findings.Finding::toMap).toList());
                 }
@@ -2030,8 +2035,8 @@ public final class RoleRunner {
                 ## Citations that can block
 
                 A P1 or P2 product_defect has to name a file that is in the tree. When you name
-                a line, that line has to exist. Put the code you are quoting in `quote`, or in
-                backticks. Overseer checks that the quote appears within 20 lines of the cited
+                a line, that line has to exist. Put current source in `quote`, or use backticks
+                in `actual` for a literal source excerpt. Overseer checks within 20 lines of the cited
                 line before the finding can block. A citation it cannot check is recorded as
                 unverified and does not block. The check reads the files; it does not call a model.
 

@@ -92,14 +92,17 @@ public final class RunTimeline {
             steps = summarySteps((List<?>) summary.get("steps"), runsRoot, runId);
         } else {
             boolean running = false;
+            boolean controllerStopped = false;
             steps = new ArrayList<>();
             for (Path step : stepDirectories(runsRoot, runId)) {
                 Map<String, Object> row = liveStep(step, runsRoot, runId);
                 if (row == null) continue;
                 if ("running".equals(row.get("status"))) running = true;
+                if ("controller_stopped".equals(row.get("status"))) controllerStopped = true;
                 steps.add(row);
             }
-            result.put("state", running ? "running" : summary != null ? "stopped" : "no_summary");
+            result.put("state", running ? "running" : controllerStopped ? "controller_stopped"
+                    : summary != null ? "stopped" : "no_summary");
             if (summary != null) {
                 copyScalar(result, summary, "ok");
                 copyScalar(result, summary, "reason");
@@ -128,7 +131,9 @@ public final class RunTimeline {
             }
             if (!visible.isEmpty()) result.put("unverified_findings", visible);
         }
-        result.put("workflow", workflow(summary));
+        List<Map<String, Object>> workflow = workflow(summary);
+        result.put("workflow", workflow);
+        if (summary != null) markFailedStageCards(summary.get("pending_stages"), steps);
         Map<String, Object> baseline = baseline(summary, runsRoot);
         attribute(steps, baseline);
         maskCommands(baseline);
@@ -138,7 +143,7 @@ public final class RunTimeline {
         // The chip row and the stage cards are one fact. A stage that passed used to read
         // "completed" on the chip and "passed" on the card, and a stage the run never opened
         // read "still open" under a header that already said the run had stopped.
-        agreeWithCards(result.get("workflow"), steps);
+        agreeWithCards(workflow, steps);
         if (Boolean.FALSE.equals(result.get("ok"))) {
             List<Map<String, Object>> causes = stopCauses(steps);
             if (!causes.isEmpty()) result.put("stop_causes", causes);
@@ -168,11 +173,8 @@ public final class RunTimeline {
         // Shown, not rewritten. A later continuation or a later run of the same tree leaves
         // decision.json pending; the ledger is the record of what was asked.
         if (decisionRecord != null && "pending".equals(decisionRecord.get("state"))) {
-            String taskId = result.get("task_id") instanceof String text ? text : null;
-            String fingerprint = summary != null && summary.get("candidate_fingerprint") instanceof String text ? text : null;
-            String started = result.get("started_at") instanceof String text ? text : null;
             try {
-                if (Dashboard.decisionSuperseded(runsRoot, runId, taskId, fingerprint, started)) {
+                if (Dashboard.decisionSuperseded(runsRoot, runId)) {
                     decisionRecord.put("state", "superseded");
                 }
             } catch (IOException unread) { /* a sibling that cannot be read does not change this decision */ }
@@ -186,9 +188,7 @@ public final class RunTimeline {
      * Chip state follows the card when a stage ran, and names the reason when it did not.
      * {@code not_reached} and {@code judged_an_earlier_candidate} are not an open stage.
      */
-    @SuppressWarnings("unchecked")
-    private static void agreeWithCards(Object workflow, List<Map<String, Object>> steps) {
-        if (!(workflow instanceof List<?> stages)) return;
+    private static void agreeWithCards(List<Map<String, Object>> stages, List<Map<String, Object>> steps) {
         Map<String, String> cards = new LinkedHashMap<>();
         for (Map<String, Object> step : steps) {
             if (step.get("stage") instanceof String name && step.get("status") instanceof String status && !status.isBlank()
@@ -196,17 +196,29 @@ public final class RunTimeline {
                 cards.put(name, status);
             }
         }
-        for (Object item : stages) {
-            if (!(item instanceof Map<?, ?> raw)) continue;
-            Map<String, Object> row = (Map<String, Object>) raw;
+        for (Map<String, Object> row : stages) {
+            if ("did_not_pass".equals(row.get("reason"))) { row.put("state", "failed"); continue; }
             String card = cards.get(String.valueOf(row.get("stage")));
             if (card != null) { row.put("state", card); continue; }
             if ("completed".equals(row.get("state"))) { row.put("state", "passed"); continue; }
             if (!"pending".equals(row.get("state"))) continue;
             String reason = String.valueOf(row.get("reason"));
-            if ("did_not_pass".equals(reason)) row.put("state", "failed");
-            else if ("not_reached".equals(reason)) row.put("state", "not_reached");
+            if ("not_reached".equals(reason)) row.put("state", "not_reached");
             else if ("judged_an_earlier_candidate".equals(reason)) row.put("state", "earlier_candidate");
+        }
+    }
+
+    /** The vendor can finish its call while the workflow refuses its verdict. */
+    static void markFailedStageCards(Object pendingStages, List<Map<String, Object>> steps) {
+        if (!(pendingStages instanceof List<?> pending)) return;
+        Set<String> failed = new LinkedHashSet<>();
+        for (Object item : pending) {
+            if (item instanceof Map<?, ?> row && "did_not_pass".equals(row.get("reason"))
+                    && row.get("stage") instanceof String stage) failed.add(stage);
+        }
+        for (int i = steps.size() - 1; i >= 0 && !failed.isEmpty(); i--) {
+            Map<String, Object> step = steps.get(i);
+            if (failed.remove(step.getOrDefault("stage", step.get("step")))) step.put("status", "failed");
         }
     }
 
@@ -228,7 +240,7 @@ public final class RunTimeline {
         Map<String, Object> failed = null;
         for (Map<String, Object> step : steps) if ("failed".equals(step.get("status"))) failed = step;
         List<Map<String, Object>> causes = new ArrayList<>();
-        if (failed == null) return causes;
+        if (failed == null || Boolean.TRUE.equals(failed.get("ok"))) return causes;
         if (failed.get("failed_attempts") instanceof List<?> attempts) {
             for (Object item : attempts) {
                 if (!(item instanceof Map<?, ?> attempt)) continue;
@@ -604,6 +616,7 @@ public final class RunTimeline {
             String state = String.valueOf(visible.get("view_state"));
             row.put("status", switch (state) {
                 case "running" -> "running";
+                case "unknown_controller_stopped" -> "controller_stopped";
                 case "completed" -> "ok".equals(visible.get("code")) || visible.get("code") == null ? "passed" : "failed";
                 case "failed" -> "failed";
                 default -> "unknown";

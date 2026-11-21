@@ -5,11 +5,15 @@ import dev.oseer.config.RepoPath;
 import java.io.IOException;
 import java.nio.charset.CharacterCodingException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,7 +40,7 @@ public final class CitationCheck {
     /** Past this size a line or quote check is not worth reading the whole file into the loop. */
     private static final long MAX_BYTES = 2_000_000L;
 
-    private static final Pattern LINE_RANGE = Pattern.compile("^(.*):(\\d+)-(\\d+)$");
+    private static final Pattern LINE_RANGE = Pattern.compile("^(.*):(\\d+)[-\u2013\u2014](\\d+)$");
     private static final Pattern LINE_COLUMN = Pattern.compile("^(.*):(\\d+):(\\d+)$");
     private static final Pattern LINE_ONLY = Pattern.compile("^(.*):(\\d+)$");
     private static final Pattern BACKTICK = Pattern.compile("`([^`\\n]+)`");
@@ -50,6 +54,17 @@ public final class CitationCheck {
      * contract gap is about the task, not a line of the diff.
      */
     public static List<Findings.Finding> verify(List<Findings.Finding> findings, Path tree) {
+        return verify(findings, finding -> sourceProblem(finding, tree));
+    }
+
+    /** Visual findings cite one of the screenshots the controller authorized for this role. */
+    public static List<Findings.Finding> verifyVisual(List<Findings.Finding> findings, Path tree,
+                                                       List<Path> screenshots) {
+        return verify(findings, finding -> screenshotProblem(finding, tree, screenshots));
+    }
+
+    private static List<Findings.Finding> verify(List<Findings.Finding> findings,
+                                                  Function<Findings.Finding, String> check) {
         if (findings == null || findings.isEmpty()) return findings == null ? List.of() : findings;
         List<Findings.Finding> checked = new ArrayList<>();
         for (Findings.Finding finding : findings) {
@@ -57,7 +72,7 @@ public final class CitationCheck {
                 checked.add(finding);
                 continue;
             }
-            String problem = problem(finding, tree);
+            String problem = check.apply(finding);
             if (problem == null) {
                 checked.add(finding);
                 continue;
@@ -76,7 +91,7 @@ public final class CitationCheck {
     }
 
     /** {@code null} when the citation holds. Otherwise {@code reason\ndetail}. */
-    private static String problem(Findings.Finding finding, Path tree) {
+    private static String sourceProblem(Findings.Finding finding, Path tree) {
         if (tree == null) return "tree_unavailable\nthe reviewed tree was not available to check the citation";
         Cited cited = Cited.parse(finding);
         if (cited.badNumber) {
@@ -97,6 +112,8 @@ public final class CitationCheck {
         try {
             root = tree.toRealPath();
             file = root.resolve(relative).normalize();
+        } catch (InvalidPathException malformed) {
+            return "path_invalid\nthe citation is not a valid file path";
         } catch (IOException unreadable) {
             return "file_missing\n" + relative + " is not in the reviewed tree";
         }
@@ -107,8 +124,8 @@ public final class CitationCheck {
             return "file_missing\n" + relative + " is not in the reviewed tree";
         }
         try {
-            Path real = file.toRealPath();
-            if (!real.startsWith(root)) {
+            file = file.toRealPath();
+            if (!file.startsWith(root)) {
                 return "path_escapes\nthe path is not a file inside the reviewed tree";
             }
         } catch (IOException unreadable) {
@@ -158,6 +175,36 @@ public final class CitationCheck {
             }
         }
         return null;
+    }
+
+    private static String screenshotProblem(Findings.Finding finding, Path tree, List<Path> screenshots) {
+        if (finding.path() == null || finding.path().isBlank()) {
+            return "path_missing\nthe finding names no screenshot";
+        }
+        try {
+            Path cited = Path.of(finding.path().strip());
+            if (tree == null || screenshots == null || screenshots.isEmpty()) {
+                return "screenshot_missing\nthe citation does not name an available screenshot from this run";
+            }
+            Path root = tree.toRealPath();
+            Path runs = root.resolve(".oseer/runs").toRealPath();
+            Path requested = root.resolve(cited).normalize();
+            boolean nameOnly = !cited.isAbsolute() && cited.getNameCount() == 1;
+            Set<Path> matches = new LinkedHashSet<>();
+            for (Path screenshot : screenshots) {
+                Path path = root.resolve(screenshot).normalize();
+                // Accept a bare filename only when it identifies a single authorized image.
+                if (!path.equals(requested) && !(nameOnly && cited.equals(path.getFileName()))) continue;
+                if (runs.startsWith(root) && Files.isRegularFile(path) && path.toRealPath().startsWith(runs)
+                        && Files.size(path) > 0) matches.add(path);
+            }
+            if (matches.size() == 1) return null;
+        } catch (InvalidPathException malformed) {
+            return "path_invalid\nthe citation is not a valid screenshot path";
+        } catch (IOException unreadable) {
+            // An evidence directory or screenshot that no longer exists cannot support a finding.
+        }
+        return "screenshot_missing\nthe citation does not name an available screenshot from this run";
     }
 
     private static Findings.Finding flag(Findings.Finding finding, String reason, String detail) {
@@ -227,12 +274,15 @@ public final class CitationCheck {
                 path = range.group(1);
                 pathLine = parsePositive(range.group(2));
                 pathEnd = parsePositive(range.group(3));
+                badNumber = pathLine == null || pathEnd == null;
             } else if (column.matches() && !column.group(1).isBlank()) {
                 path = column.group(1);
                 pathLine = parsePositive(column.group(2));
+                badNumber = pathLine == null || parsePositive(column.group(3)) == null;
             } else if (only.matches() && !only.group(1).isBlank()) {
                 path = only.group(1);
                 pathLine = parsePositive(only.group(2));
+                badNumber = pathLine == null;
             }
             Object rawLine = finding.raw().get("line");
             if (rawLine != null) {
@@ -248,7 +298,8 @@ public final class CitationCheck {
             else if (pathLine != null && !line.equals(pathLine)) disagree = true;
             if (end == null) end = pathEnd;
             else if (pathEnd != null && !end.equals(pathEnd)) disagree = true;
-            return new Cited(path, line, end, quotedSpans(finding, path), disagree, badNumber);
+            return new Cited(path, line, end, quotedSpans(finding, path), disagree,
+                    badNumber || end != null && line == null);
         }
     }
 
@@ -259,15 +310,14 @@ public final class CitationCheck {
             String explicit = text(finding.raw().get(field));
             if (explicit.length() >= EXPLICIT_MIN) quotes.add(explicit);
         }
-        for (String field : List.of("message", "actual", "expected")) {
-            Matcher matcher = BACKTICK.matcher(text(finding.raw().get(field)));
-            while (matcher.find()) {
-                String span = matcher.group(1).strip();
-                if (span.length() < BACKTICK_MIN) continue;
-                if (isPathCitation(span, path)) continue;
-                if (span.indexOf(' ') >= 0 && !looksLikeCode(span)) continue;
-                quotes.add(span);
-            }
+        if (!quotes.isEmpty()) return quotes;
+        Matcher matcher = BACKTICK.matcher(text(finding.raw().get("actual")));
+        while (matcher.find()) {
+            String span = matcher.group(1).strip();
+            if (span.length() < BACKTICK_MIN) continue;
+            if (isPathCitation(span, path)) continue;
+            if (span.indexOf(' ') >= 0 && !looksLikeCode(span)) continue;
+            quotes.add(span);
         }
         return quotes;
     }

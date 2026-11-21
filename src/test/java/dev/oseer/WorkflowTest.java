@@ -37,6 +37,7 @@ public final class WorkflowTest implements Suite {
         reuseAfterAFailureThatWasNotAboutTheWork(check);
         apiFallbackPolicyChecks(check);
         apiFallbackContractChecks(check);
+        apiContextContractChecks(check);
         Policy silent = Policy.parse(ROLES, "policy.yaml");
         check.that("a policy that declares no workflow is not treated as declaring one",
                 !silent.workflowDeclared());
@@ -422,6 +423,45 @@ public final class WorkflowTest implements Suite {
                   reviewer: { profiles: [a, b, c], strategy: first%s }
                 """.formatted(fallback), "policy.yaml");
         return new UserConfig(Path.of("."), policy, Map.of(reader.name(), reader), Map.of(), true);
+    }
+
+    private void apiContextContractChecks(Check check) {
+        Workflow.Stage stage = Workflow.builtIn().stages().stream()
+                .filter(candidate -> "review".equals(candidate.name())).findFirst().orElseThrow();
+        Profile diff = contextReader("diff", 262144);
+        UserConfig diffUser = fallbackContractUser(diff, "");
+        Map<String, Object> recorded = RoleContract.of(stage.name(), stage.role(),
+                diffUser.policy().roles().get(stage.role()), diff, diffUser);
+        recorded.putAll(RoleContract.routingOf(stage));
+        check.eq("the same API context settings can reuse a review",
+                null, RoleContract.differenceFrom(recorded, stage, diffUser));
+        Profile full = contextReader("full", 262144);
+        UserConfig fullUser = fallbackContractUser(full, "");
+        check.contains("full context cannot reuse a verdict reached with diff-only context",
+                RoleContract.differenceFrom(recorded, stage, fullUser), "api_context changed");
+        check.contains("a different API context byte limit invalidates reuse",
+                RoleContract.differenceFrom(recorded, stage,
+                        fallbackContractUser(contextReader("diff", 524288), "")), "api_context changed");
+        recorded.remove("api_context");
+        check.eq("older default full API receipts remain reusable with those settings",
+                null, RoleContract.differenceFrom(recorded, stage, fullUser));
+        check.contains("older full API receipts do not establish current diff terms",
+                RoleContract.differenceFrom(recorded, stage, diffUser), "api_context changed");
+    }
+
+    private Profile contextReader(String mode, int maxBytes) {
+        return Profile.parse("""
+                version: 1
+                profile: a
+                role: reviewer
+                vendor: openai
+                model: openai/test-model
+                model_vendor: openai
+                runner: api
+                connection: test-api
+                read_only: true
+                api_context: {mode: %s, max_bytes: %d}
+                """.formatted(mode, maxBytes), "a.yaml");
     }
 
     private void repairPreviewChecks(Check check) {

@@ -157,7 +157,7 @@ public final class DashboardTest implements Suite {
         stale.put("task_id", "demo-task");
         stale.put("ok", false);
         stale.put("reason", "model_check_failed");
-        stale.put("candidate_fingerprint", "tree-a");
+        stale.put("candidate_fingerprint", "sha256:candidate");
         stale.put("total_cost_usd", 0.0);
         stale.put("unpriced_calls", 1L);
         stale.put("steps", List.of(Map.of("step", "review", "ok", false, "code", "role_api_timeout",
@@ -166,6 +166,12 @@ public final class DashboardTest implements Suite {
         writeDecision(root, "run-stale");
         Files.writeString(root.resolve(".oseer/runs/run-stale/run.json"), Json.write(Map.of("run_id", "run-stale",
                 "task_id", "demo-task", "reserved_at", "2026-09-01T00:00:00Z")));
+        Map<String, Object> laterFailure = new LinkedHashMap<>(stale);
+        laterFailure.put("run_id", "run-later-failure");
+        writeSummary(root, "run-later-failure", laterFailure);
+        writeDecision(root, "run-later-failure");
+        Files.writeString(root.resolve(".oseer/runs/run-later-failure/run.json"), Json.write(Map.of(
+                "run_id", "run-later-failure", "task_id", "demo-task", "reserved_at", "2026-09-18T15:00:00Z")));
 
         var again = Dashboard.snapshot(root, UserConfig.load(root.resolve("empty-home")));
         var ordered = (List<?>) again.get("runs");
@@ -176,18 +182,20 @@ public final class DashboardTest implements Suite {
         var priorRow = ordered.stream().map(item -> (Map<?, ?>) item).filter(item -> "run-prior".equals(item.get("run_id"))).findFirst().orElseThrow();
         check.eq("a continued run's decision is superseded", "superseded", ((Map<?, ?>) priorRow.get("decision")).get("state"));
         var staleRow = ordered.stream().map(item -> (Map<?, ?>) item).filter(item -> "run-stale".equals(item.get("run_id"))).findFirst().orElseThrow();
-        check.eq("a later run of the same tree supersedes the question", "superseded", ((Map<?, ?>) staleRow.get("decision")).get("state"));
+        check.eq("a later approval of the same final tree supersedes the question", "superseded", ((Map<?, ?>) staleRow.get("decision")).get("state"));
         check.eq("the call that already left may be billed", true, staleRow.get("may_be_billed"));
         var waiting = (List<?>) again.get("pending_decisions");
         check.that("a superseded decision does not need attention", waiting.stream().noneMatch(item -> {
             Object id = ((Map<?, ?>) item).get("run_id");
             return "run-prior".equals(id) || "run-stale".equals(id);
         }));
-        check.that("the later run's own question still needs attention", waiting.stream().anyMatch(item -> "run-live".equals(((Map<?, ?>) item).get("run_id"))));
+        check.that("a later failed run cannot hide the earlier approval", waiting.stream().anyMatch(item -> "run-live".equals(((Map<?, ?>) item).get("run_id"))));
         check.eq("the ledger decision is still pending", "pending",
                 Json.parseObject(Files.readString(root.resolve(".oseer/runs/run-stale/decision.json"))).get("state"));
         check.eq("the run page shows that decision as superseded", "superseded",
                 ((Map<?, ?>) dev.oseer.dashboard.RunTimeline.read(root, "run-stale").get("decision_record")).get("state"));
+        check.eq("the run page keeps the earlier approval visible after a failed run", "pending",
+                ((Map<?, ?>) dev.oseer.dashboard.RunTimeline.read(root, "run-live").get("decision_record")).get("state"));
         check.eq("the card and the list name the same newest run", ((Map<?, ?>) ordered.get(0)).get("run_id"),
                 ((Map<?, ?>) ((List<?>) again.get("runs")).get(0)).get("run_id"));
         String projected = Json.write(snapshot);

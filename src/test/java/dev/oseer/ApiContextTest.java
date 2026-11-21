@@ -91,11 +91,19 @@ public final class ApiContextTest implements Suite {
 
             Path template = root.resolve(".env.example");
             Files.writeString(template, "API_KEY=\n");
+            safeFailure(check, "an untracked env template is refused", "env template to be committed", root, base);
             git(root, "add", "-f", "--", ".env.example");
+            safeFailure(check, "a staged env template is refused", "env template to be committed", root, base);
+            commit(root);
             String withTemplate = ApiContextBuilder.build(root, base, processes);
             check.contains("a committed env template is read like any other file", withTemplate, ".env.example");
+            check.contains("whole files come from the committed template", withTemplate, "API_KEY=");
+            Files.writeString(template, "API_KEY=do-not-leak-secret-value\n");
+            safeFailure(check, "a modified committed env template is refused", "env template to be committed", root, base);
+            git(root, "add", "--", ".env.example");
+            Files.writeString(template, "API_KEY=\n");
+            safeFailure(check, "an index-only template change is refused", "env template to be committed", root, base);
             git(root, "reset", "-q", "--", ".env.example");
-            Files.delete(template);
 
             Path binary = root.resolve("binary.java");
             Files.write(binary, new byte[]{0, 1, 2, 3});
@@ -119,6 +127,9 @@ public final class ApiContextTest implements Suite {
                 big.add(file);
             }
             safeFailure(check, "total source budget is enforced before request creation", "total limit", root, base);
+            check.rejects("diff-only never exceeds the cumulative untracked source budget", "total limit",
+                    () -> ApiContextBuilder.build(root, base, processes,
+                            new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024)));
             for (Path file : big) Files.delete(file);
 
             List<Path> many = new ArrayList<>();
@@ -133,6 +144,9 @@ public final class ApiContextTest implements Suite {
             symlinks(check, scratch, root, base);
             truncatedDiff(check, scratch);
             settingsModes(check, scratch);
+            manyTrackedPaths(check, scratch);
+            committedTemplateChanges(check, scratch);
+            renderedBudget(check, scratch);
         } finally {
             try (Stream<Path> paths = Files.walk(scratch)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -141,6 +155,77 @@ public final class ApiContextTest implements Suite {
                 }
             }
         }
+    }
+
+    private void manyTrackedPaths(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("long-path-list"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        Path directory = Files.createDirectories(root.resolve("component-" + "a".repeat(78)));
+        List<Path> files = new ArrayList<>();
+        for (int i = 0; i < 350; i++) {
+            Path path = directory.resolve("page-" + i + ".txt");
+            Files.writeString(path, "original\n");
+            files.add(path);
+        }
+        git(root, "add", "--", ".");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        for (Path path : files) Files.writeString(path, "updated\n");
+        var snapshot = ApiContextBuilder.build(root, base, processes, ApiContextSettings.DEFAULT);
+        check.eq("many tracked paths select diff on Windows too", "diff", snapshot.mode());
+        check.eq("the entire tracked candidate is represented", 350, snapshot.changedFiles());
+        check.contains("the last part of the diff is present", snapshot.text(), "page-349.txt");
+        check.that("the complete snapshot fits the configured budget",
+                snapshot.bytes() <= ApiContextBuilder.MAX_CONTEXT_BYTES);
+    }
+
+    private void committedTemplateChanges(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("template-commits"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        Files.writeString(root.resolve(".env.sample"), "DOCUMENTED=old-placeholder\n");
+        git(root, "add", "-f", "--", ".env.sample");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.delete(root.resolve(".env.sample"));
+        Path nested = Files.createDirectories(root.resolve("config"));
+        Files.writeString(nested.resolve(".ENV.DIST"), "DOCUMENTED=new-placeholder\n");
+        git(root, "add", "-A", "-f", "--", ".");
+        commit(root);
+
+        var diff = ApiContextBuilder.build(root, base, processes,
+                new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024));
+        check.contains("committed env template deletion is part of the immutable diff", diff.text(),
+                "-DOCUMENTED=old-placeholder");
+        check.contains("nested env templates are matched case-insensitively", diff.text(),
+                "+DOCUMENTED=new-placeholder");
+        check.eq("both committed template paths participate in the snapshot", 2, diff.changedFiles());
+        String full = ApiContextBuilder.build(root, base, processes);
+        Map<?, ?> document = (Map<?, ?>) Json.parse(full.substring(full.indexOf('{')));
+        check.that("only the added template has an immutable whole-file payload", ((List<?>) document.get("files"))
+                .stream().anyMatch(item -> item instanceof Map<?, ?> file
+                        && "config/.ENV.DIST".equals(file.get("path"))
+                        && "DOCUMENTED=new-placeholder\n".equals(file.get("content"))));
+        Files.writeString(nested.resolve(".ENV.DIST"), "LOCAL=unsaved-placeholder\n");
+        check.rejects("diff-only also refuses modified templates", "env template to be committed",
+                () -> ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 65_536, 262_144)));
+    }
+
+    private void renderedBudget(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("escaped-context"));
+        git(root, "init", "-q");
+        Files.writeString(root.resolve("README.md"), "# documentation\n");
+        git(root, "add", "--", "README.md");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.writeString(root.resolve("quoted.txt"), "\"\\\n".repeat(1024));
+        var full = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("full", 64, 8192, 8192));
+        check.eq("the serialized byte count includes escapes and the full instructions",
+                full.text().getBytes(StandardCharsets.UTF_8).length, full.bytes());
+        check.rejects("escaping cannot push the streamed snapshot past its byte limit", "complete snapshot exceeds",
+                () -> ApiContextBuilder.build(root, base, processes,
+                        new ApiContextSettings("full", 64, 8192, full.bytes() - 1)));
     }
 
     private void symlinks(Check check, Path scratch, Path root, String base) throws Exception {

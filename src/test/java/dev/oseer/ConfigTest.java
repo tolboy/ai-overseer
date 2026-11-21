@@ -165,6 +165,32 @@ public final class ConfigTest implements Suite {
                           ci:
                             summary: "test    fail"
                         """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("pending and skipped checks do not prove that tests ran",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: ["build pending", "test skipped"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a passing status in a pasted checks row counts",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary:
+                              - "CI: unit tests   pass   2m"
+                              - "publish   pending"
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a failing row keeps an otherwise passing pasted summary from proving acceptance",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: ["build pass", "test fail"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a structured success remains valid evidence",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            checks: [{ name: build, conclusion: success }]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
         check.that("a command alone is real acceptance",
                 TaskSpec.parse(reproductionTask + """
                         acceptance_evidence:

@@ -79,6 +79,9 @@ public final class Findings {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("id", id);
             value.put("id_source", idSource);
+            if (raw.get("reviewer_finding_id") instanceof String reviewerId) {
+                value.put("reviewer_finding_id", reviewerId);
+            }
             value.put("category", category);
             value.put("category_source", categorySource);
             value.put("severity", severity);

@@ -40,6 +40,15 @@ public final class CitationCheckTest implements Suite {
         Findings.Finding ranged = verify(tree, finding("range", "P1", "product_defect", "src/Parse.java:4-5",
                 Map.of("quote", "return this;"))).get(0);
         check.eq("a path:start-end quote in range stays a P1", "P1", ranged.severity());
+        check.that("a Unicode line-range dash is accepted on Windows too",
+                verify(tree, finding("range", "P1", "product_defect", "src/Parse.java:4\u20135",
+                        Map.of("quote", "return this;"))).getFirst().blocking());
+        check.that("malformed file syntax becomes an unverified finding",
+                verify(tree, finding("malformed", "P1", "product_defect", "src/Parse.java:bad-range",
+                        Map.of())).getFirst().unverified());
+        check.eq("zero is not a valid line on the path", "line_missing",
+                verify(tree, finding("zero", "P1", "product_defect", "src/Parse.java:0",
+                        Map.of())).getFirst().raw().get("verification_reason"));
 
         Findings.Finding elsewhere = verify(tree, finding("elsewhere", "P1", "product_defect", "src/Parse.java",
                 Map.of("line", 2L, "quote", "sentinel FARAWAY_MARKER"))).get(0);
@@ -83,21 +92,28 @@ public final class CitationCheckTest implements Suite {
         check.that("without a severity rewrite", !p2.toMap().containsKey("severity_as_filed"));
 
         Findings.Finding backtick = verify(tree, finding("ticks", "P1", "product_defect", "src/Parse.java",
-                Map.of("line", 4L, "message", "the method does `if (ready) return null;`"))).get(0);
+                Map.of("line", 4L, "actual", "the method does `if (ready) return null;`"))).get(0);
         check.eq("a backtick span of code on the line stays a P1", "P1", backtick.severity());
 
         Findings.Finding invented = verify(tree, finding("invented", "P1", "product_defect", "src/Parse.java",
-                Map.of("line", 4L, "message", "it calls `explodeNow()`"))).get(0);
+                Map.of("line", 4L, "actual", "it calls `explodeNow()`"))).get(0);
         check.eq("a backtick span that is not in the file is unverified", "quote_missing",
                 invented.raw().get("verification_reason"));
 
         Findings.Finding pathOnly = verify(tree, finding("named", "P1", "product_defect", "src/Parse.java",
-                Map.of("message", "see `src/Parse.java`"))).get(0);
+                Map.of("actual", "see `src/Parse.java`"))).get(0);
         check.eq("a backtick that only names the file is not a quote", "P1", pathOnly.severity());
 
         Findings.Finding prose = verify(tree, finding("prose", "P1", "product_defect", "src/Parse.java",
-                Map.of("message", "the reader claimed `nothing in this sentence is code at all`"))).get(0);
+                Map.of("actual", "the reader claimed `nothing in this sentence is code at all`"))).get(0);
         check.eq("a backtick of prose is not treated as a code quote", "P1", prose.severity());
+
+        Findings.Finding missingCall = verify(tree, finding("omitted-call", "P1", "product_defect", "src/Parse.java",
+                Map.of("line", 4L, "quote", "if (ready) return null;",
+                       "message", "The early return should call `releaseResource()`",
+                       "expected", "Call `releaseResource()` before returning",
+                       "suggestion", "Use `releaseResource()` before this return"))).getFirst();
+        check.that("a P1 for missing behavior is checked against the current source quote", missingCall.blocking());
 
         Findings.Finding disagree = verify(tree, finding("split", "P1", "product_defect", "src/Parse.java:4",
                 Map.of("line", 2L, "quote", "int ready;"))).get(0);
@@ -111,6 +127,31 @@ public final class CitationCheckTest implements Suite {
         check.eq("the first recorded round was already non-blocking", List.of(), first.get("blocking_ids"));
         check.eq("so the same unverified citation is not severity laundering",
                 List.of(), second.get("severity_downgraded"));
+
+        Path current = tree.resolve(".oseer/runs/current--visual-qa-0/screenshots");
+        Path previous = tree.resolve(".oseer/runs/previous--visual-qa-0/screenshots");
+        Files.createDirectories(current);
+        Files.createDirectories(previous);
+        Path actual = Files.write(current.resolve("mobile.png"), new byte[] {1});
+        Path other = Files.write(previous.resolve("mobile.png"), new byte[] {1});
+        check.that("a visual P1 backed by its harness screenshot stays blocking",
+                visualFinding(tree, List.of(actual), actual.toString()).blocking());
+        check.that("a specific relative evidence path stays blocking",
+                visualFinding(tree, List.of(actual), tree.relativize(actual).toString()).blocking());
+        check.that("a unique authorized screenshot filename stays blocking",
+                visualFinding(tree, List.of(actual), "mobile.png").blocking());
+        check.that("a screenshot from another run cannot back the finding",
+                visualFinding(tree, List.of(actual), other.toString()).unverified());
+        check.that("an ambiguous filename does not identify an authorized screenshot",
+                visualFinding(tree, List.of(actual, other), "mobile.png").unverified());
+        check.that("an authorized screenshot that goes missing cannot back the finding",
+                visualFinding(tree, List.of(current.resolve("missing.png")), "missing.png").unverified());
+    }
+
+    private static Findings.Finding visualFinding(Path tree, List<Path> screenshots, String path) {
+        var findings = Findings.of(Map.of("findings", List.of(finding("visual", "P1", "product_defect",
+                path, Map.of("actual", "The red text `Text is cut off` is clipped")))));
+        return CitationCheck.verifyVisual(findings, tree, screenshots).getFirst();
     }
 
     private static List<Findings.Finding> verify(Path tree, Map<String, Object> row) {

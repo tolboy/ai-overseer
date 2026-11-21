@@ -116,14 +116,14 @@ public final class DirectCaptureTest implements Suite {
             check.contains("timeout preview retains latest usage", timeout.stdout(), USAGE);
 
             long quietStart = System.nanoTime();
-            ProcessRunner.Result quiet = runner.runVendor(List.of("sleep", "30"), scratch,
+            ProcessRunner.Result quiet = runner.runVendor(command("silent"), scratch,
                     Duration.ofSeconds(15), 1000, null, Duration.ofMillis(400));
             check.that("idle silence is a stall", quiet.stalled());
             check.that("a stall is not a wall-clock timeout", !quiet.timedOut());
             check.that("the stall returns inside the wall clock",
                     Duration.ofNanos(System.nanoTime() - quietStart).toMillis() < 3_000);
             long wallStart = System.nanoTime();
-            ProcessRunner.Result wall = runner.runVendor(List.of("sleep", "30"), scratch,
+            ProcessRunner.Result wall = runner.runVendor(command("silent"), scratch,
                     Duration.ofMillis(300), 1000, null, Duration.ofSeconds(5));
             check.that("the wall clock still wins over a longer idle bound", wall.timedOut());
             check.that("a wall expiry is not labelled a stall", !wall.stalled());

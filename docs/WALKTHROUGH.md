@@ -245,6 +245,8 @@ check output yourself — Overseer does not call GitHub. The config YAML subset 
 block scalars, so a multi-line summary is a list of lines (or one quoted string).
 Conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`,
 `action_required`, `startup_failure`; `pass` and `fail` are accepted as aliases.
+When the summary is the only evidence, include at least one explicit passing check, for example
+`test: pass`. A summary containing only pending or skipped checks leaves the contract gap open.
 
 With `base_ref` in project.yaml set to the branch the pull request targets:
 
@@ -256,11 +258,12 @@ oseer run review-pr-72 --use review=openrouter-deepseek-review \
 
 `mode: review` skips every writing stage (`skipped: review_only`), so the planned implementer
 no longer counts as an author and cannot disqualify a reader from its vendor. The authors are
-`prior_writers`, and every reader must differ from them. No fix round runs. A reader that
+`prior_writers`, and every reader must differ from them. Explicit review mode requires an
+active reviewer even when the task's risk is low. No fix round runs. A reader that
 objects does not stop the readers after it; the run stops at the human gate once all of them
 have read, with `objecting_stages` naming who objected. Machine gates still run the task's
-checks on the branch. Each reader is blind to the others: none is shown an earlier reader's findings, so
-agreement between them is evidence rather than an echo.
+checks on the branch. Each reader gets its own finding history. Reports keep both the
+stage-scoped identifier and the ID the reader supplied, so two readers can both use `F1`.
 
 A single reading works the same way: `oseer role reviewer review-pr-72 --use grok-review`
 picks the profile for that one dispatch (it need not be on the roster) and honours the task's

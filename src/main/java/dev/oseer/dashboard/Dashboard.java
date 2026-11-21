@@ -532,13 +532,15 @@ public final class Dashboard implements AutoCloseable {
         List<Map<String, Object>> steps = objectList(source.get("steps"),
                 List.of("step", "stage", "attempt", "ok", "code", "profile", "vendor", "cost_usd",
                         "reused_from", "fix_for", "blocking_findings"));
-        if (steps != null) row.put("steps", steps);
+        if (steps != null) {
+            RunTimeline.markFailedStageCards(source.get("pending_stages"), steps);
+            row.put("steps", steps);
+        }
         List<Map<String, Object>> pending = objectList(source.get("pending_stages"), List.of("stage", "reason"));
         if (pending != null) row.put("pending_stages", pending);
         List<Map<String, Object>> failovers = failovers(source.get("steps"));
         if (!failovers.isEmpty()) row.put("failovers", failovers);
-        Map<String, Object> decision = readDecision(directory, runsRoot);
-        if (decision != null) row.put("decision", decision);
+        attachDecision(row, directory, runsRoot);
         if (source.get("orca_gate") instanceof Map<?, ?> gate) {
             Map<String, Object> visible = new LinkedHashMap<>();
             copyScalar(visible, gate, "published");
@@ -615,7 +617,7 @@ public final class Dashboard implements AutoCloseable {
             Map<String, Object> source = Json.parseObject(Files.readString(file));
             Map<String, Object> visible = new LinkedHashMap<>();
             for (String key : List.of("state", "kind", "decision", "actor", "updated_at",
-                    "created_at", "expires_at")) {
+                    "created_at", "expires_at", "candidate_fingerprint")) {
                 copyScalar(visible, source, key);
             }
             List<String> options = stringList(source.get("options"));
@@ -624,6 +626,21 @@ public final class Dashboard implements AutoCloseable {
         } catch (RuntimeException | IOException invalid) {
             return null;
         }
+    }
+
+    private static void attachDecision(Map<String, Object> row, Path directory, Path runsRoot) {
+        Map<String, Object> decision = readDecision(directory, runsRoot);
+        if (decision == null) return;
+        Object candidate = decision.remove("candidate_fingerprint");
+        if ("success".equals(decision.get("kind"))) {
+            // A writing run records the starting tree in its summary. The approval is
+            // bound to the tree that actually passed the gates.
+            row.remove("candidate_fingerprint");
+        }
+        if (candidate instanceof String fingerprint && !fingerprint.isBlank()) {
+            row.put("candidate_fingerprint", fingerprint);
+        }
+        row.put("decision", decision);
     }
 
     private static void copyScalar(Map<String, Object> dest, Map<?, ?> source, String key) {
@@ -735,7 +752,9 @@ public final class Dashboard implements AutoCloseable {
             if (!(attempt.get("workflow_run_id") instanceof String id) || id.isBlank()) continue;
             String state = String.valueOf(attempt.get("view_state"));
             if ("running".equals(state)) view.put(id, "running");
-            else view.putIfAbsent(id, state);
+            else if ("unknown_controller_stopped".equals(state)) {
+                view.merge(id, state, (previous, stopped) -> "running".equals(previous) ? previous : stopped);
+            }
         }
         for (Map<String, Object> open : openRuns) {
             if (!(open.get("run_id") instanceof String id)) continue;
@@ -783,23 +802,8 @@ public final class Dashboard implements AutoCloseable {
      * A pending decision another run has overtaken. The caller shows {@code superseded}
      * and does not write {@code decision.json}.
      */
-    static boolean decisionSuperseded(Path runsRoot, String runId, String taskId, String fingerprint, String startedAt)
-            throws IOException {
-        List<Map<String, Object>> runs = runFacts(runsRoot);
-        Map<String, Object> self = null;
-        for (Map<String, Object> run : runs) {
-            if (runId != null && runId.equals(run.get("run_id"))) { self = run; break; }
-        }
-        if (self == null) {
-            self = new LinkedHashMap<>();
-            self.put("run_id", runId);
-            runs.add(self);
-        }
-        // The timeline already read this run. Prefer that over a second parse that missed a field.
-        if (taskId != null) self.put("task_id", taskId);
-        if (fingerprint != null) self.put("candidate_fingerprint", fingerprint);
-        if (startedAt != null) self.put("started_at", startedAt);
-        return supersededIds(runs).contains(runId);
+    static boolean decisionSuperseded(Path runsRoot, String runId) throws IOException {
+        return supersededIds(runFacts(runsRoot)).contains(runId);
     }
 
     private static void markSuperseded(List<Map<String, Object>> runs) {
@@ -821,13 +825,19 @@ public final class Dashboard implements AutoCloseable {
         }
         for (Map<String, Object> run : runs) {
             if (Boolean.TRUE.equals(run.get("dry_run"))) continue;
-            if (laterSameTree(runs, run)) ids.add(String.valueOf(run.get("run_id")));
+            String id = String.valueOf(run.get("run_id"));
+            if (hasSuccessDecision(run)) ids.remove(id);
+            if (laterApprovalOfSameTree(runs, run)) ids.add(id);
         }
         return ids;
     }
 
-    /** Same task, same tree, a later start. A dry run does not retire a real question. */
-    private static boolean laterSameTree(List<Map<String, Object>> runs, Map<String, Object> run) {
+    private static boolean hasSuccessDecision(Map<String, Object> run) {
+        return run.get("decision") instanceof Map<?, ?> decision && "success".equals(decision.get("kind"));
+    }
+
+    /** A replacement must have reached its own approval for this exact candidate. */
+    private static boolean laterApprovalOfSameTree(List<Map<String, Object>> runs, Map<String, Object> run) {
         if (!(run.get("task_id") instanceof String task) || task.isBlank()) return false;
         if (!(run.get("candidate_fingerprint") instanceof String fingerprint) || fingerprint.isBlank()) return false;
         Instant start = instantOf(run.get("started_at"));
@@ -835,6 +845,7 @@ public final class Dashboard implements AutoCloseable {
         String id = String.valueOf(run.get("run_id"));
         for (Map<String, Object> other : runs) {
             if (id.equals(String.valueOf(other.get("run_id"))) || Boolean.TRUE.equals(other.get("dry_run"))) continue;
+            if (!Boolean.TRUE.equals(other.get("ok")) || !hasSuccessDecision(other)) continue;
             if (!task.equals(other.get("task_id")) || !fingerprint.equals(other.get("candidate_fingerprint"))) continue;
             Instant later = instantOf(other.get("started_at"));
             if (later != null && later.isAfter(start)) return true;
@@ -855,9 +866,10 @@ public final class Dashboard implements AutoCloseable {
                         && summary.toRealPath().startsWith(runsRoot)) {
                     try {
                         Map<String, Object> source = Json.parseObject(Files.readString(summary));
-                        for (String key : List.of("task_id", "continued_from", "candidate_fingerprint", "dry_run")) {
+                        for (String key : List.of("task_id", "ok", "continued_from", "candidate_fingerprint", "dry_run")) {
                             copyScalar(row, source, key);
                         }
+                        attachDecision(row, directory, runsRoot);
                     } catch (RuntimeException invalid) { /* an unreadable summary supersedes nothing */ }
                 }
                 Path reservation = directory.resolve("run.json");
@@ -968,7 +980,7 @@ public final class Dashboard implements AutoCloseable {
             function line(parent,text){const div=document.createElement('div');div.textContent=text;parent.append(div)}
             let openRuns=new Set();
             function timeline(run){const details=document.createElement('details');details.className='timeline';details.dataset.run=run.run_id??'';if(openRuns.has(details.dataset.run))details.open=true;const summary=document.createElement('summary');summary.textContent='{{t:dash.timeline}}';details.append(summary);
-            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');text+=' · '+(s.ok===true?'ok':s.ok===false?'fail':'—')+(s.code?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+costText(s.cost_usd,0);if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
+            for(const s of run.steps||[]){const who=[s.profile,s.vendor].filter(Boolean).join('/');let text=(s.stage||s.step||'—')+(who?' · '+who:'');const failed=s.status==='failed'||s.ok===false;text+=' · '+(failed?'fail':s.ok===true?'ok':'—')+(s.code&&!(failed&&s.code==='ok')?' / '+s.code:'');if(s.cost_usd!=null)text+=' · '+costText(s.cost_usd,0);if(s.reused_from)text+=' · reused from '+s.reused_from;if(s.fix_for)text+=' · fix for '+s.fix_for;line(details,text)}
             for(const c of run.review_coverage||[]){line(details,'coverage '+(c.stage??'')+' · '+(c.role??'')+(c.assurance!=null?' · '+c.assurance:''))}
             for(const p of run.pending_stages||[]){line(details,'pending '+(p.stage??'')+' · '+(p.reason??''))}
             for(const f of run.failovers||[]){line(details,f.kind==='switched'?('failover '+(f.stage??'')+' · '+(f.from_profiles||[]).join(', ')+' → '+(f.profile??'')):f.kind==='exhausted'?('{{t:dash.quota_exhausted}} '+(f.stage??'')+' · '+(f.exhausted_profiles||[]).join(', ')):('{{t:dash.awaiting_substitution_approval}} '+(f.stage??'')+' · '+(f.from_profile??'')+' → '+(f.to_profile??'')))}

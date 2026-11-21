@@ -44,21 +44,28 @@ public record AcceptanceEvidence(List<String> commands, String ciSource, String 
      * Whether the recorded evidence is real acceptance rather than a failed or empty CI note.
      *
      * Named commands count: the operator is saying these are the pull request's tests.
-     * A check counts when its conclusion is success. A pasted summary counts when it is
-     * present and does not itself say the run failed.
+     * A check counts when its conclusion is success. A pasted table counts when it names
+     * a passing check and reports no failed checks.
      */
     public boolean recordsRealAcceptance() {
         if (!commands.isEmpty()) return true;
         for (Check check : checks) {
             if ("success".equals(check.conclusion())) return true;
         }
-        return ciSummary != null && !summaryLooksFailed(ciSummary);
-    }
-
-    private static boolean summaryLooksFailed(String summary) {
-        String folded = summary.toLowerCase(Locale.ROOT);
-        return folded.contains("\nfail") || folded.contains(" fail") || folded.startsWith("fail")
-                || folded.contains("failure") || folded.contains("conclusion: failure");
+        if (ciSummary == null) return false;
+        boolean passed = false;
+        for (String row : ciSummary.lines().toList()) {
+            String[] columns = row.strip().split("\\t+| {2,}", 3);
+            if (columns.length < 2) columns = row.strip().split(":\\s+", 2);
+            if (columns.length < 2) columns = row.strip().split("\\s+", 2);
+            if (columns.length < 2) continue;
+            switch (columns[1].strip().toLowerCase(Locale.ROOT)) {
+                case "pass", "passed", "success" -> passed = true;
+                case "fail", "failed", "failure", "timed_out", "startup_failure" -> { return false; }
+                default -> { }
+            }
+        }
+        return passed;
     }
 
     /** The block substituted for {@code {{acceptance_evidence}}} in a reader prompt. */

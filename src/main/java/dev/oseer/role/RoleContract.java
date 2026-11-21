@@ -1,5 +1,6 @@
 package dev.oseer.role;
 
+import dev.oseer.config.ApiContextSettings;
 import dev.oseer.config.Policy;
 import dev.oseer.config.Profile;
 import dev.oseer.config.UserConfig;
@@ -36,13 +37,17 @@ public final class RoleContract {
 
     private RoleContract() {}
 
+    private static final Map<String, Object> LEGACY_API_CONTEXT = new ApiContextSettings("full",
+            ApiContextSettings.DEFAULT_MAX_FILES, ApiContextSettings.DEFAULT_MAX_FILE_BYTES,
+            ApiContextSettings.DEFAULT_MAX_BYTES).toMap();
+
     /** The keys compared on resume, in the order a person would want to hear about them. */
     private static final List<String> COMPARED = List.of(
             "role", "roster", "strategy", "require_independent_vendor", "same_vendor_peer",
             "api_fallback_profiles",
             "profile", "vendor", "model", "effort", "runner", "read_only",
             "prompt_template_sha256", "json_schema_sha256", "mcp_config_sha256",
-            "api_connection_fingerprint", "model_vendor",
+            "api_connection_fingerprint", "model_vendor", "api_context",
             "harness", "harness_adapter", "harness_executable_sha256", "coding_tools_verified",
             // The stage's own routing. A stage name is stable across a workflow edit, so
             // `review` can keep its identity while changing what a finding from it does —
@@ -100,6 +105,7 @@ public final class RoleContract {
             contract.put("api_connection_fingerprint", profile.apiFingerprint());
             contract.put("model_vendor", profile.modelVendor());
         }
+        if ("api".equals(profile.runner())) contract.put("api_context", profile.apiContext().toMap());
         if (profile.harness() != null) {
             contract.put("harness", profile.harness());
             contract.put("coding_tools_verified", profile.verified());
@@ -177,6 +183,11 @@ public final class RoleContract {
         for (String key : COMPARED) {
             Object before = was.get(key);
             Object after = now.get(key);
+            // Older API reports always carried the default full snapshot. They remain valid
+            // for those same terms, but cannot prove that a different snapshot was reviewed.
+            if ("api_context".equals(key) && before == null && "api".equals(was.get("runner"))) {
+                before = LEGACY_API_CONTEXT;
+            }
             if (java.util.Objects.equals(normalise(before), normalise(after))) continue;
             return key + " changed from " + describe(before) + " to " + describe(after);
         }

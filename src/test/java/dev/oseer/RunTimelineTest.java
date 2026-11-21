@@ -184,6 +184,21 @@ public final class RunTimelineTest implements Suite {
         check.that("the command projection masks credential values", !json.contains("gate-credential-value"));
         check.contains("the reproduction report appears in the evidence list", Json.write(steps.get(1)), "reproduction-gate.json");
 
+        String stoppedReview = "stopped-review";
+        Files.createDirectories(runs.resolve(stoppedReview));
+        Files.writeString(runs.resolve(stoppedReview + "/task-run.json"), Json.write(Map.of(
+                "run_id", stoppedReview, "task_id", "demo", "ok", false, "reason", "finding_protocol_failure",
+                "workflow", List.of(Map.of("stage", "review", "run", "role", "role", "reviewer")),
+                "pending_stages", List.of(Map.of("stage", "review", "reason", "did_not_pass")),
+                "steps", List.of(Map.of("step", "reviewer", "stage", "review", "ok", true, "code", "ok",
+                        "profile", "reader", "blocking_findings", 1L)))));
+        Map<String, Object> stoppedTimeline = RunTimeline.read(root, stoppedReview);
+        check.eq("the failed review chip follows the workflow outcome", "failed",
+                ((Map<?, ?>) ((List<?>) stoppedTimeline.get("workflow")).get(0)).get("state"));
+        check.eq("the failed review card follows the workflow outcome", "failed",
+                ((Map<?, ?>) ((List<?>) stoppedTimeline.get("steps")).get(0)).get("status"));
+        check.that("a successful CLI call is not reported as the stop cause", !stoppedTimeline.containsKey("stop_causes"));
+
         // A run with no summary yet is read from its step directories and live views.
         String live = "run-live";
         Files.createDirectories(runs.resolve(live));
@@ -200,7 +215,7 @@ public final class RunTimelineTest implements Suite {
         check.that("live projection carries no raw output", !Json.write(running).contains("SECRET_RAW_MARKER"));
         Files.writeString(liveStep.resolve("view-implementer.json"), Json.write(Map.of("stage", "implement",
                 "view_state", "running", "controller_pid", -1L)));
-        check.eq("a dead controller is not running", "no_summary", RunTimeline.read(root, live).get("state"));
+        check.eq("a dead controller has its own state", "controller_stopped", RunTimeline.read(root, live).get("state"));
         String similar = live + "--second";
         Files.createDirectories(runs.resolve(similar));
         Files.writeString(runs.resolve(similar + "/run.json"), Json.write(Map.of("run_id", similar, "task_id", "demo")));

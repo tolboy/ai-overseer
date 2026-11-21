@@ -844,7 +844,7 @@ public final class StubVendor {
                 }
                 boolean passes = succeedsNow(args);
                 String findings = passes ? "[]"
-                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        : "[{\"severity\":\"P1\",\"path\":" + dev.oseer.json.Json.write(images.getFirst()) + ","
                         + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
                         + "\"expected\":\"the whole word is readable\","
                         + "\"actual\":\"it is cut off at the panel edge\","
@@ -880,7 +880,8 @@ public final class StubVendor {
                 }
                 boolean passes = succeedsNow(args);
                 String findings = passes ? "[]"
-                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        : "[{\"severity\":\"P1\",\"path\":"
+                        + dev.oseer.json.Json.write(taken.isEmpty() ? "" : taken.getFirst()) + ","
                         + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
                         + "\"expected\":\"the whole word is readable\","
                         + "\"actual\":\"it is cut off at the panel edge\","
