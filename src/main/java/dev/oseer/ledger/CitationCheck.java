@@ -206,15 +206,18 @@ public final class CitationCheck {
             }
             Path root = tree.toRealPath();
             Path runs = root.resolve(".oseer/runs").toRealPath();
-            Path requested = root.resolve(cited).normalize();
+            if (!runs.startsWith(root)) return "path_escapes\nthe screenshots directory is outside the reviewed tree";
             boolean nameOnly = !cited.isAbsolute() && cited.getNameCount() == 1;
+            Path requested = nameOnly ? null : root.resolve(cited).normalize().toRealPath();
             Set<Path> matches = new LinkedHashSet<>();
             for (Path screenshot : screenshots) {
                 Path path = root.resolve(screenshot).normalize();
                 // Accept a bare filename only when it identifies a single authorized image.
-                if (!path.equals(requested) && !(nameOnly && cited.equals(path.getFileName()))) continue;
-                if (runs.startsWith(root) && Files.isRegularFile(path) && path.toRealPath().startsWith(runs)
-                        && Files.size(path) > 0) matches.add(path);
+                if (nameOnly && !cited.equals(path.getFileName())) continue;
+                if (!Files.isRegularFile(path)) continue;
+                Path real = path.toRealPath();
+                if (real.startsWith(runs) && (nameOnly || real.equals(requested))
+                        && Files.size(real) > 0) matches.add(real);
             }
             if (matches.size() == 1) return null;
         } catch (InvalidPathException malformed) {

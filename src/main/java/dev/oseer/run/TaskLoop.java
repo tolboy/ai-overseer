@@ -6282,8 +6282,14 @@ public final class TaskLoop {
         if (report == null) return null;
         try {
             Path runs = root.toRealPath().resolve(".oseer/runs");
-            Path directory = report.toAbsolutePath().normalize().getParent().resolve("screenshots");
-            if (directory.startsWith(runs) && directory.equals(directory.toRealPath())) return directory;
+            Path run = report.toAbsolutePath().normalize().getParent();
+            if (run == null || run.getParent() == null || !runs.equals(run.getParent().toRealPath())) return null;
+            Path directory = runs.resolve(run.getFileName()).resolve("screenshots");
+            // Resolve aliases of the project directory, but keep the expected run and its
+            // screenshots directory anchored by name. A link to another run cannot count.
+            if (directory.equals(run.resolve("screenshots").toRealPath()) && Files.isDirectory(directory)) {
+                return directory;
+            }
         } catch (java.io.IOException unreadable) {
             // Without the run's own directory there is no screenshot evidence to attach.
         }
@@ -6293,9 +6299,8 @@ public final class TaskLoop {
     private static Path screenshotPath(Path root, Path directory, String text) {
         if (directory == null) return null;
         try {
-            Path file = root.resolve(Path.of(text)).toAbsolutePath().normalize();
-            if (file.startsWith(directory) && Files.isRegularFile(file)
-                    && file.toRealPath().startsWith(directory) && Files.size(file) > 0) return file;
+            Path file = root.resolve(Path.of(text)).toRealPath();
+            if (file.startsWith(directory) && Files.isRegularFile(file) && Files.size(file) > 0) return file;
         } catch (InvalidPathException | java.io.IOException unreadable) {
             // Invalid or unreadable entries are not evidence.
         }

@@ -5,6 +5,7 @@ import dev.oseer.ledger.Findings;
 import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -152,6 +153,24 @@ public final class CitationCheckTest implements Suite {
         check.eq("the visual finding still names its actual screenshot", other.toString(), nextView.path());
         check.eq("an explicit reviewer ID is preserved", "visual",
                 visualFinding(tree, List.of(other), other.toString()).id());
+        checkScreenshotPathAlias(check, tree, tree.relativize(actual));
+    }
+
+    private static void checkScreenshotPathAlias(Check check, Path tree, Path relative) throws IOException {
+        Path parent = Files.createTempDirectory("oseer-cite-alias-");
+        Path alias = parent.resolve("alias");
+        try {
+            try {
+                Files.createSymbolicLink(alias, tree);
+            } catch (IOException | UnsupportedOperationException unavailable) {
+                return; // Some Windows runners do not allow creating symbolic links.
+            }
+            check.that("relative citation can match an authorized attachment under an alias",
+                    visualFinding(alias, List.of(alias.resolve(relative)), relative.toString()).blocking());
+        } finally {
+            Files.deleteIfExists(alias);
+            Files.delete(parent);
+        }
     }
 
     private static Findings.Finding derivedVisualFinding(Path tree, Path screenshot) {
