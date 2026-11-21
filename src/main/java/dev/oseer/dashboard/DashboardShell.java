@@ -52,7 +52,7 @@ final class DashboardShell {
             .tl table{width:auto;margin:6px 0;font-size:13px}.tl td,.tl th{padding:4px 10px}.tl td:first-child{font-weight:400}
             .evidence{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;align-items:flex-start}.evidence a{font-size:13px}
             .evidence img{display:block;width:150px;height:auto;border:1px solid var(--line);border-radius:6px;background:#0b1015}
-            .attr{font-size:12px;border-radius:4px;padding:1px 6px}.attr.regression{background:#4a2420;color:var(--bad)}.attr.pre_existing{background:#3b3420;color:var(--warn)}.attr.no_baseline{background:#26323c;color:var(--muted)}
+            .attr{font-size:12px;border-radius:4px;padding:1px 6px}.attr.regression{background:#4a2420;color:var(--bad)}.attr.pre_existing,.attr.flaky{background:#3b3420;color:var(--warn)}.attr.no_baseline,.attr.unknown{background:#26323c;color:var(--muted)}
             .linkish{background:none;border:0;color:var(--accent);padding:0;text-decoration:underline;cursor:pointer;font:inherit}
             @media(max-width:760px){body{padding:0 14px 40px}.recent li{grid-template-columns:1fr}.tl .nums{margin-left:0}}
             @media(prefers-reduced-motion:no-preference){.tabs button{transition:color .15s,border-color .15s}}
@@ -155,9 +155,12 @@ final class DashboardShell {
             if(f.kind==='screenshot'&&shots<6){shots++;const img=make('img');img.loading='lazy';img.src=a.href;img.alt='{{t:shell.screenshot_2}} '+f.path.split('/').pop();a.append(img)}
             else a.textContent=(evidenceText[f.kind]??f.kind)+': '+f.path.split('/').pop();box.append(a)}parent.append(box)}
             function commandsTable(parent,commands){if(!commands||!commands.length)return;const t=make('table');const head=make('tr');for(const h of ['{{t:shell.command}}','{{t:shell.code}}','{{t:dash.time}}','{{t:shell.reason}}'])head.append(make('th',h));t.append(head);
-            const attr={regression:'{{t:shell.regression_passed_before_the_task}}',pre_existing:'{{t:shell.failed_before_the_task}}',no_baseline:'{{t:shell.no_pre_task_record}}'};
+            const attr={regression:'{{t:shell.regression_passed_before_the_task}}',pre_existing:'{{t:shell.failed_before_the_task}}',no_baseline:'{{t:shell.no_pre_task_record}}',flaky:'{{t:shell.unstable_check_still_blocks}}',unknown:'{{t:shell.check_attribution_unknown}}'};
             for(const c of commands){const tr=make('tr');tr.append(make('td',c.command??'—'),make('td',c.timed_out?'timeout':String(c.exit_code??'—')),make('td',duration(c.duration_ms)));
-            const td=make('td');if(c.attribution)td.append(make('span',attr[c.attribution]??c.attribution,'attr '+c.attribution));else td.textContent=c.ok?'ok':'—';tr.append(td);t.append(tr)}parent.append(t)}
+            const td=make('td');if(c.attribution)td.append(make('span',attr[c.attribution]??c.attribution,'attr '+c.attribution));else td.textContent=c.ok?'ok':'—';
+            if(c.failed_tests?.length)td.append(make('div','{{t:shell.failed_test_ids}} '+c.failed_tests.join(', '),'muted'));
+            if(c.new_failed_tests?.length)td.append(make('div','{{t:shell.new_failed_test_ids}} '+c.new_failed_tests.join(', '),'muted'));
+            tr.append(td);t.append(tr)}parent.append(t)}
             function drawDetail(d){el('run-detail-title').textContent=(d.task_id??'—')+' · '+d.run_id;const state=el('run-detail-state');
             const causes=(d.stop_causes||[]).map(c=>[c.stage,c.profile,c.http_status?'HTTP '+c.http_status:null,c.code].filter(Boolean).join(' · ')).join(' → ');
             const verdict=d.state==='finished'?(d.ok===true?'{{t:shell.ready_for_decision}}':'{{t:shell.stopped}}: '+(causes||d.reason||'—')):statusText[d.state]??d.state;state.textContent=verdict;state.className='chip '+(d.state==='running'?'running':d.ok===true?'passed':d.ok===false?'failed':'unknown');

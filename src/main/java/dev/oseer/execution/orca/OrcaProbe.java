@@ -173,7 +173,7 @@ public final class OrcaProbe {
 
             OrcaClient.Rpc run = call(lines, options.worktree(), CALL, List.of("orchestration", "run-create",
                     "--objective", "oseer profile probe", "--from", handle));
-            runId = nested(run.result(), "run", "id");
+            runId = OrcaSettlement.runId(run.envelope());
             if (!run.ok() || runId == null) return failed(lines, "no orchestration run");
 
             OrcaClient.Rpc task = call(lines, options.worktree(), CALL, List.of("orchestration", "task-create",

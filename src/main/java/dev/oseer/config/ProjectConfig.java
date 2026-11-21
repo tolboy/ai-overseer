@@ -25,7 +25,8 @@ public record ProjectConfig(
         String defaultBaselineChecks,
         String defaultRisk,
         long defaultMaxFixAttempts,
-        long defaultTimeoutMinutes) {
+        long defaultTimeoutMinutes,
+        boolean diagnoseFlakyChecks) {
 
     public static final Set<String> RISK_LEVELS = Set.of("low", "medium", "high");
 
@@ -58,7 +59,8 @@ public record ProjectConfig(
             "version", "project", "base_ref", "checks", "scopes", "setup", "defaults", "land");
     private static final Set<String> LAND_KEYS = Set.of("remote", "base", "pull_request");
     private static final Set<String> DEFAULTS = Set.of(
-            "checks", "baseline_checks", "risk", "max_fix_attempts", "timeout_minutes");
+            "checks", "baseline_checks", "risk", "max_fix_attempts", "timeout_minutes",
+            "diagnose_flaky_checks");
 
     public static ProjectConfig parse(String yamlText, String source) {
         Values root = Values.of(Yaml.parse(yamlText), source);
@@ -118,6 +120,7 @@ public record ProjectConfig(
         String defaultRisk = defaults.requireEnum("risk", RISK_LEVELS, "medium");
         long maxFixAttempts = defaults.optInt("max_fix_attempts", 2, 0, 10);
         long timeoutMinutes = defaults.optInt("timeout_minutes", 30, 1, 240);
+        boolean diagnoseFlakyChecks = defaults.optBool("diagnose_flaky_checks", false);
 
         // What has to happen in a checkout before any of `checks` can run. Empty for most
         // projects and load-bearing for the rest: a `git worktree` of an npm project has no
@@ -133,7 +136,8 @@ public record ProjectConfig(
 
         root.throwIfAny();
         return new ProjectConfig(project, baseRef, checks, scopes, setup, land,
-                defaultChecks, defaultBaselineChecks, defaultRisk, maxFixAttempts, timeoutMinutes);
+                defaultChecks, defaultBaselineChecks, defaultRisk, maxFixAttempts, timeoutMinutes,
+                diagnoseFlakyChecks);
     }
 
     static List<String> normalizePaths(Values root, String field, List<String> raw) {

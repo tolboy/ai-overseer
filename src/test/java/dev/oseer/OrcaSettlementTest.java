@@ -79,6 +79,18 @@ public final class OrcaSettlementTest implements Suite {
                 """);
         check.that("nested dispatch id is accepted", "disp_2".equals(OrcaSettlement.dispatchId(nested)));
         check.eq("nested task id is accepted", "task_2", OrcaSettlement.taskId(nested));
+        check.eq("current Orca run creation returns a flat runId", "run_new",
+                OrcaSettlement.runId(Json.parseObject("""
+                        {"ok":true,"result":{"runId":"run_new","objective":"profile probe"}}
+                        """)));
+        check.eq("older Orca run creation returns a nested run id", "run_old",
+                OrcaSettlement.runId(Json.parseObject("""
+                        {"ok":true,"result":{"run":{"id":"run_old"}}}
+                        """)));
+        check.eq("a failed creation does not claim a run", null,
+                OrcaSettlement.runId(Json.parseObject("""
+                        {"ok":false,"result":{"runId":"run_previous"}}
+                        """)));
 
         Map<String, Object> done = Json.parseObject("""
                 {"ok":true,"result":{"count":1,"messages":[

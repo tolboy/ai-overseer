@@ -86,6 +86,12 @@ public final class Findings {
             value.put("category_source", categorySource);
             value.put("severity", severity);
             value.put("path", path);
+            Integer line = CitationCheck.positiveLine(raw.get("line"));
+            Integer endLine = CitationCheck.positiveLine(raw.get("end_line"));
+            if (line != null) {
+                value.put("line", line);
+                if (endLine != null && endLine >= line) value.put("end_line", endLine);
+            }
             value.put("message", message);
             for (String field : List.of("scenario", "expected", "actual", "scope_relation"))
                 value.put(field, text(raw.get(field)));

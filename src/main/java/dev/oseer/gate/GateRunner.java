@@ -127,6 +127,7 @@ public final class GateRunner {
                     mergeBase, List.copyOf(initialPaths), List.of(), "reproduction requires an unchanged tree"));
         }
         String baselineSource = kind.equals(BASELINE) || kind.equals(REPRODUCTION) ? git.sourceFingerprint(mergeBase) : null;
+        boolean diagnoseFlakes = loaded.project().diagnoseFlakyChecks() && !kind.equals(REPRODUCTION);
 
         List<Map<String, Object>> commands = new ArrayList<>();
         long totalMillis = 0;
@@ -153,9 +154,12 @@ public final class GateRunner {
                 return finish(ledger, kind, false, "gate_timeout", base(loaded, contractHash, mergeBase,
                         List.copyOf(git.changedPaths(mergeBase)), List.of(), "shared task timeout exhausted"));
             }
+            String sourceBefore = diagnoseFlakes
+                    ? (baselineSource == null ? git.sourceFingerprint(mergeBase) : baselineSource) : null;
             ProcessRunner.Result result = processes.run(shell(command), loaded.root(), remaining);
             totalMillis += result.durationMillis();
-            commands.add(commandEvidence(index, command, result));
+            Map<String, Object> evidence = commandEvidence(index, command, result);
+            commands.add(evidence);
 
             List<String> afterMutations = OverseerTree.changedSince(loaded.root(), config);
             if (!afterMutations.isEmpty()) {
@@ -224,6 +228,37 @@ public final class GateRunner {
                 }
             }
             if (result.timedOut() || (!kind.equals(REPRODUCTION) && !result.ok())) {
+                Duration diagnosticTime = remaining.minusMillis(result.durationMillis());
+                if (diagnoseFlakes && diagnosticTime.isPositive() && !CheckDiagnostics.failedTests(evidence).isEmpty()
+                        && sourceBefore.equals(git.sourceFingerprint(mergeBase))) {
+                    // This is a diagnostic observation; the original failed gate remains red.
+                    Map<String, Object> retry = diagnosticRetry(loaded.root(), index, command, diagnosticTime);
+                    evidence.put("diagnostic_retry", retry);
+                    afterMutations = OverseerTree.changedSince(loaded.root(), config);
+                    afterPaths = git.changedPaths(mergeBase);
+                    if (!afterMutations.isEmpty()) {
+                        Map<String, Object> report = base(loaded, contractHash, mergeBase, List.copyOf(afterPaths),
+                                List.of(), "configuration changed during the check diagnostic retry");
+                        report.put("configuration_changed", afterMutations);
+                        report.put("commands", commands);
+                        return finish(ledger, kind, false, "contract_mutated", report);
+                    }
+                    violations = git.outsideScope(OverseerTree.sourcePaths(afterPaths), loaded.resolved().scopePaths());
+                    if (!violations.isEmpty()) {
+                        Map<String, Object> report = base(loaded, contractHash, mergeBase,
+                                List.copyOf(afterPaths), violations, null);
+                        report.put("commands", commands);
+                        return finish(ledger, kind, false, "blast_radius_after_command", report);
+                    }
+                    boolean sameSource = sourceBefore.equals(git.sourceFingerprint(mergeBase));
+                    if (baselineSource != null && !sameSource) {
+                        Map<String, Object> report = base(loaded, contractHash, mergeBase, List.copyOf(afterPaths),
+                                List.of(), "the baseline diagnostic retry changed project source");
+                        report.put("commands", commands);
+                        return finish(ledger, kind, false, "baseline_mutated_source", report);
+                    }
+                    retry.put("comparable", sameSource && retry.containsKey("exit_code"));
+                }
                 Map<String, Object> report = base(loaded, contractHash, mergeBase,
                         List.copyOf(afterPaths), List.of(), result.timedOut() ? "command timed out" : "command failed");
                 report.put("commands", commands);
@@ -299,7 +334,20 @@ public final class GateRunner {
         item.put("stderr", result.stderr());
         item.put("stdout_truncated", result.stdoutTruncated());
         item.put("stderr_truncated", result.stderrTruncated());
+        if (result.stalled()) item.put("stalled", true);
+        if (result.outputLimitExceeded()) item.put("output_limit_exceeded", true);
         return item;
+    }
+
+    private Map<String, Object> diagnosticRetry(Path root, int index, String command, Duration remaining)
+            throws InterruptedException {
+        try {
+            return commandEvidence(index, command, processes.run(shell(command), root, remaining));
+        } catch (IOException unavailable) {
+            Map<String, Object> evidence = new LinkedHashMap<>();
+            evidence.put("status", "unavailable");
+            return evidence;
+        }
     }
 
     /**

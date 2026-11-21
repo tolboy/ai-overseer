@@ -15,6 +15,10 @@ chain in behind it — and it should build with no network.
 The command is `oseer`. Upgrading an existing installation? Follow the
 [rename and configuration migration](docs/RENAME.md) before running it.
 
+To build a [portable ZIP](docs/FIRST-RUN.md), run `sh package.sh` or `package.cmd` on
+Windows. Extract `out/dist/ai-overseer.zip` to use the JAR and launchers from any
+project. The package runs on Java 21 or newer.
+
 ```bash
 ./build.sh          # or build.cmd on Windows
 ./test.sh           # or test.cmd
@@ -46,7 +50,8 @@ passes — and prints the evidence both runs left behind. See
 
 ## The first real run
 
-Build Overseer once. After that it is one command — a goal and a project:
+See the [first-run guide](docs/FIRST-RUN.md) to inspect a project and approve a
+preview from the browser. From the terminal, a goal and a project are enough to start:
 
 ```text
 /path/to/ai-overseer/bin/oseer do --project /path/to/repo --scope code "Add a Settings button"

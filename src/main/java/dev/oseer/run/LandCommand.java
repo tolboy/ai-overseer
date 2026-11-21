@@ -66,9 +66,14 @@ public final class LandCommand {
 
     public record Options(String runId, boolean commit, boolean push, boolean pullRequest,
                           String title, Path bodyFile, Path messageFile, String base,
-                          String remote, String type) {
+                          String remote, String type, Integer updatePr, String expectedHead, Path bundleFile,
+                          Path prSnapshot) {
         public Options {
             if (type == null || type.isBlank()) type = "feat";
+            if (prSnapshot != null && (bundleFile == null || updatePr == null || !GithubPullRequests.sha(expectedHead)
+                    || push || pullRequest || !commit)) {
+                throw new IllegalArgumentException("--pr-snapshot requires --emit-bundle, --update-pr and --expect-head");
+            }
         }
 
         /** Callers that predate {@code --type} get the conventional default. */
@@ -77,12 +82,21 @@ public final class LandCommand {
                        String remote) {
             this(runId, commit, push, pullRequest, title, bodyFile, messageFile, base, remote, "feat");
         }
+
+        public Options(String runId, boolean commit, boolean push, boolean pullRequest,
+                       String title, Path bodyFile, Path messageFile, String base,
+                       String remote, String type) {
+            this(runId, commit, push, pullRequest, title, bodyFile, messageFile, base, remote, type, null, null, null,
+                    null);
+        }
     }
 
     public record Outcome(boolean ok, String code, Map<String, Object> report) {}
 
     private static final Duration GIT_TIMEOUT = Duration.ofMinutes(3);
     private static final Duration PUSH_TIMEOUT = Duration.ofMinutes(10);
+    private static final String SINGLE_UPDATE_COMMIT = "the update must be one commit directly on the pinned PR head; "
+            + "consolidate the accepted changes locally before retrying";
     private static final Set<String> COMMIT_TYPES = Set.of(
             "feat", "fix", "docs", "chore", "refactor", "test", "perf");
     private static final int SUBJECT_LIMIT = 72;
@@ -90,31 +104,67 @@ public final class LandCommand {
     private static final String REFUSED_COMMITS_FILE = "land-refused.json";
 
     private final ProcessRunner processes;
+    private final GithubPullRequests github;
 
-    public LandCommand(ProcessRunner processes) { this.processes = processes; }
+    public LandCommand(ProcessRunner processes) { this(processes, new GithubPullRequests(processes)); }
+
+    LandCommand(ProcessRunner processes, GithubPullRequests github) {
+        this.processes = processes;
+        this.github = github;
+    }
 
     public static Options parse(String[] args) {
         if (args.length < 2 || args[1].startsWith("--")) {
             throw new IllegalArgumentException("land requires a run id: oseer land <run-id>");
         }
-        boolean pullRequest = has(args, "--pull-request") || has(args, "--pr");
-        boolean push = pullRequest || has(args, "--push");
-        boolean commit = push || has(args, "--commit");
-        String bodyFile = option(args, "--body-file", null);
-        String messageFile = option(args, "--message-file", null);
-        String type = option(args, "--type", "feat");
+        Set<String> switches = Set.of("--commit", "--push", "--pull-request", "--pr");
+        Set<String> withValue = Set.of("--title", "--body-file", "--message-file", "--base", "--remote",
+                "--type", "--update-pr", "--expect-head", "--emit-bundle", "--pr-snapshot");
+        Set<String> flags = new java.util.HashSet<>();
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int i = 2; i < args.length; i++) {
+            String argument = args[i];
+            if (switches.contains(argument) && flags.add(argument)) continue;
+            if (withValue.contains(argument) && !values.containsKey(argument)
+                    && i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                values.put(argument, args[++i]);
+                continue;
+            }
+            throw new IllegalArgumentException("invalid, duplicate, or incomplete land option: " + argument);
+        }
+        boolean pullRequest = flags.contains("--pull-request") || flags.contains("--pr");
+        boolean push = pullRequest || flags.contains("--push");
+        String bodyFile = values.get("--body-file");
+        String messageFile = values.get("--message-file");
+        String bundle = values.get("--emit-bundle");
+        String snapshot = values.get("--pr-snapshot");
+        Integer updatePr = values.containsKey("--update-pr") ? GithubPullRequests.number(values.get("--update-pr")) : null;
+        String expectedHead = values.get("--expect-head");
+        if (expectedHead != null && (updatePr == null || !GithubPullRequests.sha(expectedHead))) {
+            throw new IllegalArgumentException("--expect-head needs --update-pr and a full lowercase GitHub head SHA");
+        }
+        if (updatePr != null && (pullRequest || values.containsKey("--title") || bodyFile != null)) {
+            throw new IllegalArgumentException("--update-pr cannot be combined with PR creation options");
+        }
+        if (bundle != null && (updatePr == null || push)) {
+            throw new IllegalArgumentException("--emit-bundle requires --update-pr and cannot be combined with --push");
+        }
+        if (updatePr != null && (push || bundle != null) && expectedHead == null) {
+            throw new IllegalArgumentException("updating or exporting a PR branch requires --expect-head SHA");
+        }
+        boolean commit = push || bundle != null || flags.contains("--commit");
+        String type = values.getOrDefault("--type", "feat");
         if (!COMMIT_TYPES.contains(type)) {
             throw new IllegalArgumentException(
                     "--type must be feat, fix, docs, chore, refactor, test or perf, not '"
                             + type + "'");
         }
         return new Options(args[1], commit, push, pullRequest,
-                option(args, "--title", null),
+                values.get("--title"),
                 bodyFile == null ? null : Path.of(bodyFile),
                 messageFile == null ? null : Path.of(messageFile),
-                option(args, "--base", null),
-                option(args, "--remote", null),
-                type);
+                values.get("--base"), values.get("--remote"), type, updatePr, expectedHead,
+                bundle == null ? null : Path.of(bundle), snapshot == null ? null : Path.of(snapshot));
     }
 
     public Outcome run(Options options) throws Exception {
@@ -161,6 +211,20 @@ public final class LandCommand {
         ProjectConfig.Land land = new ConfigLoader().load(root, taskOf(report)).project().land();
 
         String remote = options.remote() != null ? options.remote() : land.remote();
+        GithubPullRequests.PullRequest existingPr = null;
+        if (options.updatePr() != null) {
+            try {
+                GithubPullRequests.Remote prRemote = github.remote(root, remote);
+                existingPr = options.prSnapshot() == null
+                        ? github.read(root, prRemote, options.updatePr())
+                        : github.readSnapshot(root, prRemote, options.updatePr(), options.prSnapshot());
+                remote = prRemote.name();
+                validateUpdate(root, existingPr, options, branch, diffBase,
+                        options.base() != null ? options.base() : land.base());
+            } catch (GithubPullRequests.Refused refused) {
+                return refuse(refused.code, root, refused.getMessage());
+            }
+        }
         if (remote == null && (options.push() || options.pullRequest())) {
             List<String> remotes = remotes(root);
             if (remotes.size() == 1) {
@@ -175,7 +239,7 @@ public final class LandCommand {
             }
         }
         String target = options.base() != null ? options.base()
-                : land.base() != null ? land.base() : defaultBranch(root, remote);
+                : land.base() != null ? land.base() : existingPr != null ? existingPr.base() : defaultBranch(root, remote);
         if (branch.equals(target)) {
             return refuse("refuses_default_branch", root, "this worktree is on '" + branch
                     + "', which is the branch a pull request would target. Landing here would be a "
@@ -196,6 +260,9 @@ public final class LandCommand {
         // matches HEAD, and a plain `git commit` used to carry both.
         Set<String> uncommitted = git.changedPaths();
         List<String> paths = accepted.stream().filter(uncommitted::contains).toList();
+        if (existingPr != null && !paths.isEmpty() && !existingPr.headSha().equals(commitSha(root))) {
+            return refuse("pr_update_requires_single_commit", root, SINGLE_UPDATE_COMMIT);
+        }
         List<String> alreadyCommitted = accepted.stream().filter(path -> !uncommitted.contains(path)).toList();
         List<String> leftStaged = stagedPaths(git).stream().filter(path -> !accepted.contains(path)).toList();
         // What `git add` is given. A deletion already staged — as after `git reset --soft`, the
@@ -208,9 +275,8 @@ public final class LandCommand {
                 ? Files.readString(options.messageFile(), StandardCharsets.UTF_8)
                 : commitMessage(report, options.type());
         String title = options.title() != null ? options.title() : firstLine(message);
-        String body = options.bodyFile() != null
-                ? Files.readString(options.bodyFile(), StandardCharsets.UTF_8)
-                : pullRequestBody(root, report);
+        String body = existingPr != null ? null : options.bodyFile() != null
+                ? Files.readString(options.bodyFile(), StandardCharsets.UTF_8) : pullRequestBody(root, report);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("run_id", options.runId());
@@ -224,8 +290,12 @@ public final class LandCommand {
         if (!alreadyCommitted.isEmpty()) result.put("already_committed", alreadyCommitted);
         if (!leftStaged.isEmpty()) result.put("left_staged", leftStaged);
         result.put("commit_message", message);
-        result.put("pull_request_title", title);
-        result.put("would_run", plan(paths, toStage, branch, remote, target, land, title, options));
+        if (existingPr == null) result.put("pull_request_title", title);
+        else {
+            result.put("pull_request", existingPr.view());
+            result.put("pr_metadata_source", options.prSnapshot() == null ? "github" : "snapshot");
+        }
+        result.put("would_run", plan(paths, toStage, branch, remote, target, land, title, options, existingPr));
         result.put("lands", false);
         result.put("note", "a pull request is a request; nothing is merged by this command");
 
@@ -240,7 +310,9 @@ public final class LandCommand {
         if (!options.commit()) {
             result.put("ok", true);
             result.put("code", "planned");
-            result.put("next", "re-run with --commit, --push or --pull-request to carry it out");
+            result.put("next", existingPr == null ? "re-run with --commit, --push or --pull-request to carry it out"
+                    : "re-run with --push --expect-head " + existingPr.headSha()
+                        + " to update this PR, or use --emit-bundle FILE with the same --expect-head to export");
             return new Outcome(true, "planned", result);
         }
 
@@ -314,11 +386,16 @@ public final class LandCommand {
             }
         }
 
+        if (existingPr != null && (options.push() || options.bundleFile() != null)) {
+            return update(root, git, decision, existingPr, options, accepted, diffBase, result);
+        }
+
         if (!options.push()) {
             String code = paths.isEmpty() ? "already_committed" : "committed";
             result.put("ok", true);
             result.put("code", code);
-            result.put("next", "re-run with --push or --pull-request");
+            result.put("next", existingPr == null ? "re-run with --push or --pull-request"
+                    : "re-run with --push --expect-head " + existingPr.headSha() + " to update this PR");
             return new Outcome(true, code, result);
         }
 
@@ -569,9 +646,10 @@ public final class LandCommand {
 
     // ---------------------------------------------------------------------- mechanics
 
-    /** The commands the plan prints, in the form they are run. */
+    /** The commands the plan prints, with a placeholder when a commit has yet to be made. */
     private static List<String> plan(List<String> paths, List<String> toStage, String branch, String remote,
-                                     String base, ProjectConfig.Land land, String title, Options options) {
+                                     String base, ProjectConfig.Land land, String title, Options options,
+                                     GithubPullRequests.PullRequest existingPr) {
         List<String> plan = new ArrayList<>();
         if (paths.isEmpty()) {
             plan.add("(nothing to commit: every accepted path is already at HEAD)");
@@ -579,7 +657,13 @@ public final class LandCommand {
             if (!toStage.isEmpty()) plan.add(String.join(" ", addCommand(toStage)));
             plan.add(String.join(" ", commitCommand("<message file>", paths)));
         }
-        if (options.push() || options.pullRequest()) {
+        if (existingPr != null && options.bundleFile() != null) {
+            plan.add("git bundle create " + options.bundleFile() + " refs/heads/" + existingPr.head()
+                    + " ^" + existingPr.headSha());
+        } else if (existingPr != null) {
+            plan.add(String.join(" ", updatePushCommand(existingPr.remote().pushUrl(), existingPr.head(),
+                    existingPr.headSha(), "<accepted commit SHA>")));
+        } else if (options.push() || options.pullRequest()) {
             plan.add("git push -u " + (remote == null ? "<remote>" : remote) + " " + branch);
         }
         if (options.pullRequest()) {
@@ -802,6 +886,138 @@ public final class LandCommand {
         return String.valueOf(report.get("task_id"));
     }
 
+    private void validateUpdate(Path root, GithubPullRequests.PullRequest pr, Options options,
+                                String branch, String diffBase, String configuredBase) throws IOException, InterruptedException {
+        GithubPullRequests.requireHead(pr, options.expectedHead());
+        if (!pr.sameRepository() || !pr.head().equals(branch)) {
+            throw new GithubPullRequests.Refused("pr_head_branch_mismatch",
+                    "check out the PR head branch from the selected repository; fork PR updates are unsupported");
+        }
+        if (branch.equals(pr.defaultBranch()) || branch.equals(pr.base())) {
+            throw new GithubPullRequests.Refused("refuses_default_branch", "updates target a PR head branch, never its base or the default branch");
+        }
+        if (configuredBase != null && !pr.base().equals(configuredBase)) {
+            throw new GithubPullRequests.Refused("pr_base_mismatch", "the PR base branch differs from --base or land.base");
+        }
+        String candidate = commitSha(root);
+        requireUpdateParent(root, pr.headSha(), candidate);
+        github.requireBase(root, pr, candidate, diffBase);
+        if (options.push()) github.verifyRemoteHead(root, pr);
+        if (options.bundleFile() != null && Files.exists(options.bundleFile(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new GithubPullRequests.Refused("bundle_exists", "choose a new bundle file");
+        }
+    }
+
+    private void requireUpdateParent(Path root, String expected, String candidate)
+            throws IOException, InterruptedException {
+        if (expected.equals(candidate)) return;
+        if (!GithubPullRequests.sha(candidate) || !processes.run(List.of("git", "merge-base",
+                "--is-ancestor", expected, candidate), root, GIT_TIMEOUT).ok()) {
+            throw new GithubPullRequests.Refused("pr_update_not_fast_forward",
+                    "the accepted branch must descend from the expected PR head");
+        }
+        // The acceptance covers the final tree. A multi-commit update could send intermediate
+        // file versions that the final diff and fingerprint cannot see.
+        ProcessRunner.Result parents = processes.run(List.of("git", "rev-list", "--parents", "-n", "1", candidate),
+                root, GIT_TIMEOUT);
+        if (!parents.ok() || !parents.stdout().strip().equals(candidate + " " + expected)) {
+            throw new GithubPullRequests.Refused("pr_update_requires_single_commit", SINGLE_UPDATE_COMMIT);
+        }
+    }
+
+    private Outcome update(Path root, GitRepository git, HumanDecision decision, GithubPullRequests.PullRequest pr,
+                           Options options, List<String> accepted, String diffBase, Map<String, Object> result)
+            throws IOException, InterruptedException {
+        try {
+            String candidate = commitSha(root);
+            requireUpdateParent(root, pr.headSha(), candidate);
+            if (!git.sourceFingerprint(diffBase).equals(decision.candidateFingerprint())
+                    || accepted.stream().anyMatch(git.changedPaths(candidate)::contains)) {
+                throw new GithubPullRequests.Refused("pr_candidate_changed", "the committed PR candidate no longer matches the acceptance");
+            }
+            ProcessRunner.Result outgoing = git.git(List.of("diff", "--name-only", "--no-renames",
+                    "-z", pr.headSha(), candidate, "--"));
+            if (outgoing.stdoutTruncated() || !new java.util.HashSet<>(accepted).containsAll(nulSeparated(outgoing))) {
+                throw new GithubPullRequests.Refused("pr_contains_unaccepted_paths",
+                        "the PR update includes changes outside the accepted paths");
+            }
+            GithubPullRequests.PullRequest current = pr;
+            if (options.prSnapshot() == null) {
+                current = github.read(root, pr.remote(), pr.number());
+                GithubPullRequests.requireHead(current, pr.headSha());
+                if (!current.base().equals(pr.base()) || !current.baseSha().equals(pr.baseSha())
+                    || !current.head().equals(pr.head()) || !current.sameRepository()
+                    || current.head().equals(current.defaultBranch())) {
+                    throw new GithubPullRequests.Refused("pr_destination_changed", "the PR branches changed during the operation");
+                }
+            }
+            github.requireBase(root, current, candidate, diffBase);
+            if (!pr.head().equals(currentBranch(root)) || !candidate.equals(commitSha(root))) {
+                throw new GithubPullRequests.Refused("pr_candidate_changed", "the local PR branch moved during candidate verification");
+            }
+            result.put("candidate", candidate);
+            if (candidate.equals(pr.headSha())) {
+                result.put("ok", true);
+                result.put("code", "pr_already_current");
+                return new Outcome(true, "pr_already_current", result);
+            }
+            if (options.bundleFile() != null) {
+                Path target = options.bundleFile().toAbsolutePath().normalize();
+                exportBundle(root, pr, candidate, target);
+                result.put("bundle", target.toString());
+                result.put("relay_ref", "refs/heads/" + pr.head());
+                result.put("expected_head", pr.headSha());
+                result.put("ok", true);
+                result.put("code", "pr_bundle_exported");
+                return new Outcome(true, "pr_bundle_exported", result);
+            }
+            github.verifyRemoteHead(root, pr);
+            ProcessRunner.Result pushed = processes.run(updatePushCommand(pr.remote().pushUrl(), pr.head(),
+                    pr.headSha(), candidate), root, PUSH_TIMEOUT);
+            if (!pushed.ok()) return failed(result, "pr_push_refused", pushed);
+            result.put("ok", true);
+            result.put("pushed", true);
+            result.put("code", "pr_updated");
+            return new Outcome(true, "pr_updated", result);
+        } catch (GithubPullRequests.Refused refused) {
+            result.put("ok", false);
+            result.put("code", refused.code);
+            result.put("message", refused.getMessage());
+            return new Outcome(false, refused.code, result);
+        }
+    }
+
+    /** The exact lease adds a compare-and-swap after our independent ancestry check. */
+    static List<String> updatePushCommand(String url, String branch, String expected, String candidate) {
+        String ref = "refs/heads/" + branch;
+        return List.of("git", "push", "--no-follow-tags", "--recurse-submodules=no",
+                "--force-with-lease=" + ref + ":" + expected,
+                "--", url, candidate + ":" + ref);
+    }
+
+    private void exportBundle(Path root, GithubPullRequests.PullRequest pr, String candidate, Path target)
+            throws IOException, InterruptedException {
+        Path temporary = Files.createTempFile(target.getParent(), ".oseer-pr-", ".bundle");
+        String ref = "refs/heads/" + pr.head();
+        try {
+            ProcessRunner.Result made = processes.run(List.of("git", "bundle", "create",
+                    temporary.toString(), ref, "^" + pr.headSha()), root, GIT_TIMEOUT);
+            if (!made.ok()) throw new GithubPullRequests.Refused("pr_bundle_failed", "Git could not export the PR update");
+            ProcessRunner.Result heads = processes.run(List.of("git", "bundle", "list-heads",
+                    temporary.toString()), root, GIT_TIMEOUT);
+            if (!heads.ok() || !heads.stdout().strip().equals(candidate + " " + ref)) {
+                throw new GithubPullRequests.Refused("pr_bundle_candidate_changed",
+                        "the local branch moved during bundle construction; inspect it before retrying");
+            }
+            try { Files.move(temporary, target); }
+            catch (java.nio.file.FileAlreadyExistsException exists) {
+                throw new GithubPullRequests.Refused("bundle_exists", "choose a new bundle file");
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
     private static String firstLine(String text) {
         int newline = text.indexOf('\n');
         String line = newline < 0 ? text : text.substring(0, newline);
@@ -835,15 +1051,4 @@ public final class LandCommand {
         return (Map<String, Object>) map;
     }
 
-    private static boolean has(String[] args, String name) {
-        for (String argument : args) if (argument.equals(name)) return true;
-        return false;
-    }
-
-    private static String option(String[] args, String name, String fallback) {
-        for (int index = 0; index + 1 < args.length; index++) {
-            if (args[index].equals(name)) return args[index + 1];
-        }
-        return fallback;
-    }
 }

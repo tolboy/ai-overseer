@@ -3,14 +3,14 @@
 AI Overseer is installed once. Each project you point it at gets only its own
 `.oseer/project.yaml` and task files — never a vendor name, never a model, never a key.
 
-Throughout this document, `<ai-overseer>` is wherever you cloned this repository and `<project>`
-is the repository you want Overseer to work on.
+Throughout this document, `<ai-overseer>` is the clone or the extracted portable
+distribution, and `<project>` is the repository you want Overseer to work on.
 
 ## Requirements
 
 | | |
 |---|---|
-| JDK | 21 or newer. Bytecode targets 21 deliberately; a newer JDK is fine |
+| Java | 21 or newer. Building from source or producing an archive requires a JDK |
 | Git | Any recent version |
 | Node | Only for the browser harness (`scripts/visual-qa.mjs`). Standard library only |
 | Browser | Only for the browser harness: Chrome or Edge, already installed |
@@ -19,7 +19,16 @@ is the repository you want Overseer to work on.
 
 Nothing is downloaded at build time. If the build needs the network, that is a bug.
 
-## 1. Build Overseer, offline
+## 1. Install or build Overseer, offline
+
+For a portable install, extract `ai-overseer.zip` and start with the
+[first-run guide](FIRST-RUN.md). To build the archive from a source checkout, run
+`sh package.sh` or `package.cmd` on Windows. The output is
+`out/dist/ai-overseer.zip`. Rebuilding with the same JDK and sources produces
+the same archive. On POSIX, launch it with `sh <ai-overseer>/bin/oseer` or make
+the script executable.
+
+For development from a source checkout:
 
 ```bash
 cd <ai-overseer>
@@ -70,7 +79,8 @@ Set `OSEER_CONFIG_HOME` to put this somewhere other than `~/.oseer`. Note that t
 **not** `OSEER_HOME`, which the launcher scripts use for the installation directory — the two
 were once the same name, and the collision silently pointed `oseer setup` at the repository.
 
-The shipped profiles are examples, and none of them is usable yet. That is the next step.
+The shipped profiles are examples. Review the role selections with `oseer profiles`
+and verify the ones you intend to use.
 
 ## 3. Verify each profile before you let it run
 

@@ -47,6 +47,7 @@ public final class TestMain {
                 new dev.oseer.HeartbeatTest(),
                 new dev.oseer.LandMessageTest(),
                 new dev.oseer.LandCommandTest(),
+                new dev.oseer.run.PullRequestCommandTest(),
                 new dev.oseer.DoCommandTest(),
                 new dev.oseer.PlannerTest(),
                 new dev.oseer.run.PreparationAccountingTest(),

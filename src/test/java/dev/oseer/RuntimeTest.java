@@ -1,8 +1,11 @@
 package dev.oseer;
 
 import dev.oseer.config.ConfigLoader;
+import dev.oseer.gate.CheckDiagnostics;
 import dev.oseer.gate.GateRunner;
 import dev.oseer.git.GitRepository;
+import dev.oseer.json.Json;
+import dev.oseer.ledger.RunReport;
 import dev.oseer.process.ProcessRunner;
 import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
@@ -11,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public final class RuntimeTest implements Suite {
@@ -29,6 +33,7 @@ public final class RuntimeTest implements Suite {
         check.that("timeout settles", timedOut.timedOut());
         check.that("timed-out process is no longer successful", !timedOut.ok());
         stdinChecks(check, runner);
+        checkDiagnostics(check, runner);
 
         Path repository = fixture();
         try {
@@ -444,6 +449,103 @@ public final class RuntimeTest implements Suite {
         } finally {
             deleteTree(repository);
         }
+    }
+
+    private static void checkDiagnostics(Check check, ProcessRunner runner) throws Exception {
+        var recorded = Map.of("exit_code", 1, "stdout", """
+                FAILED ./tests\\test_cache.py::test_refresh[param] - assert False
+                org.example.CacheTest > invalidates() FAILED
+                [ERROR] org.example.CacheTest.expires -- Time elapsed: 0.01 s <<< FAILURE!
+                Tests run: 5, Failures: 3, Errors: 0, Skipped: 0
+                """);
+        check.eq("recognized test IDs retain class, repository path and parameter, not assertion text",
+                List.of("org.example.CacheTest#expires", "org.example.CacheTest#invalidates()",
+                        "tests/test_cache.py::test_refresh[param]"), CheckDiagnostics.failedTests(recorded));
+        check.eq("pytest parameter IDs can contain the assertion separator",
+                List.of("tests/test_cache.py::test_refresh[first - input]", "tests/test_cache.py::test_refresh[first - output]"),
+                CheckDiagnostics.failedTests(Map.of("exit_code", 1, "stdout", """
+                        FAILED tests/test_cache.py::test_refresh[first - input] - assert values == [3]
+                        FAILED tests/test_cache.py::test_refresh[first - output] - assert values == [3]
+                        """)));
+        check.eq("truncated output cannot compare test IDs", List.of(),
+                CheckDiagnostics.failedTests(Map.of("exit_code", 1, "stdout", recorded.get("stdout"),
+                        "stdout_truncated", true)));
+        Map<String, Object> old = CheckDiagnostics.observation(Map.of("command", "tests", "exit_code", 1,
+                "stdout", "FAILED tests/test_cart.py::test_cart - old assertion"), Map.of());
+        Map<String, Object> same = CheckDiagnostics.observation(Map.of("command", "tests", "exit_code", 1,
+                "stdout", "FAILED tests\\test_cart.py::test_cart - different error prose"), Map.of());
+        CheckDiagnostics.attribute(same, List.of(old), false);
+        check.eq("matching test IDs are known to have failed before", "pre_existing", same.get("attribution"));
+        Map<String, Object> mixed = CheckDiagnostics.observation(Map.of("command", "tests", "exit_code", 1,
+                "stdout", "FAILED tests/test_cart.py::test_cart\nFAILED tests/test_cart.py::test_checkout"), Map.of());
+        CheckDiagnostics.attribute(mixed, List.of(old), false);
+        check.eq("one old failure does not hide a new failed test", "regression", mixed.get("attribution"));
+        check.eq("newly failing IDs are identified explicitly", List.of("tests/test_cart.py::test_checkout"),
+                mixed.get("new_failed_tests"));
+        check.eq("existing IDs are also kept", List.of("tests/test_cart.py::test_cart"),
+                mixed.get("pre_existing_failed_tests"));
+        Map<String, Object> unknown = CheckDiagnostics.observation(Map.of("command", "tests", "exit_code", 1,
+                "stdout", "Tests run: 1, Failures: 1"), Map.of());
+        CheckDiagnostics.attribute(unknown, List.of(old), false);
+        check.eq("equal exit codes and counts do not imply the same failure", "unknown", unknown.get("attribution"));
+
+        Path project = fixture();
+        try {
+            Path contract = project.resolve(".oseer/project.yaml");
+            Files.writeString(project.resolve("src/FlakeProbe.java"), """
+                    class FlakeProbe {
+                        public static void main(String[] args) throws Exception {
+                            var marker = java.nio.file.Path.of(".oseer/runs/diagnostic-marker");
+                            if (java.nio.file.Files.notExists(marker)) {
+                                java.nio.file.Files.writeString(marker, "recorded");
+                                System.out.println("FAILED tests/test_cart.py::test_checkout - first observation");
+                                System.exit(1);
+                            }
+                            System.out.println("passing retry");
+                        }
+                    }
+                    """);
+            String baseContract = Files.readString(contract).replace("echo baseline-ok", "java src/FlakeProbe.java");
+            Files.writeString(contract, baseContract);
+            GateRunner gates = new GateRunner(runner);
+            GateRunner.Outcome ordinary = gates.runBaseline(new ConfigLoader().load(project, "smoke"),
+                    "ordinary--baseline-0", null, null);
+            check.eq("an ordinary red check does not retry", null, firstCommand(ordinary.data()).get("diagnostic_retry"));
+            Files.delete(project.resolve(".oseer/runs/diagnostic-marker"));
+            Files.writeString(contract, baseContract.replace("defaults:\n", "defaults:\n  diagnose_flaky_checks: true\n"));
+            GateRunner.Outcome diagnostic = gates.runBaseline(new ConfigLoader().load(project, "smoke"),
+                    "diagnose--baseline-0", null, null);
+            check.eq("a green diagnostic replay does not turn the original gate green", "command_failed", diagnostic.code());
+            check.that("the baseline is still failed after the diagnostic replay", !diagnostic.ok());
+            Map<?, ?> command = firstCommand(diagnostic.data());
+            check.contains("primary evidence keeps failed stdout", String.valueOf(command.get("stdout")), "first observation");
+            Map<?, ?> retry = (Map<?, ?>) command.get("diagnostic_retry");
+            check.eq("repeat is comparable only on the same tracked source and contract", true, retry.get("comparable"));
+            check.eq("the retry records its own exit separately", 0L, retry.get("exit_code"));
+            check.contains("retry evidence keeps stdout", String.valueOf(retry.get("stdout")), "passing retry");
+
+            Path summary = Files.createDirectories(project.resolve(".oseer/runs/diagnose")).resolve("task-run.json");
+            Files.writeString(summary, Json.write(Map.of("task_id", "smoke", "ok", false, "reason", "baseline_failed",
+                    "baseline_report", diagnostic.report().toString(), "steps", List.of(Map.of(
+                            "step", "baseline", "attempt", 0L, "ok", false, "code", "command_failed",
+                            "report", diagnostic.report().toString())))));
+            Map<?, ?> report = new RunReport(runner).of(project, "diagnose");
+            Map<?, ?> reported = firstCommand((Map<?, ?>) ((List<?>) report.get("stages")).get(0));
+            check.eq("CLI JSON marks the same-source repeat as flaky", "flaky", reported.get("attribution"));
+            check.contains("CLI text includes the test that failed", RunReport.render(new RunReport(runner).of(project, "diagnose")),
+                    "tests/test_cart.py::test_checkout");
+            Map<?, ?> timeline = dev.oseer.dashboard.RunTimeline.read(project, "diagnose");
+            Map<?, ?> displayed = firstCommand((Map<?, ?>) ((List<?>) timeline.get("steps")).get(0));
+            check.eq("dashboard has the same diagnosis as the CLI", "flaky", displayed.get("attribution"));
+            check.eq("the dashboard command still has the original failed status", false, displayed.get("ok"));
+            check.that("dashboard summary retains raw output only via the evidence route", !displayed.containsKey("stdout"));
+        } finally {
+            deleteTree(project);
+        }
+    }
+
+    private static Map<?, ?> firstCommand(Map<?, ?> report) {
+        return (Map<?, ?>) ((List<?>) report.get("commands")).getFirst();
     }
 
     /** Computed by the definition as of 1eec6a9, before additions left the shape. */
