@@ -2,6 +2,7 @@ package dev.oseer;
 
 import dev.oseer.approval.ApprovalStore;
 import dev.oseer.approval.HumanDecision;
+import dev.oseer.execution.orca.OrcaClient;
 import dev.oseer.execution.orca.OrcaDecisionGate;
 import dev.oseer.execution.orca.OrcaLifecycle;
 import dev.oseer.json.Json;
@@ -76,6 +77,7 @@ public final class OrcaDecisionGateTest implements Suite {
         check.eq("the question names the run", true, question.contains("run-1"));
         check.eq("the question names the options", true, question.contains("accept or reject"));
         check.eq("the question says nothing lands", true, question.contains("Nothing is landed"));
+        publishesCurrentOrcaGate(check, root, decision);
 
         // A gate answered a second time cannot flip a decision that is already recorded: the
         // store refuses the duplicate. This is the whole reason the gate is not the record.
@@ -94,6 +96,39 @@ public final class OrcaDecisionGateTest implements Suite {
         waiterBackoffSequence(check);
         waitForGateSkipsWhenNoneWasPublished(check);
         theDecisionPageStillHearsTheGate(check);
+    }
+
+    private static void publishesCurrentOrcaGate(Check check, Path root, HumanDecision decision) throws Exception {
+        OrcaClient orca = new OrcaClient((directory, timeout, args) -> {
+            String command = String.join(" ", args.subList(0, Math.min(2, args.size())));
+            Map<String, Object> result = switch (command) {
+                case "status" -> Map.of("app", Map.of("running", true), "runtime", Map.of(
+                        "reachable", true, "capabilities", List.of("orchestration.contract.v1")));
+                case "worktree current" -> Map.of("worktree", Map.of("id", "repo::" + root));
+                case "terminal create" -> Map.of("terminal", Map.of("handle", "term_test"));
+                case "orchestration run-create" -> Map.of("runId", "run_new");
+                case "orchestration task-create" -> Map.of("taskId", "task_new");
+                case "orchestration gate-create" -> Map.of(
+                        "gateId", "gate_new", "taskId", "task_new", "status", "pending");
+                case "orchestration gate-list" -> Map.of("gates", List.of(args.contains("--full")
+                        ? Map.of("id", "gate_new", "status", "resolved", "resolution", "reject")
+                        : Map.of("id", "gate_new", "status", "resolved")));
+                case "terminal close" -> Map.of();
+                default -> throw new IllegalStateException("unexpected Orca command " + args);
+            };
+            return new OrcaClient.Rpc(true, 0, false, 0, Map.of("ok", true, "result", result), result, "", "");
+        });
+        OrcaLifecycle lifecycle = new OrcaLifecycle(root, decision.runId());
+        OrcaDecisionGate bridge = new OrcaDecisionGate(orca);
+        OrcaDecisionGate.Publication publication = bridge.publish(root, lifecycle, decision, "test");
+        check.that("current Orca gate creation is accepted", publication.published());
+        OrcaLifecycle.Gate gate = lifecycle.read().gate();
+        check.eq("the flat gate id is persisted", "gate_new", gate == null ? null : gate.gateId());
+        check.eq("the decision version remains bound", decision.updatedAt().toString(),
+                gate == null ? null : gate.decisionUpdatedAt());
+        OrcaDecisionGate.Answer answer = gate == null ? null : bridge.read(root, gate);
+        check.eq("the full Orca list returns the actual resolution", "reject",
+                answer == null ? null : answer.resolution());
     }
 
     /**
