@@ -370,6 +370,7 @@ decision.task = · task
 decision.that_did_not_stop_the = that did not stop the loop (only P1 does). Read them before deciding:
 decision.the_tooltip_shows_what_was = The tooltip shows what was checked in the screenshot.
 decision.this_run_has_no_pending = This run has no pending decision.
+decision.unverified = unverified citation
 decision.verify_manually = Verify manually
 decision.visible = visible
 decision.warning = . Warning:
@@ -810,6 +811,7 @@ shell.stopped = stopped
 shell.stopped_without_results = stopped without results
 shell.tokens = tokens:
 shell.unpriced_call_s_total_is = unpriced call(s) — total is incomplete
+shell.unverified_findings = unverified findings:
 shell.verdict_reused_from = verdict reused from
 shell.visual_qa = visual QA
 shell.who_works_on_the_next = Who works on the next run
@@ -970,6 +972,11 @@ models.ping = Ping
 shell.overview_lineup_note = Based on personal policy, before task settings. A task’s use: block, CLI flags and Jev can select a different participant. See “Next run” for the exact task lineup; change participants and models in “Roles and vendors”.
 timeline.attempt_failed = attempt failed:
 timeline.switched = switched vendor:
+dash.cost_is_unknown = cost unknown
+dash.may_be_billed = may be billed
+dash.decision_superseded = superseded
+shell.not_reached = not reached
+shell.earlier_candidate = earlier candidate
 """;
 
     static final String TEXT = String.join("\n", CONN, DASH, DECISION, DIFF, MODELS, NEXT, PREVIEW, SHELL, VENDORS, ADDED);

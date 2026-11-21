@@ -76,6 +76,14 @@ public final class RunReport {
         // What each judging stage objected to, round by round, and what moved between them.
         // Two reports of one defect used to be two unrelated blobs of text.
         report.put("finding_history", summary.get("finding_history"));
+        // Commands and a pasted CI result the readers were told already passed. Omitted when
+        // the task recorded none, so a report of an older run does not grow an empty block.
+        if (summary.get("acceptance_evidence") != null) {
+            report.put("acceptance_evidence", summary.get("acceptance_evidence"));
+        }
+        if (summary.get("unverified_findings") != null) {
+            report.put("unverified_findings", summary.get("unverified_findings"));
+        }
         for (String key : List.of("finding_protocol_failure", "last_repair_receipt",
                 "severity_downgraded_without_change", "nonactionable_blocking_ids"))
             report.put(key, summary.get(key));
@@ -99,6 +107,12 @@ public final class RunReport {
         report.put("vendors", vendors(stages));
         report.put("failovers", failovers(stages));
         report.put("role_failovers", roleFailovers(stages));
+        List<Map<String, Object>> blocked = blockedFailovers(stages);
+        if (blocked.isEmpty() && summary.get("failover_blocked") instanceof List<?>) {
+            report.put("failover_blocked", summary.get("failover_blocked"));
+        } else if (!blocked.isEmpty()) {
+            report.put("failover_blocked", blocked);
+        }
         report.put("visual", visual(stages));
         // Overseer's own contract files are listed apart. They are a real difference in the
         // worktree and stay visible, but reporting "4 files changed" for a one-file fix sends
@@ -170,6 +184,10 @@ public final class RunReport {
                 Object recordedFailovers = step.get("role_failovers");
                 if (recordedFailovers == null) recordedFailovers = body.get("role_failovers");
                 if (recordedFailovers != null) stage.put("role_failovers", recordedFailovers);
+                Object blocked = step.get("failover_blocked");
+                if (blocked == null) blocked = body.get("failover_blocked");
+                if (blocked != null) stage.put("failover_blocked", blocked);
+                if (step.get("failover_notice") != null) stage.put("failover_notice", step.get("failover_notice"));
                 stage.put("artifact_path", step.getOrDefault("artifact_path", body.get("artifact_path")));
                 stage.put("rejected_profiles", step.get("rejected_profiles"));
             } else if ("gates".equals(label) || "baseline".equals(label)) {
@@ -474,6 +492,23 @@ public final class RunReport {
         return List.copyOf(all);
     }
 
+    /** Refused switches, one row per rule. The profile that ran is not a substitute for this list. */
+    private static List<Map<String, Object>> blockedFailovers(List<Map<String, Object>> stages) {
+        List<Map<String, Object>> all = new ArrayList<>();
+        for (Map<String, Object> stage : stages) {
+            Object raw = stage.get("failover_blocked");
+            if (!(raw instanceof List<?> rows)) continue;
+            for (Object item : rows) {
+                if (!(item instanceof Map<?, ?> map)) continue;
+                Map<String, Object> event = new LinkedHashMap<>(cast(map));
+                event.putIfAbsent("step", stage.get("step"));
+                event.putIfAbsent("attempt", stage.get("attempt"));
+                all.add(event);
+            }
+        }
+        return List.copyOf(all);
+    }
+
     /**
      * The class of failure a switch was made for. Quota keeps its own code. A missing
      * artifact is named by what was missing, not by the role outcome that carried it.
@@ -584,6 +619,29 @@ public final class RunReport {
         out.append('\n');
         // Printed next to the outcome and not buried below the tables, because the whole point
         // of separating them is that a reader who stops at the outcome line gets it wrong.
+        if (report.get("acceptance_evidence") instanceof Map<?, ?> recorded) {
+            out.append("accepted ");
+            Object commands = recorded.get("commands");
+            if (commands instanceof List<?> list && !list.isEmpty()) {
+                out.append(" commands=").append(list.size());
+            }
+            Object checks = recorded.get("checks");
+            if (checks instanceof List<?> list && !list.isEmpty()) {
+                out.append(" checks=").append(list.size());
+            }
+            out.append('\n');
+        }
+        if (report.get("unverified_findings") instanceof List<?> unverified && !unverified.isEmpty()) {
+            out.append("unverified ").append(unverified.size());
+            for (Object item : unverified) {
+                if (item instanceof Map<?, ?> row) {
+                    out.append("\n          ").append(row.get("id")).append("  ")
+                            .append(row.get("verification_reason")).append("  ")
+                            .append(row.get("verification_detail"));
+                }
+            }
+            out.append('\n');
+        }
         if (report.get("candidate_review_passed") != null) {
             out.append("review   ").append(Boolean.TRUE.equals(report.get("candidate_review_passed"))
                             ? "the candidate passed every review that ran"
@@ -684,6 +742,15 @@ public final class RunReport {
                     out.append("  authorized_by=").append(row.get("authorized_by"));
                 }
                 out.append('\n');
+            }
+        }
+        List<Object> blocked = list(report.get("failover_blocked"));
+        if (!blocked.isEmpty()) {
+            out.append('\n').append("failover refused\n");
+            for (Object item : blocked) {
+                if (!(item instanceof Map<?, ?> row)) continue;
+                out.append("  ").append(row.get("from")).append(" -> ").append(row.get("to"))
+                        .append(" (").append(row.get("rule")).append(")\n");
             }
         }
 

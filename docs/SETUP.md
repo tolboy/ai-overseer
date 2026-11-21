@@ -106,7 +106,7 @@ without opening the files. JSON is the default; `--text` is a table.
 oseer roster
 oseer roster --text
 oseer roster set reviewer --profiles grok-review,claude-review --strategy rotate
-oseer roster model grok-review --model grok-4.6-build --effort high
+oseer roster model grok-review --model grok-4.6 --effort high
 ```
 
 `set` rewrites only the `profiles:` line (and `strategy:` if you pass it) under that role in
@@ -381,6 +381,24 @@ manual_verification:
 
 `oseer setup` does not overwrite an existing `prompts/reviewer.md`. Copy the new grammar
 paragraphs into it, or a reviewer that still has the old prompt can file the same P1.
+A template that does not mention `{{acceptance_evidence}}` still receives that block at
+dispatch: a review of an existing pull request can record the commands and CI result
+below, and readers are shown them even from an older prompt.
+
+```yaml
+acceptance_evidence:
+  commands: ["./build.sh", "./test.sh"]
+  ci:
+    source: "gh pr checks"
+    summary: ["build   pass", "test    pass"]
+    checks:
+      - { name: build, conclusion: success }
+      - { name: test, conclusion: success }
+```
+
+Overseer does not run `gh` or call GitHub. A P1 `contract_gap` that only says nothing
+compiles or tests do not run is recorded as advisory when this evidence is real
+acceptance. A gap about coverage still blocks. See the task spec for the conclusion set.
 
 Set `OSEER_CONFIG_HOME` the same way every other command does if the configuration is not in
 `~/.oseer`.
@@ -479,6 +497,15 @@ profile that still satisfies `require_independent_vendor` and records `role_fail
 a red gate and a rejection are verdicts and never take this path. `failover.max_per_stage`
 (default 1) is how many times one dispatch may switch. A role may set its own
 `on_vendor_failure`; omitting it inherits the policy.
+`failover.subscription_to_same_family_api` defaults to `never`, so a grok, codex, or claude
+CLI is not replaced by a paid API of the same family. `failover.on_pinned` defaults to
+`stop`, so a stage passed with `--use` does not take a vendor-failure failover unless you
+set `confirm` or `auto`. A spent subscription still follows `on_quota_exhausted`.
+
+`limits.stall_seconds` is how long a call may sit with no new bytes. It is off until you
+set it (`0` also means off): API calls use `stream: false`, so a healthy review call can
+return its first byte only when it is done, after several minutes. The stop is `role_stalled` and can fail over under
+`on_vendor_failure`. The wall clock still wins when it expires first.
 
 API transport failures additionally require `roles.<role>.api_fallback_profiles`, an ordered
 subset of that role's `profiles`. It is empty by default. Only network, timeout, rate-limit

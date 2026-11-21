@@ -49,8 +49,8 @@ public final class DoCommand {
                           Long maxRoleRuns, Double maxCostUsd) {
         public Options {
             prepare = Preparation.parseMode(prepare);
-            if (mode != null && !TaskSpec.MODES.contains(mode)) {
-                throw new IllegalArgumentException("--mode must be one of " + new java.util.TreeSet<>(TaskSpec.MODES));
+            if (mode != null && !TaskSpec.DRAFT_MODES.contains(mode)) {
+                throw new IllegalArgumentException("--mode must be one of " + new java.util.TreeSet<>(TaskSpec.DRAFT_MODES));
             }
             if (maxRoleRuns != null && (maxRoleRuns < 1 || maxRoleRuns > 50)) {
                 throw new IllegalArgumentException("--max-role-runs must be 1..50");

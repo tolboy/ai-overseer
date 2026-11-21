@@ -109,10 +109,37 @@ public final class DirectCaptureTest implements Suite {
             ProcessRunner.Result timeout = runner.run(command("timeout"), scratch,
                     Duration.ofSeconds(2), 1024, null, out, err);
             check.that("timeout settles", timeout.timedOut());
+            check.that("a wall-clock timeout is not an idle stall", !timeout.stalled());
             check.that("timeout remains failed", !timeout.ok());
             check.that("timeout preview flags truncation", timeout.stdoutTruncated());
             check.contains("timeout preserves intermediate usage in raw", Files.readString(out), USAGE);
             check.contains("timeout preview retains latest usage", timeout.stdout(), USAGE);
+
+            long quietStart = System.nanoTime();
+            ProcessRunner.Result quiet = runner.runVendor(command("silent"), scratch,
+                    Duration.ofSeconds(15), 1000, null, Duration.ofMillis(400));
+            check.that("idle silence is a stall", quiet.stalled());
+            check.that("a stall is not a wall-clock timeout", !quiet.timedOut());
+            check.that("the stall returns inside the wall clock",
+                    Duration.ofNanos(System.nanoTime() - quietStart).toMillis() < 3_000);
+            long wallStart = System.nanoTime();
+            ProcessRunner.Result wall = runner.runVendor(command("silent"), scratch,
+                    Duration.ofMillis(300), 1000, null, Duration.ofSeconds(5));
+            check.that("the wall clock still wins over a longer idle bound", wall.timedOut());
+            check.that("a wall expiry is not labelled a stall", !wall.stalled());
+            check.that("the wall returns promptly",
+                    Duration.ofNanos(System.nanoTime() - wallStart).toMillis() < 3_000);
+
+            Path silentRun = Files.createDirectories(scratch.resolve("silent"));
+            Path silentPrompt = silentRun.resolve("prompt.md");
+            Files.writeString(silentPrompt, "quiet");
+            long silentStart = System.nanoTime();
+            RoleExecutor.Result silent = new DirectCliExecutor(runner, new GitRepository(scratch, runner))
+                    .execute(request("silent", scratch, silentRun, silentPrompt));
+            check.eq("a silent CLI is role_stalled", "role_stalled", silent.code());
+            check.eq("the stall is on the evidence", true, silent.evidence().get("stalled"));
+            check.that("the CLI stall returns inside the wall clock",
+                    Duration.ofNanos(System.nanoTime() - silentStart).toMillis() < 5_000);
 
             // Raw bytes are an evidence artifact, not a UTF-8 decode/re-encode of the preview.
             Path binaryOut = scratch.resolve("binary.stdout");
@@ -145,6 +172,7 @@ public final class DirectCaptureTest implements Suite {
                 command.get(0), command.subList(1, command.size()), false, 1, null, null, null, false,
                 List.of("status", "summary", "verdict", "findings"), List.of(), "stdin", null, null,
                 "direct", null, null, null, List.of(), false);
+        if ("silent".equals(mode)) profile = profile.withStallSeconds(1);
         TaskSpec.ResolvedTask task = new TaskSpec.ResolvedTask("capture", "offline probe", List.of(), "low",
                 "HEAD", List.of("."), List.of(), List.of("unused"),
                 new TaskSpec.Authority(false, false, false), new TaskSpec.VisualQa(false, List.of(), null, null),
@@ -263,6 +291,10 @@ public final class DirectCaptureTest implements Suite {
         }
         if (mode.equals("binary")) {
             System.out.write(new byte[]{0, (byte) 255, (byte) 128, (byte) 195, 40});
+            return;
+        }
+        if (mode.equals("silent")) {
+            Thread.sleep(30_000);
             return;
         }
         if (mode.equals("timeout")) {

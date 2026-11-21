@@ -286,7 +286,7 @@ public final class RunLauncher implements AutoCloseable {
             String taskId = optional(params, "task_id", NAME, "task id");
             String scope = optional(params, "scope", SCOPE, "scope");
             String risk = choice(params, "risk", RISKS);
-            String mode = choice(params, "mode", dev.oseer.config.TaskSpec.MODES);
+            String mode = choice(params, "mode", dev.oseer.config.TaskSpec.DRAFT_MODES);
             String prepare = choice(params, "prepare", PREPARE);
             goalFile = scratch().resolve("goal-" + runId + ".txt");
             argv.addAll(List.of("do", "--goal-file", goalFile.toString(), "--project", project.toString()));

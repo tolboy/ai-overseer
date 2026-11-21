@@ -148,7 +148,7 @@ public final class OpenCodeExecutor implements RoleExecutor {
         try {
             evidence.put("vendor_turn_started", true);
             evidence.put("process_started", true);
-            process = launch(runCommand, request.projectRoot(), runLimit, runEnv);
+            process = launch(runCommand, request.projectRoot(), runLimit, runEnv, profile.stallTimeout());
         } catch (ProcessRunner.CaptureException incomplete) {
             evidence.put("process_tree_settled", incomplete.settled());
             return failure(incomplete.settled() ? "role_output_capture_failed" : "role_process_unsettled",
@@ -165,9 +165,11 @@ public final class OpenCodeExecutor implements RoleExecutor {
         evidence.put("process_tree_settled", true);
         evidence.put("exit_code", (long) process.exitCode());
         evidence.put("timed_out", process.timedOut());
+        evidence.put("stalled", process.stalled());
         evidence.put("stdout_truncated", process.stdoutTruncated());
         evidence.put("stderr_truncated", process.stderrTruncated());
         noteCost(safeOut, evidence);
+        if (process.stalled()) return failure("role_stalled", started, safeOut, evidence);
         if (process.timedOut()) return failure("role_timeout", started, safeOut, evidence);
         if (truncated) return failure("role_output_limit_exceeded", started, safeOut, evidence);
         boolean artifactMissing = !Files.isRegularFile(artifact);
@@ -213,8 +215,14 @@ public final class OpenCodeExecutor implements RoleExecutor {
 
     private ProcessRunner.Result launch(List<String> command, Path directory, Duration timeout,
                                         Map<String, String> overlay) throws IOException, InterruptedException {
+        return launch(command, directory, timeout, overlay, null);
+    }
+
+    private ProcessRunner.Result launch(List<String> command, Path directory, Duration timeout,
+                                        Map<String, String> overlay, Duration idle)
+            throws IOException, InterruptedException {
         return processes.withoutEnvironment(Set.of(ISSUED_ENV)).withEnvironment(overlay)
-                .runVendor(command, directory, timeout, PREVIEW_BYTES, null);
+                .runVendor(command, directory, timeout, PREVIEW_BYTES, null, idle);
     }
 
     private List<String> command(String... extra) {

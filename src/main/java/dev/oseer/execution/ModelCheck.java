@@ -260,7 +260,7 @@ public final class ModelCheck {
         if (limit >= 1 && reasoningModel(profile.model())) {
             limit = Math.max(limit, Math.min(REASONING_PING_FLOOR, profile.maxOutputTokens()));
         }
-        if (connection != null && "gonkarouter".equals(connection.provider())) limit = Math.min(limit, 4096);
+        if (connection != null && connection.outputCeiling() != null) limit = Math.min(limit, connection.outputCeiling());
         return limit;
     }
 
@@ -383,7 +383,7 @@ public final class ModelCheck {
         String text = (result.stdout() + "\n" + result.stderr()).toLowerCase(java.util.Locale.ROOT);
         if (text.contains("not logged in") || text.contains("unauthorized") || text.contains("authentication")
                 || text.contains("login") || text.contains("sign in") || text.contains("log in")
-                || text.contains("not authenticated") || text.contains("token expired") || text.contains("session expired")) return "check_auth_required";
+                || text.contains("not authenticated") || text.contains("not signed in") || text.contains("token expired") || text.contains("session expired")) return "check_auth_required";
         if (text.contains("usage limit") || text.contains("quota") || text.contains("credit balance")) return "check_quota_exhausted";
         return result.exitCode() == 0 ? "check_no_pong" : "check_command_failed";
     }

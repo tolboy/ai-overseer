@@ -105,6 +105,100 @@ public final class ConfigTest implements Suite {
         check.eq("a task that names none keeps an empty list", List.of(),
                 TaskSpec.parse(reproductionTask, "task.yaml").manualVerification());
 
+        String evidenceTask = reproductionTask + """
+                acceptance_evidence:
+                  commands:
+                    - "./build.sh"
+                    - "./test.sh"
+                  ci:
+                    source: "gh pr checks"
+                    summary:
+                      - "build   pass"
+                      - "test    pass"
+                    checks:
+                      - { name: build, conclusion: success }
+                      - name: test
+                        conclusion: pass
+                """;
+        TaskSpec evidenced = TaskSpec.parse(evidenceTask, "task.yaml");
+        check.eq("recorded commands stay in the order they were written",
+                List.of("./build.sh", "./test.sh"), evidenced.acceptanceEvidence().commands());
+        check.eq("a pasted check table is kept as lines", "build   pass\ntest    pass",
+                evidenced.acceptanceEvidence().ciSummary());
+        check.eq("pass is stored as success", "success",
+                evidenced.acceptanceEvidence().checks().get(1).conclusion());
+        check.that("commands plus a passing check are real acceptance",
+                evidenced.acceptanceEvidence().recordsRealAcceptance());
+        check.contains("the reader is told not to file the noise gap",
+                evidenced.acceptanceEvidence().promptText(), "Do not file a contract_gap");
+        TaskSpec.ResolvedTask resolvedEvidence = evidenced.resolve(project, "task.yaml");
+        String bareFingerprint = TaskSpec.parse(reproductionTask, "task.yaml")
+                .resolve(project, "task.yaml").acceptanceFingerprint();
+        check.that("recording evidence moves the acceptance hash",
+                !resolvedEvidence.acceptanceFingerprint().equals(bareFingerprint));
+        check.eq("an empty block keeps the hash a task had before the key existed",
+                bareFingerprint,
+                TaskSpec.parse(reproductionTask + "acceptance_evidence: {}\n", "task.yaml")
+                        .resolve(project, "task.yaml").acceptanceFingerprint());
+        check.eq("a task that records none has no evidence", false,
+                TaskSpec.parse(reproductionTask, "task.yaml").acceptanceEvidence().present());
+        check.rejects("an unknown conclusion is refused", "is not one of",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            checks:
+                              - { name: build, conclusion: green }
+                        """, "task.yaml"));
+        check.rejects("a blank command cannot be evidence", "non-empty",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          commands: ["  "]
+                        """, "task.yaml"));
+        check.rejects("an unknown evidence key is refused", "unsupported key 'acceptance_evidence.fetched'",
+                () -> TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          fetched: true
+                        """, "task.yaml"));
+        check.that("a failed CI summary alone is not real acceptance",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: "test    fail"
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("pending and skipped checks do not prove that tests ran",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: ["build pending", "test skipped"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a passing status in a pasted checks row counts",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary:
+                              - "CI: unit tests   pass   2m"
+                              - "publish   pending"
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a failing row keeps an otherwise passing pasted summary from proving acceptance",
+                !TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            summary: ["build pass", "test fail"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a structured success remains valid evidence",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          ci:
+                            checks: [{ name: build, conclusion: success }]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.that("a command alone is real acceptance",
+                TaskSpec.parse(reproductionTask + """
+                        acceptance_evidence:
+                          commands: ["./test.sh"]
+                        """, "task.yaml").acceptanceEvidence().recordsRealAcceptance());
+        check.eq("nothing recorded says so in the prompt", "(none recorded)",
+                dev.oseer.config.AcceptanceEvidence.NONE.promptText());
+
         // What has to happen in a checkout before any of `checks` can run. Most projects have
         // nothing to say here; a `git worktree` of an npm project has no node_modules, and
         // without this its gates fail for a reason no implementer put there.
@@ -305,6 +399,55 @@ public final class ConfigTest implements Suite {
         check.eq("runner defaults to direct", "direct", reviewer.runner());
         check.eq("non-visual legacy profile needs no vision capability", null, reviewer.vision());
         check.that("unverified profile is flagged", !reviewer.verified());
+        check.eq("a direct CLI omits the idle bound", null, reviewer.stallTimeout());
+        Profile stalledCli = Profile.parse("""
+                version: 1
+                profile: grok-review
+                role: reviewer
+                vendor: grok
+                command: grok
+                args: ["--prompt-file", "{{prompt_file}}"]
+                limits: { wall_clock_minutes: 20, stall_seconds: 30 }
+                """, "grok-review.yaml");
+        check.eq("an explicit stall is kept on a CLI", java.time.Duration.ofSeconds(30),
+                stalledCli.stallTimeout());
+        Profile apiQuiet = Profile.parse("""
+                version: 1
+                profile: api-review
+                role: reviewer
+                model_vendor: deepseek
+                model: deepseek/deepseek-chat
+                runner: api
+                connection: fixture
+                read_only: true
+                limits: { wall_clock_minutes: 5, max_output_tokens: 256 }
+                """, "api-review.yaml");
+        // stream: false means a healthy reasoning call can be silent until it is done.
+        check.eq("an API profile has no stall bound unless it names one", null, apiQuiet.stallTimeout());
+        Profile stallOff = Profile.parse("""
+                version: 1
+                profile: api-review
+                role: reviewer
+                model_vendor: deepseek
+                model: deepseek/deepseek-chat
+                runner: api
+                connection: fixture
+                read_only: true
+                limits: { wall_clock_minutes: 5, max_output_tokens: 256, stall_seconds: 0 }
+                """, "api-review.yaml");
+        check.eq("stall_seconds 0 disables the bound", null, stallOff.stallTimeout());
+        check.rejects("a stall under five seconds is refused", "stall_seconds",
+                () -> Profile.parse("""
+                        version: 1
+                        profile: api-review
+                        role: reviewer
+                        model_vendor: deepseek
+                        model: deepseek/deepseek-chat
+                        runner: api
+                        connection: fixture
+                        read_only: true
+                        limits: { wall_clock_minutes: 5, max_output_tokens: 256, stall_seconds: 3 }
+                        """, "api-review.yaml"));
 
         Profile implementer = Profile.parse("""
                 version: 1

@@ -233,6 +233,23 @@ public final class ApiExecutorTest implements Suite {
             check.that("stalled body returns inside a bounded wall clock", Duration.ofNanos(System.nanoTime() - start).toMillis() < 1300);
             check.eq("a timed out sent request remains potentially charged", true,
                     result.evidence().get("vendor_turn_started"));
+            check.eq("a timed out sent request may be billed", true,
+                    result.evidence().get("may_be_billed"));
+        }
+        try (Stub stub = new Stub(200, completion("test/model", artifact("completed"), "stop"))) {
+            stub.beforeReply = () -> {
+                try { Thread.sleep(5_000); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            };
+            long start = System.nanoTime();
+            RoleExecutor.Result result = new ApiExecutor(System::getenv, Duration.ofSeconds(30),
+                    Duration.ofMillis(400), null)
+                    .execute(request(profile(stub.connection(null)), prompt));
+            long elapsed = Duration.ofNanos(System.nanoTime() - start).toMillis();
+            check.eq("silence before headers is a stall", "role_stalled", result.code());
+            check.that("the stall returns inside the wall clock", elapsed < 3_000);
+            check.eq("a stalled sent request may be billed", true, result.evidence().get("may_be_billed"));
+            check.eq("the stall names the first byte", "first_byte", result.evidence().get("transport_cause"));
         }
     }
 

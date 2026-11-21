@@ -19,6 +19,7 @@ import dev.oseer.git.GitRepository;
 import dev.oseer.json.Json;
 import dev.oseer.ledger.EvidenceLedger;
 import dev.oseer.ledger.HomeCorpus;
+import dev.oseer.ledger.CitationCheck;
 import dev.oseer.ledger.Findings;
 import dev.oseer.process.ProcessRunner;
 import dev.oseer.role.RoleContract;
@@ -27,12 +28,14 @@ import dev.oseer.role.RoleRunner;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The bounded loop. By default:
@@ -359,7 +362,7 @@ public final class TaskLoop {
 
     /** Stops that cut a writer off mid-change and leave its edits in the worktree. */
     private static final java.util.Set<String> INTERRUPTED_WRITER = java.util.Set.of(
-            "turn_ceiling_reached", "role_timed_out");
+            "turn_ceiling_reached", "role_timed_out", "role_stalled");
 
     /** A passing run whose readers found the acceptance too weak, sent to the planner. */
     public static final String CONTRACT_AMENDMENT = "contract_amendment_requested";
@@ -513,6 +516,8 @@ public final class TaskLoop {
             // this list: the role contract check already decides reuse for those.
             Map.entry("role_api_interrupted", CONTROLLER_INTERRUPTED),
             Map.entry("role_api_timeout", "role_timed_out"),
+            // Silence while the wall clock remains is not a request to raise that clock.
+            Map.entry("role_stalled", "role_stalled"),
             Map.entry("role_api_network_error", "vendor_call_failed"),
             Map.entry("role_api_provider_error", "vendor_call_failed"),
             Map.entry("role_api_protocol_error", "vendor_call_failed"),
@@ -532,17 +537,18 @@ public final class TaskLoop {
             Map.entry("role_api_artifact_failure", "vendor_protocol_failed"));
 
     /** What kind of trouble each infrastructure stop was, for a reader who wants one word. */
-    private static final Map<String, String> INFRASTRUCTURE_CAUSES = Map.of(
-            CONTROLLER_INTERRUPTED, "cancelled",
-            "role_timed_out", "timeout",
-            "vendor_call_failed", "call_failed",
-            "vendor_protocol_failed", "protocol",
-            "prompt_undeliverable", "prompt_delivery",
-            "rate_limited", "rate_limit",
-            "quota_exhausted", "quota",
-            "turn_ceiling_reached", "turn_ceiling",
-            "orca_worker_not_started", "orca_start",
-            "vendor_unavailable", "unavailable");
+    private static final Map<String, String> INFRASTRUCTURE_CAUSES = Map.ofEntries(
+            Map.entry(CONTROLLER_INTERRUPTED, "cancelled"),
+            Map.entry("role_timed_out", "timeout"),
+            Map.entry("role_stalled", "stall"),
+            Map.entry("vendor_call_failed", "call_failed"),
+            Map.entry("vendor_protocol_failed", "protocol"),
+            Map.entry("prompt_undeliverable", "prompt_delivery"),
+            Map.entry("rate_limited", "rate_limit"),
+            Map.entry("quota_exhausted", "quota"),
+            Map.entry("turn_ceiling_reached", "turn_ceiling"),
+            Map.entry("orca_worker_not_started", "orca_start"),
+            Map.entry("vendor_unavailable", "unavailable"));
 
     /**
      * Whether a call timed out on a wall clock the chain deadline had lowered.
@@ -905,8 +911,8 @@ public final class TaskLoop {
         overlay.pin(roles);
         roles.overlay(overlay);
         boolean reviewByRisk = user.policy() != null && user.policy().reviewRequired(task.risk());
-        boolean reviewRequired = reviewByRisk
-                && user.policy().roles().containsKey("reviewer");
+        boolean reviewRequired = task.reviewOnly() || (reviewByRisk
+                && user.policy().roles().containsKey("reviewer"));
         // Opt-in, and only meaningful for a task that asked for visual QA at all.
         boolean visualRoleConfigured = user.policy() != null
                 && user.policy().roles().containsKey("visual_qa");
@@ -951,6 +957,11 @@ public final class TaskLoop {
         summary.put("baseline_required", !task.baselineCommands().isEmpty());
         summary.put("baseline_commands", task.baselineCommands());
         summary.put("acceptance_commands", task.acceptanceCommands());
+        // What the readers were told already passed. Absent when the task recorded nothing,
+        // so an older summary and a task without the key look the same.
+        if (task.acceptanceEvidence().present()) {
+            summary.put("acceptance_evidence", task.acceptanceEvidence().toMap());
+        }
         summary.put("workflow_declared", user.policy() != null && user.policy().workflowDeclared());
         summary.put("failover_mode", user.policy() == null ? "confirm" : user.policy().failoverMode());
         summary.put("failover_on_vendor_failure",
@@ -1007,7 +1018,8 @@ public final class TaskLoop {
         if (!alreadyOutside.isEmpty()) {
             summary.put("preexisting_violations", alreadyOutside);
             summary.put("resolution", "these paths were already changed before this run started "
-                    + "and are outside the task's scope " + task.scopePaths() + ". Revert them, "
+                    + "and are outside the task's scope " + task.scopePaths() + ": "
+                    + namedPaths(alreadyOutside) + ". Revert them, "
                     + "commit them, or widen the scope — an implementer cannot touch them.");
             if (!dryRun) return stop(ledger, summary, "preflight_outside_scope", steps, 0, budget);
             // A dry run has no candidate to protect, so this does not stop it — but it is
@@ -1104,7 +1116,8 @@ public final class TaskLoop {
             summary.putIfAbsent("would_stop", stopReason);
         }
         boolean selectModels=!dryRun && taskRouting!=null && !task.budget().strictCostCap() && modelSelectionEnabled(user);
-        Map<String, Object> readerGap = selectModels?null:readerGap(root, workflow, user, task, reviewByRisk, roles);
+        Map<String, Object> readerGap = selectModels && !task.reviewOnly() ? null
+                : readerGap(root, workflow, user, task, reviewByRisk, roles);
         if (readerGap != null) {
             summary.put("unavailable_role", readerGap);
             summary.put("resolution", String.valueOf(readerGap.get("message")));
@@ -1208,7 +1221,7 @@ public final class TaskLoop {
             RoleResolver.Writers wouldWrite = initialPreviewWriters(task);
             for (Workflow.Stage stage : workflow.stages()) {
                 if (stage.kind() != Workflow.Kind.ROLE || skipReason(stage, user, task, reviewByRisk) != null) continue;
-                RoleResolver.Writers judgedBy = stage.onFindings() == null ? RoleResolver.Writers.NONE : wouldWrite;
+                RoleResolver.Writers judgedBy = judgesCandidate(stage, task) ? wouldWrite : RoleResolver.Writers.NONE;
                 dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
                         judgedBy, workflow.rotationPositionOf(stage));
                 if (chosen != null) {
@@ -1216,7 +1229,10 @@ public final class TaskLoop {
                     selected.add(chosen.name());
                     wouldWrite = withPreviewWriter(wouldWrite, chosen);
                 }
-                if (stage.fixWith() != null) {
+                // A review-only task runs no repair round, so the repairer is never dispatched.
+                // Checking it anyway stopped the first real review of an outside branch with
+                // model_check_failed on an implementer CLI that was signed out.
+                if (stage.fixWith() != null && !task.reviewOnly()) {
                     dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix", stage.fixWith(),
                             RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
                     if (fixer != null) {
@@ -1485,13 +1501,17 @@ public final class TaskLoop {
                     + "; a clean pass needs " + callPlan.minimumToFinish()
                     + " (" + String.join(", ", callPlan.payingStages()) + ")");
             if (cap > 0 && cap < callPlan.minimumToFinish()) {
-                progress.line("      that cap cannot finish this chain even with no repairs");
+                progress.line("      that cap cannot finish this chain"
+                        + (task.reviewOnly() ? "" : " even with no repairs"));
             }
             progress.line("      max_cost_usd " + Progress.money(task.budget().maxCostUsd())
                     + (task.budget().maxCostUsd() == 0 ? " disables the money limit"
                     : task.budget().strictCostCap() ? " is a strict cap reserved against declared call bounds"
                     : " is a threshold on the spend vendors report, not a strict cap"));
-            for (Map<String, Object> branch : recoveryBranches(summary)) {
+            if (task.reviewOnly()) {
+                progress.line("      review mode: findings stop the run for a person; no repair round is paid for");
+            }
+            for (Map<String, Object> branch : task.reviewOnly() ? List.<Map<String, Object>>of() : recoveryBranches(summary)) {
                 progress.line("      if " + branch.get("stage") + " sends the work back: "
                         + branch.get("calls_to_repair_and_finish") + " call(s) to repair and "
                         + "finish — " + (Boolean.TRUE.equals(branch.get("reachable_under_cap"))
@@ -1508,7 +1528,7 @@ public final class TaskLoop {
         // A passing candidate whose readers found the acceptance too weak to have proved it
         // goes to the planner first when the policy routes contract gaps there: once per
         // chain, before a person is asked to accept on terms a reader said were short.
-        List<Map<String, Object>> gaps = contractGapsToPlan(user, summary);
+        List<Map<String, Object>> gaps = task.reviewOnly() ? List.of() : contractGapsToPlan(user, summary);
         if (!gaps.isEmpty()) {
             List<Object> ids = new ArrayList<>();
             for (Map<String, Object> gap : gaps) ids.add(gap.get("id"));
@@ -1681,11 +1701,14 @@ public final class TaskLoop {
                                                  TaskSpec.ResolvedTask task, boolean reviewByRisk,
                                                  RoleRunner roles) {
         RoleResolver.Writers wouldWrite = initialPreviewWriters(task);
+        boolean hasReader = false;
         for (Workflow.Stage stage : workflow.stages()) {
             if (stage.kind() != Workflow.Kind.ROLE) continue;
             if (skipReason(stage, user, task, reviewByRisk) != null) continue;
             int position = workflow.rotationPositionOf(stage);
-            RoleResolver.Writers judgedBy = stage.onFindings() != null
+            boolean reader = judgesCandidate(stage, task);
+            hasReader |= reader;
+            RoleResolver.Writers judgedBy = reader
                     ? wouldWrite : RoleResolver.Writers.NONE;
             dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
                     judgedBy, position);
@@ -1695,15 +1718,15 @@ public final class TaskLoop {
             }
             // A missing writer is a routing failure, not proof that the following readers
             // are impossible. Neither preflight nor preview advances rotation or dispatches.
-            if (stage.onFindings() == null || wouldWrite.vendors().isEmpty()) continue;
+            if (!reader || (!task.reviewOnly() && wouldWrite.vendors().isEmpty())) continue;
             Map<String, String> refused = roles.explainFill(user, stage.name(), stage.role(),
                     wouldWrite, position);
-            if (refused == null) continue;
+            if (refused == null && !task.reviewOnly()) continue;
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("role", stage.role());
             gap.put("needed_for", stage.name());
             gap.put("blocked_at", "preflight");
-            gap.put("rejected_profiles", refused);
+            gap.put("rejected_profiles", refused == null ? Map.of() : refused);
             gap.put("writer_vendors", wouldWrite.vendors().stream().sorted().toList());
             gap.put("writer_profiles", wouldWrite.profiles().stream().sorted().toList());
             // Keep the single-writer fields for existing consumers.
@@ -1715,18 +1738,27 @@ public final class TaskLoop {
             gap.put("message", "no profile can fill role '" + stage.role() + "' for stage '"
                     + stage.name() + "' after the preceding writers " + wouldWrite.profiles()
                     + " (vendors " + wouldWrite.vendors() + ") have written the candidate ("
-                    + refused + "). Add a profile from another vendor, "
-                    + "or declare a same_vendor_peer pair in policy.yaml and set "
-                    + "review_assurance: same_vendor_peer on the task if that weaker check is "
-                    + "acceptable; nothing was dispatched.");
+                    + (refused == null ? Map.of() : refused) + "). Add a profile from another vendor"
+                    + (task.reviewOnly() ? "" : ", or declare a same_vendor_peer pair in policy.yaml and set "
+                    + "review_assurance: same_vendor_peer on the task if that weaker check is acceptable")
+                    + "; nothing was dispatched.");
             return gap;
+        }
+        if (task.reviewOnly() && !hasReader) {
+            return Map.of("role", "reviewer", "blocked_at", "preflight",
+                    "message", "mode: review requires an active review stage. Configure a reviewer in "
+                            + "policy.yaml and a workflow stage whose conditions match this task.");
         }
         return null;
     }
 
+    static boolean allowsSameVendorPeer(TaskSpec.ResolvedTask task) {
+        return !task.reviewOnly() && "same_vendor_peer".equals(task.reviewAssurance());
+    }
+
     private static RoleResolver.Writers initialPreviewWriters(TaskSpec.ResolvedTask task) {
         return new RoleResolver.Writers(new java.util.HashSet<>(task.priorWriters()),
-                java.util.Set.of(), true, "same_vendor_peer".equals(task.reviewAssurance()));
+                java.util.Set.of(), true, allowsSameVendorPeer(task));
     }
 
     private static RoleResolver.Writers withPreviewWriter(RoleResolver.Writers written,
@@ -1875,9 +1907,20 @@ public final class TaskLoop {
      * reviewer that risk had already excluded, or fail to reserve one that risk had brought
      * back.
      */
+    /** Up to ten paths, then how many more: enough to act on without flooding a line. */
+    static String namedPaths(List<String> paths) {
+        if (paths.size() <= 10) return String.join(", ", paths);
+        return String.join(", ", paths.subList(0, 10)) + " and " + (paths.size() - 10) + " more";
+    }
+
     private static String skipReason(Workflow.Stage stage, UserConfig user,
                                      TaskSpec.ResolvedTask task, boolean reviewByRisk) {
         if (stage.kind() == Workflow.Kind.ROLE) {
+            // A review-only task judges a candidate somebody else already wrote. A writing
+            // stage would add an author the readers then have to differ from — and a planned
+            // implementer used to do exactly that in the preview, refusing a reader whose
+            // vendor nobody was ever going to dispatch as a writer.
+            if (task.reviewOnly() && !RoleResolver.judges(stage.role())) return "review_only";
             boolean configured = user.policy() != null
                     && user.policy().roles().containsKey(stage.role());
             if (!configured) return "role_not_configured";
@@ -1886,6 +1929,11 @@ public final class TaskLoop {
             if (!holds(condition, task, reviewByRisk)) return "condition_not_met:" + condition;
         }
         return null;
+    }
+
+    private static boolean judgesCandidate(Workflow.Stage stage, TaskSpec.ResolvedTask task) {
+        return stage.kind() == Workflow.Kind.ROLE && (stage.onFindings() != null
+                || (task.reviewOnly() && RoleResolver.judges(stage.role())));
     }
 
     /**
@@ -1914,12 +1962,12 @@ public final class TaskLoop {
             row.put("stage", stage.name());
             row.put("role", stage.role());
             dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
-                    stage.onFindings() != null ? written : RoleResolver.Writers.NONE,
+                    judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE,
                     workflow.rotationPositionOf(stage));
             if (chosen == null) {
                 row.put("profile", null);
                 Map<String, String> why = roles.explainFill(user, stage.name(), stage.role(),
-                        stage.onFindings() != null ? written : RoleResolver.Writers.NONE,
+                        judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE,
                         workflow.rotationPositionOf(stage));
                 row.put("unresolved", why == null ? Map.of() : why);
             } else {
@@ -1938,7 +1986,8 @@ public final class TaskLoop {
                 }
                 written = withPreviewWriter(written, chosen);
             }
-            if (stage.fixWith() != null && ("fix".equals(stage.onFail()) || "fix".equals(stage.onFindings()))) {
+            if (stage.fixWith() != null && !task.reviewOnly()
+                    && ("fix".equals(stage.onFail()) || "fix".equals(stage.onFindings()))) {
                 dev.oseer.config.Profile fixer = roles.peek(root, user, stage.name() + "/fix",
                         stage.fixWith(), RoleResolver.Writers.NONE, RoleRunner.UNSTAGED);
                 if (fixer != null) row.put("fix_profile", fixer.name());
@@ -1994,7 +2043,7 @@ public final class TaskLoop {
                 row.put("skipped", skipped);
                 continue;
             }
-            RoleResolver.Writers judgedBy = stage.onFindings() != null ? written : RoleResolver.Writers.NONE;
+            RoleResolver.Writers judgedBy = judgesCandidate(stage, task) ? written : RoleResolver.Writers.NONE;
             int position = workflow.rotationPositionOf(stage);
             dev.oseer.config.Profile chosen = roles.peek(root, user, stage.name(), stage.role(),
                     judgedBy, position);
@@ -2395,7 +2444,7 @@ public final class TaskLoop {
 
     private static boolean holds(String condition, TaskSpec.ResolvedTask task, boolean reviewByRisk) {
         return switch (condition) {
-            case "review_required" -> reviewByRisk;
+            case "review_required" -> task.reviewOnly() || reviewByRisk;
             case "visual_qa_required" -> task.visualQa().required();
             case "risk_low" -> "low".equals(task.risk());
             case "risk_medium" -> "medium".equals(task.risk());
@@ -2722,7 +2771,7 @@ public final class TaskLoop {
             return new RoleResolver.Writers(writerVendors, writerProfiles,
                     "recorded".equals(writerProvenance) || "derived_from_steps".equals(writerProvenance)
                             || "declared_prior_writers".equals(writerProvenance),
-                    "same_vendor_peer".equals(task.reviewAssurance()));
+                    allowsSameVendorPeer(task));
         }
 
         /**
@@ -2906,6 +2955,10 @@ public final class TaskLoop {
         }
 
         private void restoreWriters() {
+            if (task.reviewOnly()) {
+                declarePriorWriters();
+                return;
+            }
             boolean candidatePresent;
             try {
                 candidatePresent = !OverseerTree.sourcePaths(
@@ -3002,15 +3055,49 @@ public final class TaskLoop {
                     && hash.equals(prior.get("acceptance_sha256")))) return;
             if (prior.get("finding_history") instanceof List<?> rows) for (Object item : rows) {
                 if (!(item instanceof Map<?, ?> entry) || !(entry.get("stage") instanceof String stage)) continue;
-                Map<String, Object> rebuilt = Findings.roundOf(stage,
+                Map<String, Object> rebuilt = findingRound(stage,
                         entry.get("attempt") instanceof Number n ? n.longValue() : 0,
                         entry.get("candidate_fingerprint") instanceof String fp ? fp : null,
-                        Findings.recorded(entry.get("findings")), List.copyOf(findingHistory));
+                        Findings.recorded(entry.get("findings")),
+                        Boolean.TRUE.equals(entry.get("finding_ids_scoped_to_stage")));
                 rebuilt.put("source_run", entry.get("source_run") instanceof String source
                         ? source : carried.fromRunId());
                 findingHistory.add(rebuilt);
             }
             if (!findingHistory.isEmpty()) summary.put("finding_history", List.copyOf(findingHistory));
+        }
+
+        private Map<String, Object> findingRound(String stage, long atAttempt, String fingerprint,
+                                                List<Findings.Finding> findings, boolean idsScoped) {
+            if (!task.reviewOnly()) {
+                return Findings.roundOf(stage, atAttempt, fingerprint, findings, List.copyOf(findingHistory));
+            }
+            // Blind readers have separate finding and evidence lifecycles. The scoped IDs
+            // still let the report merge and address every stage's findings unambiguously.
+            List<Map<String, Object>> stageHistory = findingHistory.stream()
+                    .filter(round -> stage.equals(round.get("stage"))).toList();
+            List<Findings.Finding> scoped = idsScoped ? findings : findings.stream()
+                    .map(finding -> scopeReviewFinding(stage, finding)).toList();
+            Map<String, Object> round = Findings.roundOf(stage, atAttempt, fingerprint, scoped, stageHistory);
+            round.put("finding_ids_scoped_to_stage", true);
+            return round;
+        }
+
+        private static Findings.Finding scopeReviewFinding(String stage, Findings.Finding finding) {
+            Map<String, Object> raw = new LinkedHashMap<>(finding.raw());
+            raw.put("reviewer_finding_id", finding.id());
+            if (raw.get("supersedes") instanceof List<?> links) {
+                raw.put("supersedes", links.stream().filter(String.class::isInstance).map(String.class::cast)
+                        .filter(id -> !id.isBlank()).map(id -> reviewFindingId(stage, id.trim())).toList());
+            }
+            return new Findings.Finding(reviewFindingId(stage, finding.id()), finding.idSource(),
+                    finding.category(), finding.categorySource(), finding.severity(), finding.path(),
+                    finding.message(), raw);
+        }
+
+        private static String reviewFindingId(String stage, String id) {
+            byte[] key = Json.write(List.of(stage, id)).getBytes(StandardCharsets.UTF_8);
+            return "review-" + java.util.UUID.nameUUIDFromBytes(key);
         }
 
         int attempt() { return attempt; }
@@ -3044,7 +3131,14 @@ public final class TaskLoop {
                 }
                 runStage(stage, index);
             }
+            // Review-only: every reader has had its turn, so the objections stop the run now,
+            // together, instead of the first one hiding what the later readers would have said.
+            if (deferredFindingsStop != null) throw new StopException(deferredFindingsStop);
         }
+
+        /** Review-only: the first findings stop reason, held until every reader has run. */
+        private String deferredFindingsStop;
+        private final List<String> objectingStages = new ArrayList<>();
 
         private void runStage(Workflow.Stage stage, int index) throws Exception {
             Object outcome = execute(stage);
@@ -3059,7 +3153,7 @@ public final class TaskLoop {
                 outcome = execute(stage);
             }
             if (failed(outcome)) throw new StopException(terminalReason(stage, outcome));
-            if (stage.kind() != Workflow.Kind.ROLE || stage.onFindings() == null) {
+            if (!judgesCandidate(stage, task)) {
                 finished(stage);
                 return;
             }
@@ -3077,7 +3171,7 @@ public final class TaskLoop {
                 // run stops for a reason that names the rung.
                 maybeEscalate(stage, index);
                 fixRound(stage, index, reviewContext(loaded.root(), reviewed, repairSeverities(),
-                        task.manualVerification()));
+                        task.manualVerification(), task.acceptanceEvidence().recordsRealAcceptance()));
                 outcome = execute(stage);
                 if (failed(outcome)) throw new StopException(terminalReason(stage, outcome));
                 reviewed = (RoleRunner.Outcome) outcome;
@@ -3088,6 +3182,12 @@ public final class TaskLoop {
                 requireFindingsProgress(stage);
             }
             if (blocking > 0) {
+                if (task.reviewOnly()) {
+                    objectingStages.add(stage.name());
+                    summary.put("objecting_stages", List.copyOf(objectingStages));
+                    if (deferredFindingsStop == null) deferredFindingsStop = stage.findingsReason();
+                    return;
+                }
                 if (ladderExhausted()) {
                     throw qualityExhausted(stage, user.policy().escalation());
                 }
@@ -3312,6 +3412,11 @@ public final class TaskLoop {
          * second round could not be compared to the first.
          */
         private String reviewerPackage(Workflow.Stage stage) {
+            // A review-only task asks each reader for its own reading of a branch nobody here
+            // will repair: there is no closure to check and no repair receipt. Handing a later
+            // reader the earlier readers' registry made three "independent" readings of the
+            // first outside pull request repeat the first reader's finding ids and wording.
+            if (task.reviewOnly()) return null;
             Map<String, Object> own = lastFindingRound(stage.name());
             Map<String, Object> last = own != null ? own : lastInheritedFindingRound(stage.name());
             if (last == null) return null;
@@ -3518,8 +3623,10 @@ public final class TaskLoop {
             if (now == null || !(now.get("findings") instanceof List<?> rows)) return 0;
             long n = 0;
             for (Object row : rows) {
-                if (row instanceof Map<?, ?> finding
-                        && severities.contains(String.valueOf(finding.get("severity")))
+                if (!(row instanceof Map<?, ?> finding)) continue;
+                // A citation the tree does not support is not something to send back for repair.
+                if (Boolean.TRUE.equals(finding.get("unverified"))) continue;
+                if (severities.contains(String.valueOf(finding.get("severity")))
                         && "product_defect".equals(String.valueOf(finding.get("category")))) {
                     n++;
                 }
@@ -3973,9 +4080,27 @@ public final class TaskLoop {
                 line.append("   cost ").append(Progress.money(cost));
                 if (details.get("verdict") != null) line.append("   verdict ").append(details.get("verdict"));
                 if (!role.ok()) line.append("   ").append(role.code());
+                if (!role.ok() && details.get("message") != null) {
+                    line.append("\n      ").append(details.get("message"));
+                }
+                // An API reader that was sent the diff without whole files is reading less
+                // than it was configured to; the operator hears it here, not from the artifact.
+                if (details.get("api_context") instanceof Map<?, ?> context
+                        && "diff".equals(context.get("mode"))) {
+                    line.append("\n      api context: diff only");
+                    if (context.get("fallback_reasons") instanceof List<?> reasons && !reasons.isEmpty()) {
+                        line.append(" — whole files left out: ").append(String.join("; ",
+                                reasons.stream().map(String::valueOf).toList()));
+                    }
+                }
             } else if (outcome instanceof GateRunner.Outcome gate) {
                 line.append(gate.ok() ? "ok" : "FAILED ").append("  ").append(Progress.elapsed(millis));
                 if (!gate.ok()) line.append("   ").append(gate.code());
+                if (!gate.ok() && gate.data() != null && gate.data().get("violations") instanceof List<?> outside
+                        && !outside.isEmpty()) {
+                    line.append("\n      outside scope ").append(gate.data().get("scope_paths")).append(": ")
+                            .append(namedPaths(outside.stream().map(String::valueOf).toList()));
+                }
             } else if (outcome instanceof VisualQaRunner.Outcome visual) {
                 line.append(visual.ok() ? "ok" : "FAILED ").append("  ").append(Progress.elapsed(millis));
                 Object images = visual.data() == null ? null : visual.data().get("image_evidence");
@@ -3988,10 +4113,29 @@ public final class TaskLoop {
             } else {
                 return;
             }
+            // A preview keeps walking after a stage it knows would fail, to show who the later
+            // stages resolve to. Those later lines are then about a chain no real run reaches,
+            // and they can disagree with the cast printed above (which assumed the failing
+            // writer wrote). Say so on the line instead of printing a bare "ok".
+            boolean failedNow = outcome instanceof RoleRunner.Outcome r ? !r.ok()
+                    : outcome instanceof GateRunner.Outcome g ? !g.ok()
+                    : !((VisualQaRunner.Outcome) outcome).ok();
+            if (dryRun && previewStop != null) {
+                line.append("\n      preview only: a real run stops earlier, at ").append(previewStop);
+            } else if (dryRun && failedNow) {
+                previewStop = currentStageName + " (" + (outcome instanceof RoleRunner.Outcome r ? r.code()
+                        : outcome instanceof GateRunner.Outcome g ? g.code()
+                        : ((VisualQaRunner.Outcome) outcome).code()) + ")";
+            }
             progress.line(line.toString());
         }
 
+        /** The first stage a preview saw fail, with its code; null while none has. */
+        private String previewStop;
+        private String currentStageName;
+
         private Object dispatch(Workflow.Stage stage) throws Exception {
+            currentStageName = stage.name();
             switch (stage.kind()) {
                 case MACHINE_GATES -> {
                     return runGates(gates, loaded, runId, attempt, dryRun, steps,
@@ -4080,7 +4224,7 @@ public final class TaskLoop {
         /**
          * The implementer the previous run cut off, handed to the one that picks up its tree.
          *
-         * A writer stopped by its turn ceiling or its timeout leaves its edits in the
+         * A writer stopped by its turn ceiling, its timeout or a stall leaves its edits in the
          * worktree, and `retry` or `advance` without a note dispatched the next implementer
          * with an empty `## Previous attempt`. Measured 2026-10-01 on Living-Horizon: the
          * continuation re-read the repository from the top and spent its whole 120-turn ceiling
@@ -4346,7 +4490,7 @@ public final class TaskLoop {
          * happened — the opposite mistake to the one this method fixes.
          */
         private void carryCoverage(Workflow.Stage stage, Map<String, Object> standing) {
-            if (stage.onFindings() == null) return;
+            if (!judgesCandidate(stage, task)) return;
             Object blocking = standing.get("blocking_findings");
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("stage", stage.name());
@@ -4409,15 +4553,14 @@ public final class TaskLoop {
         private void recordFindingRound(Workflow.Stage stage, RoleRunner.Outcome outcome)
                 throws Exception {
             List<Findings.Finding> found = acknowledgedFindings(
-                    loaded.root(), outcome, task.manualVerification());
-            // The run's whole history, not this stage's last round. The deltas below are still
-            // this stage against itself; the lifecycle the evidence rules are checked against
-            // belongs to the run, so a stage rechecked after another stage closed something
-            // still sees that closure.
-            Map<String, Object> row = Findings.roundOf(stage.name(), attempt, currentFingerprint(),
-                    found, List.copyOf(findingHistory));
+                    loaded.root(), outcome, task.manualVerification(),
+                    task.acceptanceEvidence().recordsRealAcceptance());
+            Map<String, Object> row = findingRound(stage.name(), attempt, currentFingerprint(), found, false);
             findingHistory.add(row);
             summary.put("finding_history", List.copyOf(findingHistory));
+            List<Map<String, Object>> unverified = unverifiedFindings(findingHistory);
+            if (unverified.isEmpty()) summary.remove("unverified_findings");
+            else summary.put("unverified_findings", unverified);
             if (!stringsOf(row.get("protocol_violations")).isEmpty()) {
                 summary.put("finding_protocol_failure", row.get("protocol_violations"));
                 throw new StopException("finding_protocol_failure");
@@ -4475,12 +4618,15 @@ public final class TaskLoop {
         }
 
         private long recordFindings(Workflow.Stage stage, RoleRunner.Outcome outcome) throws Exception {
-            long blocking = blockingFindings(loaded.root(), outcome, task.manualVerification());
+            long blocking = blockingFindings(loaded.root(), outcome, task.manualVerification(),
+                    task.acceptanceEvidence().recordsRealAcceptance());
             recordFindingRound(stage, outcome);
-            // Kept: an operator's greps, the report reader and the reuse rules for a
-            // single-stage role all read this. It is keyed by role, so a chain with two review
-            // stages has always had the second silently overwrite the first.
-            summary.put(findingsKey(stage), blocking);
+            // Preserve the legacy current-round field on writing loops. In review mode every
+            // reader judges the same candidate, so the count includes each stage of that role.
+            String findingsSummaryKey = findingsKey(stage);
+            long earlier = task.reviewOnly() && summary.get(findingsSummaryKey) instanceof Number count
+                    ? count.longValue() : 0L;
+            summary.put(findingsSummaryKey, earlier + blocking);
             // The same number, under the one identity that is unique in a workflow. Without it
             // "did review-second object" is a question the summary cannot answer, and a resume
             // deciding which verdict it may keep is answering it from the wrong stage.
@@ -4654,7 +4800,8 @@ public final class TaskLoop {
             if (outcome instanceof GateRunner.Outcome gate) return gateContext(gate);
             if (outcome instanceof VisualQaRunner.Outcome visual) return visualContext(visual);
             if (outcome instanceof RoleRunner.Outcome role) {
-                return reviewContext(loaded.root(), role, repairSeverities(), task.manualVerification());
+                return reviewContext(loaded.root(), role, repairSeverities(), task.manualVerification(),
+                        task.acceptanceEvidence().recordsRealAcceptance());
             }
             return "# " + stage.name() + " failed\n";
         }
@@ -5561,12 +5708,14 @@ public final class TaskLoop {
         // start that it could not have.
         long cap = task.budget().maxRoleRuns();
         int minimum = plan.minimumToFinish();
-        progress.line("cost  " + minimum + " vendor call(s) if nothing has to be repaired: "
+        progress.line("cost  " + minimum + " vendor call(s)"
+                + (task.reviewOnly() ? " for this review: " : " if nothing has to be repaired: ")
                 + String.join(", ", plan.payingStages()));
         if (cap > 0 && cap < minimum) {
             progress.line("      WARNING: the cap of " + cap + " cannot reach the end of this "
-                    + "chain even with no repairs; the run will stop with stages outstanding");
-        } else if (cap > 0) {
+                    + "chain" + (task.reviewOnly() ? "" : " even with no repairs")
+                    + "; the run will stop with stages outstanding");
+        } else if (cap > 0 && !task.reviewOnly()) {
             progress.line("      the cap of " + cap + " leaves " + (cap - minimum)
                     + " call(s) for repairs; each repair round costs its fix plus every "
                     + "judgement it invalidates");
@@ -5804,6 +5953,14 @@ public final class TaskLoop {
             if (step.details().get("role_failovers") != null) {
                 entry.put("role_failovers", step.details().get("role_failovers"));
             }
+            // A refused switch is not a switch. The summary has to name both profiles;
+            // the successor alone is what a silent failover used to leave behind.
+            if (step.details().get("failover_blocked") != null) {
+                entry.put("failover_blocked", step.details().get("failover_blocked"));
+            }
+            if (step.details().get("failover_notice") != null) {
+                entry.put("failover_notice", step.details().get("failover_notice"));
+            }
             entry.put("artifact_path", step.details().get("artifact_path"));
             if ("role_quota_exhausted".equals(step.code())) {
                 entry.put("quota", step.details().get("quota"));
@@ -5822,6 +5979,7 @@ public final class TaskLoop {
         String cause = String.valueOf(pending.get("cause"));
         return "vendor_call_failed".equals(cause)
                 || "role_timeout".equals(cause)
+                || "role_stalled".equals(cause)
                 || "artifact_invalid".equals(cause)
                 || "vendor_unavailable".equals(cause);
     }
@@ -6017,7 +6175,7 @@ public final class TaskLoop {
                                              RoleResolver.Writers writers, VisualQaRunner.Outcome visual,
                                              boolean dryRun, List<Map<String, Object>> steps,
                                              Budget budget, boolean acquires) throws Exception {
-        List<Path> screenshots = visual == null ? List.of() : screenshotsOf(visual);
+        List<Path> screenshots = visual == null ? List.of() : screenshotsOf(loaded.root(), visual);
         Path context = null;
         if (visual != null) {
             EvidenceLedger ledger = new EvidenceLedger(loaded.root(), runId, user.home());
@@ -6030,7 +6188,10 @@ public final class TaskLoop {
         RoleRunner.Outcome outcome = roles.run(loaded, user, "visual_qa",
                 stepRunId(runId, "visual-role", attempt), writers, context, screenshots, dryRun,
                 RoleRunner.UNSTAGED);
-        if (!dryRun && acquires && outcome.ok()) outcome = verifyAcquiredEvidence(loaded.root(), outcome);
+        if (!dryRun && outcome.ok()) {
+            if (acquires) outcome = verifyAcquiredEvidence(loaded.root(), outcome);
+            else if (screenshots.isEmpty()) outcome = withVisualCitations(loaded.root(), outcome, List.of());
+        }
         record(steps, budget, "visual_qa", attempt, outcome);
         if (dryRun) return null;
         return outcome;
@@ -6050,15 +6211,13 @@ public final class TaskLoop {
         Map<String, Object> artifact = readArtifact(root, outcome);
         List<Map<String, Object>> evidence = new ArrayList<>();
         List<String> refused = new ArrayList<>();
-        Path runs = outcome.report().toAbsolutePath().normalize().getParent();
+        Path directory = screenshotDirectory(root, outcome.report());
+        List<Path> screenshots = new ArrayList<>();
         if (artifact != null && artifact.get("screenshots_taken") instanceof List<?> listed) {
             for (Object item : listed) {
                 if (!(item instanceof String text) || text.isBlank()) continue;
-                Path file = Path.of(text);
-                if (!file.isAbsolute()) file = root.resolve(file);
-                file = file.toAbsolutePath().normalize();
-                if (!file.startsWith(runs) || !Files.isRegularFile(file)
-                        || !file.toRealPath().startsWith(runs.toRealPath())) {
+                Path file = screenshotPath(root, directory, text);
+                if (file == null) {
                     refused.add(text + " (not a file inside the run's evidence)");
                     continue;
                 }
@@ -6071,6 +6230,7 @@ public final class TaskLoop {
                 image.put("sha256", GitRepository.contentSha256(file));
                 image.put("bytes", Files.size(file));
                 evidence.add(image);
+                screenshots.add(file);
             }
         }
         Map<String, Object> details = new LinkedHashMap<>(
@@ -6079,8 +6239,9 @@ public final class TaskLoop {
         details.put("image_evidence", evidence);
         if (!refused.isEmpty()) details.put("screenshots_refused", refused);
         if (!evidence.isEmpty()) {
-            return new RoleRunner.Outcome(true, outcome.code(), outcome.role(), outcome.profile(),
-                    outcome.vendor(), outcome.rejected(), outcome.report(), details);
+            RoleRunner.Outcome verified = new RoleRunner.Outcome(true, outcome.code(), outcome.role(),
+                    outcome.profile(), outcome.vendor(), outcome.rejected(), outcome.report(), details);
+            return withVisualCitations(root, verified, screenshots);
         }
         details.put("resolution", "the visual role answered without listing a screenshot it took "
                 + "inside the run's evidence directory. A verdict on pictures nobody can find is "
@@ -6090,30 +6251,65 @@ public final class TaskLoop {
                 outcome.profile(), outcome.vendor(), outcome.rejected(), outcome.report(), details);
     }
 
-    /** The screenshot files the harness actually wrote, in the order it wrote them. */
-    @SuppressWarnings("unchecked")
-    private static List<Path> screenshotsOf(VisualQaRunner.Outcome visual) {
-        Object adapter = visual.data().get("adapter");
-        if (!(adapter instanceof Map<?, ?> body)) return List.of();
-        Object scenarios = ((Map<String, Object>) body).get("scenarios");
-        if (!(scenarios instanceof List<?> rows)) return List.of();
-        List<Path> files = new ArrayList<>();
-        for (Object row : rows) {
-            if (!(row instanceof Map<?, ?> scenario)) continue;
-            addIfFile(files, scenario.get("screenshot"));
-            if (scenario.get("steps") instanceof List<?> stepRows) {
-                for (Object step : stepRows) {
-                    if (step instanceof Map<?, ?> one) addIfFile(files, one.get("screenshot_after"));
-                }
-            }
+    private static RoleRunner.Outcome withVisualCitations(Path root, RoleRunner.Outcome outcome,
+                                                           List<Path> screenshots) {
+        Map<String, Object> details = new LinkedHashMap<>(outcome.details());
+        List<Findings.Finding> found = Findings.recorded(details.get("findings"));
+        if (!found.isEmpty()) {
+            details.put("findings", CitationCheck.verifyVisual(found, root, screenshots).stream()
+                    .map(Findings.Finding::toMap).toList());
         }
-        return files;
+        return new RoleRunner.Outcome(outcome.ok(), outcome.code(), outcome.role(), outcome.profile(),
+                outcome.vendor(), outcome.rejected(), outcome.report(), details);
     }
 
-    private static void addIfFile(List<Path> into, Object candidate) {
-        if (!(candidate instanceof String text) || text.isBlank()) return;
-        Path path = Path.of(text);
-        if (Files.isRegularFile(path) && !into.contains(path)) into.add(path);
+    /** The image evidence recorded by this harness, under this harness's screenshots directory. */
+    private static List<Path> screenshotsOf(Path root, VisualQaRunner.Outcome visual) {
+        Path directory = screenshotDirectory(root, visual.report());
+        if (visual.data() == null || !(visual.data().get("image_evidence") instanceof List<?> rows)) {
+            return List.of();
+        }
+        Set<Path> files = new LinkedHashSet<>();
+        for (Object row : rows) {
+            if (!(row instanceof Map<?, ?> image) || !(image.get("path") instanceof String text)) continue;
+            Path file = screenshotPath(root, directory, text);
+            if (file != null) files.add(file);
+        }
+        return List.copyOf(files);
+    }
+
+    private static Path screenshotDirectory(Path root, Path report) {
+        if (report == null) return null;
+        try {
+            Path runs = root.toRealPath().resolve(".oseer/runs");
+            Path run = report.toAbsolutePath().normalize().getParent();
+            if (run == null || run.getParent() == null || !runs.equals(run.getParent().toRealPath())) return null;
+            Path directory = runs.resolve(run.getFileName()).resolve("screenshots");
+            // Resolve aliases of the project directory, but keep the expected run and its
+            // screenshots directory anchored by name. A link to another run cannot count.
+            if (directory.equals(run.resolve("screenshots").toRealPath()) && Files.isDirectory(directory)) {
+                return directory;
+            }
+        } catch (java.io.IOException unreadable) {
+            // Without the run's own directory there is no screenshot evidence to attach.
+        }
+        return null;
+    }
+
+    private static Path screenshotPath(Path root, Path directory, String text) {
+        if (directory == null) return null;
+        try {
+            Path project = root.toRealPath();
+            Path file = root.resolve(Path.of(text)).toRealPath();
+            if (directory.startsWith(project) && file.startsWith(directory)
+                    && Files.isRegularFile(file) && Files.size(file) > 0) {
+                // Keep the path in the caller's spelling of the project for attachments and reports.
+                return root.toAbsolutePath().normalize().resolve(project.relativize(file));
+            }
+        } catch (InvalidPathException | java.io.IOException unreadable) {
+            // Invalid or unreadable entries are not evidence.
+        }
+        return null;
     }
 
     /**
@@ -6303,6 +6499,38 @@ public final class TaskLoop {
             }
         }
         if (weakest != null) summary.put("review_assurance", weakest);
+        liftFailovers(summary);
+    }
+
+    /**
+     * Switches and refused switches, on the summary itself.
+     *
+     * The step row names the profile that finished. A run that left grok for a paid API
+     * then showed only that API. The from→to list is what an operator can see without
+     * opening the role report.
+     */
+    private static void liftFailovers(Map<String, Object> summary) {
+        List<Object> switches = new ArrayList<>();
+        List<Object> blocked = new ArrayList<>();
+        if (summary.get("steps") instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (!(row instanceof Map<?, ?> step)) continue;
+                if (step.get("role_failovers") instanceof List<?> list) switches.addAll(list);
+                if (step.get("failover_blocked") instanceof List<?> list) blocked.addAll(list);
+            }
+        }
+        if (switches.isEmpty()) summary.remove("role_failovers");
+        else summary.put("role_failovers", List.copyOf(switches));
+        if (blocked.isEmpty()) summary.remove("failover_blocked");
+        else summary.put("failover_blocked", List.copyOf(blocked));
+    }
+
+    /** Appended when a switch was refused, so the stop does not read as an ordinary timeout. */
+    private static String blockedFailoverNote(Map<String, Object> summary) {
+        if (!(summary.get("failover_blocked") instanceof List<?> rows) || rows.isEmpty()) return "";
+        if (!(rows.get(0) instanceof Map<?, ?> event)) return "";
+        return " Automatic failover was refused (" + event.get("rule") + "): "
+                + event.get("from") + " -> " + event.get("to") + ".";
     }
 
     /** Order of assurance labels, strongest first; the weaker of two wins. */
@@ -6379,7 +6607,12 @@ public final class TaskLoop {
                     + "then: " + carryOn + kept(summary);
             case "role_timed_out" -> "the " + failedProfile(summary) + " call ran out of wall "
                     + "clock. Raise limits.wall_clock_minutes on that profile if the task "
-                    + "needs longer, or narrow the task, then: " + carryOn + kept(summary);
+                    + "needs longer, or narrow the task, then: " + carryOn + kept(summary)
+                    + blockedFailoverNote(summary);
+            case "role_stalled" -> "the " + failedProfile(summary) + " call went quiet while "
+                    + "the wall clock still had time. Raise limits.stall_seconds on that "
+                    + "profile (0 turns the bound off), then: " + carryOn + kept(summary)
+                    + blockedFailoverNote(summary);
             case CONTRACT_AMENDMENT -> "the candidate passed, and its readers found the acceptance "
                     + "too weak to have proved it (contract_gaps_to_plan). The supervisor of "
                     + "`oseer do`/`oseer run` hands that to the planner and continues on its own; "
@@ -6731,31 +6964,75 @@ public final class TaskLoop {
         return body.toString();
     }
 
-    private long blockingFindings(Path root, RoleRunner.Outcome review, List<String> manual)
+    private long blockingFindings(Path root, RoleRunner.Outcome review, List<String> manual,
+                                  boolean realAcceptance)
             throws Exception {
-        return acknowledgedFindings(root, review, manual).stream()
+        return acknowledgedFindings(root, review, manual, realAcceptance).stream()
                 .filter(Findings.Finding::blocking).count();
     }
 
     /**
-     * The reviewer's findings after a task's {@code manual_verification} list has been applied.
-     * The file the vendor wrote is left as they wrote it.
+     * The reviewer's findings after a task's {@code manual_verification} list and any recorded
+     * acceptance evidence have been applied. The file the vendor wrote is left as they wrote it.
      */
     private List<Findings.Finding> acknowledgedFindings(Path root, RoleRunner.Outcome review,
-                                                        List<String> manual) throws Exception {
+                                                        List<String> manual, boolean realAcceptance)
+            throws Exception {
         Map<String, Object> artifact = readArtifact(root, review);
         if (artifact == null) return List.of();
-        return Findings.acknowledging(Findings.of(artifact), manual);
+        return citedFindings(root, review, artifact, manual, realAcceptance);
+    }
+
+    private static List<Findings.Finding> citedFindings(Path root, RoleRunner.Outcome review,
+                                                        Map<String, Object> artifact, List<String> manual,
+                                                        boolean realAcceptance) {
+        if ("visual_qa".equals(review.role())) return Findings.recorded(review.details().get("findings"));
+        return CitationCheck.verify(Findings.adjusted(Findings.of(artifact), manual, realAcceptance), root);
+    }
+
+    /**
+     * Product findings from each stage's latest round whose citation was not in the tree.
+     * Recomputed from the history so a later reading that cites a real line drops the flag.
+     */
+    private static List<Map<String, Object>> unverifiedFindings(List<Map<String, Object>> history) {
+        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
+        for (Map<String, Object> round : history) {
+            if (round != null && round.get("stage") instanceof String stage) latest.put(stage, round);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> round : latest.values()) {
+            if (!(round.get("findings") instanceof List<?> findings)) continue;
+            for (Object item : findings) {
+                if (!(item instanceof Map<?, ?> finding) || !Boolean.TRUE.equals(finding.get("unverified"))) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", finding.get("id"));
+                if (finding.get("reviewer_finding_id") != null) {
+                    row.put("reviewer_finding_id", finding.get("reviewer_finding_id"));
+                }
+                row.put("stage", round.get("stage"));
+                row.put("path", finding.get("path"));
+                row.put("severity", finding.get("severity"));
+                if (finding.get("severity_as_filed") != null) row.put("severity_as_filed", finding.get("severity_as_filed"));
+                row.put("verification_reason", finding.get("verification_reason"));
+                row.put("verification_detail", finding.get("verification_detail"));
+                rows.add(row);
+            }
+        }
+        return rows;
     }
 
     private String reviewContext(Path root, RoleRunner.Outcome review, java.util.Set<String> severities,
-                                 List<String> manual)
+                                 List<String> manual, boolean realAcceptance)
             throws Exception {
         Map<String, Object> artifact = readArtifact(root, review);
         StringBuilder builder = new StringBuilder("# An independent reading asked for changes\n\n");
         if (artifact == null) return builder.append("(the reviewer artifact could not be read)\n").toString();
         builder.append("Reviewer summary: ").append(artifact.get("summary")).append("\n\n");
-        for (Findings.Finding finding : Findings.acknowledging(Findings.of(artifact), manual)) {
+        for (Findings.Finding finding : citedFindings(root, review, artifact, manual, realAcceptance)) {
+            // An unverified citation is not work for the implementer. It is already excluded
+            // from the blocking count; leaving it in the repair prompt would send them to
+            // edit a line the finding did not actually show.
+            if (finding.unverified()) continue;
             // P1 always; P2 and P3 when the policy repairs them before the human gate. A
             // non-blocking finding handed over here is what the operator would otherwise have
             // had to read at the gate and send back by hand.

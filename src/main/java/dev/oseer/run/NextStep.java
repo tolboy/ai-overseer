@@ -54,6 +54,11 @@ public final class NextStep {
             commands.add("oseer check --task " + taskId); commands.addAll(carryOn(runId, taskId));
             step.put("commands", commands); step.put("edits", List.of());
         }
+        if (summary.get("failover_blocked") instanceof List<?> rows && !rows.isEmpty()
+                && rows.get(0) instanceof Map<?, ?> event) {
+            step.put("summary", step.get("summary") + " Automatic failover was refused ("
+                    + event.get("rule") + "): " + event.get("from") + " -> " + event.get("to") + ".");
+        }
         return step;
     }
 
@@ -111,9 +116,9 @@ public final class NextStep {
             };
             case "quota_exhausted", "rate_limited" -> "wait_or_add_vendor";
             case "failover_requires_confirmation" -> "confirm_failover";
-            case "model_check_failed", "role_timed_out", "vendor_call_failed", "vendor_unavailable",
-                    "vendor_protocol_failed", "prompt_undeliverable", "turn_ceiling_reached",
-                    "orca_worker_not_started" -> "retry_infrastructure";
+            case "model_check_failed", "role_timed_out", "role_stalled", "vendor_call_failed",
+                    "vendor_unavailable", "vendor_protocol_failed", "prompt_undeliverable",
+                    "turn_ceiling_reached", "orca_worker_not_started" -> "retry_infrastructure";
             case "plan_review_findings_remain" -> "revise_plan";
             case "reproduction_passed_before_change", "reproduction_inconclusive" -> "fix_contract";
             case "blocking_findings_remain", "quality_exhausted" -> blockingKind(summary);
@@ -419,6 +424,9 @@ public final class NextStep {
             case "role_timed_out" ->
                     "raise limits.wall_clock_minutes on the profile (the wall clock that bound "
                             + "this call), or narrow the task";
+            case "role_stalled" ->
+                    "raise limits.stall_seconds on the profile (the call went quiet while the "
+                            + "wall clock still had time; 0 turns the bound off)";
             case "turn_ceiling_reached" ->
                     "raise the profile's turn / max-turns limit";
             default ->

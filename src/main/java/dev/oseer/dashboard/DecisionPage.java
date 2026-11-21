@@ -459,8 +459,14 @@ public final class DecisionPage implements AutoCloseable {
             if (finding.get("id") instanceof String id && !id.isBlank()) {
                 html.append(" · <code>").append(escape(id)).append("</code>");
             }
+            if (Boolean.TRUE.equals(finding.get("unverified"))) {
+                html.append(" · <span class=sev>{{t:decision.unverified}}</span>");
+            }
             html.append("</div><p>")
                     .append(escape(String.valueOf(finding.get("message")))).append("</p>");
+            if (finding.get("verification_detail") instanceof String detail && !detail.isBlank()) {
+                html.append("<p class=muted>").append(escape(detail)).append("</p>");
+            }
             for (String[] field : List.of(new String[] {"expected", "{{t:decision.expected}}"}, new String[] {"actual", "{{t:decision.actual}}"},
                     new String[] {"suggestion", "{{t:decision.suggestion}}"})) {
                 Object value = finding.get(field[0]);

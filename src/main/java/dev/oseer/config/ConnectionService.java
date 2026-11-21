@@ -96,7 +96,14 @@ public final class ConnectionService {
                     if (!(payload.get("enabled") instanceof Boolean value)) throw new Invalid();
                     enabled = value;
                 } else if ("update".equals(operation)) throw new Invalid();
-                Connection next = new Connection(id, provider, "openai_chat", base, (String) reference, enabled);
+                // The browser form has no field for a declared output ceiling; an update keeps
+                // the one the file already carries instead of silently dropping it.
+                Integer ceiling = null;
+                if ("update".equals(operation)) {
+                    try { ceiling = store.versioned(id).connection().maxOutputTokens(); }
+                    catch (IOException | RuntimeException absent) { ceiling = null; }
+                }
+                Connection next = new Connection(id, provider, "openai_chat", base, (String) reference, enabled, ceiling);
                 ConnectionStore.Versioned saved;
                 if ("add".equals(operation)) {
                     store.add(next);

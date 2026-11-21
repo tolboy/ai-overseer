@@ -261,6 +261,27 @@ public final class StubVendor {
                                 "verdict", ids.isEmpty() ? "pass" : "fail", "summary", "round " + n,
                                 "findings", findings))));
             }
+            // The noise a review of an existing pull request filed when the local gate was
+            // only `git diff --check` and the pull request's own CI was already green.
+            // A product defect whose file is not in the tree. The citation check must keep it
+            // from blocking; the vendor file stays the P1 they filed.
+            case "review-false-cite" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"made up\","
+                    + "\"findings\":[{\"id\":\"made-up-line\",\"category\":\"product_defect\","
+                    + "\"severity\":\"P1\",\"path\":\"src/not-in-the-tree.java\",\"line\":12,"
+                    + "\"quote\":\"if (ready) return null;\","
+                    + "\"message\":\"the guard returns null\","
+                    + "\"expected\":\"null\",\"actual\":\"falls through\",\"confidence\":\"confirmed\"}]},"
+                    + "\"total_cost_usd\":0.004}");
+            case "review-nothing-runs" -> System.out.println(
+                    "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
+                    + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"nothing was tested\","
+                    + "\"findings\":[{\"id\":\"nothing-runs\",\"category\":\"contract_gap\","
+                    + "\"severity\":\"P1\",\"path\":\".oseer/tasks/hello.yaml\","
+                    + "\"message\":\"nothing compiles or runs the tests; the only gate is git diff --check\","
+                    + "\"expected\":\"a build and a test run\",\"actual\":\"whitespace check only\","
+                    + "\"confidence\":\"confirmed\"}]},\"total_cost_usd\":0.004}");
             case "review-categorised" -> System.out.println(
                     "{\"structuredOutput\":{\"role\":\"reviewer\",\"task_id\":\"hello\","
                     + "\"status\":\"completed\",\"verdict\":\"fail\",\"summary\":\"contract too weak\","
@@ -823,7 +844,7 @@ public final class StubVendor {
                 }
                 boolean passes = succeedsNow(args);
                 String findings = passes ? "[]"
-                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        : "[{\"severity\":\"P1\",\"path\":" + dev.oseer.json.Json.write(images.getFirst()) + ","
                         + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
                         + "\"expected\":\"the whole word is readable\","
                         + "\"actual\":\"it is cut off at the panel edge\","
@@ -859,7 +880,8 @@ public final class StubVendor {
                 }
                 boolean passes = succeedsNow(args);
                 String findings = passes ? "[]"
-                        : "[{\"severity\":\"P1\",\"path\":\"src/result.txt\","
+                        : "[{\"severity\":\"P1\",\"path\":"
+                        + dev.oseer.json.Json.write(taken.isEmpty() ? "" : taken.getFirst()) + ","
                         + "\"viewport\":\"1280x720\",\"message\":\"the label is clipped\","
                         + "\"expected\":\"the whole word is readable\","
                         + "\"actual\":\"it is cut off at the panel edge\","

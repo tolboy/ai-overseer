@@ -96,6 +96,7 @@ public final class FindingsTest implements Suite {
         c.that("a finding with no suggestion omits the key rather than writing null",
                 !withoutSuggestion.toMap().containsKey("suggestion"));
         manualVerificationDowngrade(c);
+        recordedAcceptanceDowngrade(c);
 
         var unnamed = Findings.of(Map.of("findings", List.of(Map.of(
                 "severity", "P1", "path", "src/a", "message", "legacy")))).get(0);
@@ -382,5 +383,59 @@ public final class FindingsTest implements Suite {
         c.eq("the first recorded round was never blocking", List.of(), first.get("blocking_ids"));
         c.eq("so the same downgrade on the next reading is not a relabel",
                 List.of(), second.get("severity_downgraded"));
+    }
+
+    /**
+     * A P1 contract gap that only says nothing was compiled or tested is noise when the task
+     * recorded real acceptance. A gap about coverage, and a product defect, stay blocking.
+     */
+    private void recordedAcceptanceDowngrade(Check c) {
+        Map<String, Object> noise = Map.of(
+                "id", "nothing-runs", "severity", "P1", "category", "contract_gap",
+                "path", ".oseer/tasks/review.yaml",
+                "message", "nothing compiles or runs the tests; the only gate is git diff --check",
+                "expected", "a build and a test run", "actual", "whitespace check only",
+                "confidence", "confirmed");
+        Findings.Finding filed = Findings.of(Map.of("findings", List.of(noise))).get(0);
+        Findings.Finding lowered = Findings.recordedAcceptance(List.of(filed), true).get(0);
+        c.eq("the noise gap is recorded as P2", "P2", lowered.severity());
+        c.that("and no longer blocks", !lowered.blocking());
+        Map<String, Object> recorded = lowered.toMap();
+        c.eq("the vendor severity is kept", "P1", recorded.get("severity_as_filed"));
+        c.eq("the ledger says the evidence was recorded", "recorded", recorded.get("acceptance_evidence"));
+        c.eq("and the downgrade is advisory", true, recorded.get("advisory"));
+        c.eq("the vendor finding stays a P1", "P1", filed.severity());
+
+        Findings.Finding without = Findings.recordedAcceptance(List.of(filed), false).get(0);
+        c.eq("without recorded acceptance the same words still block", "P1", without.severity());
+
+        Findings.Finding coverage = Findings.of(Map.of("findings", List.of(Map.of(
+                "id", "timeout-gap", "severity", "P1", "category", "contract_gap",
+                "path", "src/parse.js",
+                "message", "git diff --check does not cover the timeout path",
+                "expected", "a test asserts the timeout", "actual", "no assertion of the timeout",
+                "confidence", "confirmed")))).get(0);
+        Findings.Finding kept = Findings.recordedAcceptance(List.of(coverage), true).get(0);
+        c.eq("a coverage gap stays a P1", "P1", kept.severity());
+        c.that("and is not stamped as recorded acceptance", !kept.toMap().containsKey("acceptance_evidence"));
+
+        Findings.Finding defect = Findings.of(Map.of("findings", List.of(Map.of(
+                "id", "broken-build", "severity", "P1", "category", "product_defect",
+                "path", "src/main.js", "message", "nothing compiles after the edit",
+                "confidence", "confirmed")))).get(0);
+        c.eq("a product defect is not lowered", "P1",
+                Findings.recordedAcceptance(List.of(defect), true).get(0).severity());
+
+        Findings.Finding already = Findings.of(Map.of("findings", List.of(Map.of(
+                "id", "note", "severity", "P2", "category", "contract_gap",
+                "path", "task.yaml", "message", "nothing compiles",
+                "confidence", "confirmed")))).get(0);
+        Findings.Finding untouched = Findings.recordedAcceptance(List.of(already), true).get(0);
+        c.eq("a P2 the vendor already filed is not rewritten", "P2", untouched.severity());
+        c.that("and is not stamped", !untouched.toMap().containsKey("severity_as_filed"));
+
+        var round = Findings.round("review", 1, "tree",
+                Findings.recordedAcceptance(List.of(filed), true), null);
+        c.eq("the recorded round was never blocking", List.of(), round.get("blocking_ids"));
     }
 }

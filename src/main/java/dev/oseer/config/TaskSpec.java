@@ -33,7 +33,8 @@ public record TaskSpec(
         RunOverride use,
         List<String> manualVerification,
         List<String> priorWriters,
-        String mode) {
+        String mode,
+        AcceptanceEvidence acceptanceEvidence) {
 
     /**
      * Task modes: named presets for the shape of a piece of work, borrowed from the way people
@@ -47,8 +48,20 @@ public record TaskSpec(
      *   task      no preset; the same as omitting `mode`
      *   refactor  behaviour must not change: requires `defaults.baseline_checks` in
      *             project.yaml, and the risk is at least medium so the change is reviewed
+     *   review    the candidate already exists (a pull request branch, say) and nobody writes:
+     *             writing stages are skipped, no fix round is dispatched, every reader runs
+     *             even after an earlier one objected, and the run stops at the human gate
+     *             with all of their findings. Requires `prior_writers`, because the vendors
+     *             that wrote the branch are the ones every reader must differ from.
      */
-    public static final Set<String> MODES = Set.of("quick", "bug", "task", "refactor");
+    public static final Set<String> MODES = Set.of("quick", "bug", "task", "refactor", "review");
+
+    /**
+     * The modes `oseer do` can draft a contract for. A review has nothing to plan and its
+     * author must be vouched for by a person, so it is written by hand and started with
+     * `oseer run`.
+     */
+    public static final Set<String> DRAFT_MODES = Set.of("quick", "bug", "task", "refactor");
 
     public TaskSpec(String id, String goal, List<String> nonGoals, String risk,
                     Values.Selector scope, Values.Selector checks, List<String> acceptance,
@@ -57,13 +70,14 @@ public record TaskSpec(
                     RunOverride use, List<String> manualVerification, List<String> priorWriters) {
         this(id, goal, nonGoals, risk, scope, checks, acceptance, reproduce, authority, visualQa,
                 budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use, manualVerification,
-                priorWriters, null);
+                priorWriters, null, null);
     }
 
     public TaskSpec {
         if (use == null) use = RunOverride.NONE;
         manualVerification = manualVerification == null ? List.of() : List.copyOf(manualVerification);
         priorWriters = priorWriters == null ? List.of() : List.copyOf(priorWriters);
+        if (acceptanceEvidence == null) acceptanceEvidence = AcceptanceEvidence.NONE;
     }
 
     public TaskSpec(String id, String goal, List<String> nonGoals, String risk,
@@ -73,7 +87,7 @@ public record TaskSpec(
                     RunOverride use, List<String> manualVerification) {
         this(id, goal, nonGoals, risk, scope, checks, acceptance, reproduce, authority, visualQa,
                 budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use, manualVerification,
-                List.of(), null);
+                List.of(), null, null);
     }
 
     /**
@@ -139,7 +153,8 @@ public record TaskSpec(
     private static final Set<String> TOP_LEVEL = Set.of(
             "version", "id", "goal", "non_goals", "risk", "scope", "checks", "acceptance", "reproduce",
             "authority", "visual_qa", "budgets", "max_fix_attempts", "timeout_minutes",
-            "review_assurance", "use", "manual_verification", "prior_writers", "mode");
+            "review_assurance", "use", "manual_verification", "prior_writers", "mode",
+            "acceptance_evidence");
     private static final Set<String> AUTHORITY_KEYS = Set.of("workspace_write", "network", "land");
     private static final Set<String> VISUAL_KEYS =
             Set.of("required", "scenarios", "start", "url", "evidence");
@@ -244,11 +259,90 @@ public record TaskSpec(
             if (item != null && !item.isBlank()) priorWriters.add(item.trim());
         }
 
+        if ("review".equals(mode) && priorWriters.isEmpty()) {
+            root.collector().add("mode: review needs prior_writers: the vendors that wrote the branch "
+                    + "under review, so every reader can be required to differ from them");
+        }
+        if ("review".equals(mode) && maxFixAttempts != null && maxFixAttempts > 0) {
+            root.collector().add("mode: review dispatches no fix round; max_fix_attempts must be 0 or absent");
+        }
+        if ("review".equals(mode)) maxFixAttempts = 0L;
+
+        AcceptanceEvidence acceptanceEvidence = parseAcceptanceEvidence(root);
+
         root.throwIfAny();
         if (risk == null && "quick".equals(mode)) risk = "low";
         return new TaskSpec(id, goal, List.copyOf(nonGoals), risk, scope, checks, acceptance, reproduce,
                 authority, visualQa, budget, maxFixAttempts, timeoutMinutes, reviewAssurance, use,
-                manualVerification, List.copyOf(priorWriters), mode);
+                manualVerification, List.copyOf(priorWriters), mode, acceptanceEvidence);
+    }
+
+    /**
+     * Recorded acceptance a reader should believe even when the local gate is only whitespace.
+     *
+     * Absent is none. An empty block is none. A command or a check conclusion outside the
+     * closed set is a parse error, so a typo cannot look like a passing CI result.
+     */
+    private static AcceptanceEvidence parseAcceptanceEvidence(Values root) {
+        if (!root.has("acceptance_evidence")) return AcceptanceEvidence.NONE;
+        Values block = root.optMap("acceptance_evidence").rejectUnknownKeys(Set.of(
+                "commands", "ci"));
+        List<String> commands = new ArrayList<>();
+        for (String command : block.optStringList("commands", List.of())) {
+            if (command == null || command.isBlank()) {
+                root.collector().add("acceptance_evidence.commands must be non-empty single lines");
+                continue;
+            }
+            String trimmed = command.trim();
+            if (trimmed.length() > 2000 || trimmed.contains("\n") || trimmed.contains("\r")) {
+                root.collector().add("acceptance_evidence command must be a single line of at most 2000 characters");
+                continue;
+            }
+            commands.add(trimmed);
+        }
+        if (commands.size() > 20) {
+            root.collector().add("acceptance_evidence may name at most 20 commands, got " + commands.size());
+        }
+        String ciSource = null;
+        String ciSummary = null;
+        List<AcceptanceEvidence.Check> checks = new ArrayList<>();
+        if (block.has("ci")) {
+            Values ci = block.optMap("ci").rejectUnknownKeys(Set.of("source", "summary", "checks"));
+            ciSource = ci.optString("source", null);
+            if (ciSource != null) {
+                ciSource = ciSource.trim();
+                if (ciSource.length() > 200) {
+                    root.collector().add("acceptance_evidence.ci.source must be at most 200 characters");
+                }
+            }
+            // A string or a list of lines. Block scalars are not in the config YAML subset,
+            // and a pasted `gh pr checks` table is several lines.
+            ciSummary = ci.optText("summary");
+            if (ciSummary != null && ciSummary.length() > 8000) {
+                root.collector().add("acceptance_evidence.ci.summary must be at most 8000 characters");
+            }
+            for (Values row : ci.mapList("checks")) {
+                row.rejectUnknownKeys(Set.of("name", "conclusion"));
+                String name = row.requireString("name");
+                String conclusion = row.requireString("conclusion");
+                if (name == null || conclusion == null) continue;
+                name = name.trim();
+                conclusion = conclusion.trim().toLowerCase(java.util.Locale.ROOT);
+                if (name.isBlank() || name.length() > 200) {
+                    root.collector().add("acceptance_evidence.ci.checks name must be 1–200 characters");
+                    continue;
+                }
+                if ("pass".equals(conclusion)) conclusion = "success";
+                if ("fail".equals(conclusion)) conclusion = "failure";
+                if (!AcceptanceEvidence.CONCLUSIONS.contains(conclusion)) {
+                    root.collector().add("acceptance_evidence.ci.checks conclusion '" + conclusion
+                            + "' is not one of " + AcceptanceEvidence.CONCLUSIONS);
+                    continue;
+                }
+                checks.add(new AcceptanceEvidence.Check(name, conclusion));
+            }
+        }
+        return new AcceptanceEvidence(commands, ciSource, ciSummary, checks);
     }
 
     /**
@@ -357,7 +451,9 @@ public record TaskSpec(
                 timeoutMinutes != null ? timeoutMinutes : project.defaultTimeoutMinutes(),
                 reviewAssurance == null ? "independent" : reviewAssurance,
                 manualVerification,
-                priorWriters);
+                priorWriters,
+                "review".equals(mode),
+                acceptanceEvidence);
     }
 
     private static List<String> resolveCommands(List<String> requested, boolean bareChecks,
@@ -396,11 +492,26 @@ public record TaskSpec(
             long timeoutMinutes,
             String reviewAssurance,
             List<String> manualVerification,
-            List<String> priorWriters) {
+            List<String> priorWriters,
+            boolean reviewOnly,
+            AcceptanceEvidence acceptanceEvidence) {
 
         public ResolvedTask {
             manualVerification = manualVerification == null ? List.of() : List.copyOf(manualVerification);
             priorWriters = priorWriters == null ? List.of() : List.copyOf(priorWriters);
+            if (acceptanceEvidence == null) acceptanceEvidence = AcceptanceEvidence.NONE;
+        }
+
+        public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
+                            String baseRef, List<String> scopePaths, List<String> baselineCommands,
+                            List<String> acceptanceCommands, List<String> reproduceCommands,
+                            Authority authority, VisualQa visualQa, Budget budget,
+                            long maxFixAttempts, long timeoutMinutes, String reviewAssurance,
+                            List<String> manualVerification, List<String> priorWriters) {
+            this(id, goal, nonGoals, risk, baseRef, scopePaths, baselineCommands,
+                    acceptanceCommands, reproduceCommands, authority, visualQa, budget,
+                    maxFixAttempts, timeoutMinutes, reviewAssurance, manualVerification,
+                    priorWriters, false, null);
         }
 
         public ResolvedTask(String id, String goal, List<String> nonGoals, String risk,
@@ -487,6 +598,15 @@ public record TaskSpec(
             // independent, so a change to it cannot keep verdicts. Omitted when empty.
             if (!priorWriters.isEmpty()) {
                 fields.put("prior_writers", String.join("\u0000", new java.util.TreeSet<>(priorWriters)));
+            }
+            // A review-only run and a run that may write are judged by different terms.
+            // Omitted when false, so every existing contract keeps its hash.
+            if (reviewOnly) fields.put("review_only", "true");
+            // What a reader is told already passed. Changing it changes whether a contract_gap
+            // about "nothing was tested" is noise. Omitted when empty, so existing contracts
+            // keep the hash they had before the key existed.
+            if (acceptanceEvidence.present()) {
+                fields.put("acceptance_evidence", acceptanceEvidence.fingerprintText());
             }
             fields.put("visual_required", String.valueOf(visualQa.required()));
             fields.put("visual_url", String.valueOf(visualQa.url()));

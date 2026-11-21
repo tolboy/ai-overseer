@@ -61,6 +61,25 @@ public final class TaskModeTest implements Suite {
         check.eq("quick resolves low against any project default", "low",
                 quick.resolve(ProjectConfig.parse(PROJECT.formatted("high", ""), "project.yaml"), "q.yaml").risk());
 
+        // review: an existing branch is read, never written.
+        check.rejects("review needs to know who wrote the branch", "prior_writers",
+                () -> TaskSpec.parse(task("mode: review"), "rv.yaml"));
+        check.rejects("review dispatches no fix round", "max_fix_attempts",
+                () -> TaskSpec.parse(task("mode: review\nprior_writers: [codex]\nmax_fix_attempts: 2"), "rv.yaml"));
+        TaskSpec review = TaskSpec.parse(task("mode: review\nprior_writers: [codex]"), "rv.yaml");
+        check.eq("review records its mode", "review", review.mode());
+        check.eq("review forces zero fix rounds", 0L, review.maxFixAttempts());
+        var reviewResolved = review.resolve(lowNoBaseline, "rv.yaml");
+        check.that("review resolves to a review-only task", reviewResolved.reviewOnly());
+        check.eq("review keeps its authors", java.util.List.of("codex"), reviewResolved.priorWriters());
+        check.that("an ordinary task is not review-only", !quick.resolve(lowNoBaseline, "q.yaml").reviewOnly());
+        check.that("review-only changes what a verdict was reached under",
+                !reviewResolved.acceptanceFingerprint().equals(TaskSpec.parse(task("prior_writers: [codex]"), "t.yaml")
+                        .resolve(lowNoBaseline, "t.yaml").acceptanceFingerprint()));
+        check.that("oseer do cannot draft a review", !TaskSpec.DRAFT_MODES.contains("review"));
+        check.rejects("oseer do --mode review is refused with the list it accepts", "--mode must be one of",
+                () -> dev.oseer.run.DoCommand.parse(new String[] {"do", "Review it", "--mode", "review"}));
+
         // `oseer do --mode` writes the mode into a contract it drafted, and never into one a person wrote.
         Path root = Files.createTempDirectory("oseer-task-mode-");
         Files.createDirectories(root.resolve(".oseer/tasks"));

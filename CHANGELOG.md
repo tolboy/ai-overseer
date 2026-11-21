@@ -19,6 +19,83 @@ that exists in code but has never been run live says so.
 
 ### Fixed
 
+- A direct CLI (or local HTTP) review whose findings are complete except for `message` is
+  no longer thrown away as `role_artifact_schema_violation`: the message is copied from
+  the finding's own `actual`, else `scenario`, else `expected`, and the evidence records
+  `finding_messages_derived`. Measured on a 23-minute Grok CLI review of a pull request.
+- `oseer run --help` / `-h` prints usage and creates nothing; it used to start a run for a
+  task called `--help` and leave a pending decision behind.
+- The model check reads "Not signed in" (the Grok CLI's wording) as `check_auth_required`.
+
+- The dashboard run page no longer calls a stage the run never opened "still open"
+  after the run has stopped: the chip says not reached (or earlier candidate, when the
+  verdict is about a tree a later repair replaced) and uses the same status as the stage
+  card. A run that has not written a summary is on the runs list; a live controller is
+  in progress, and the latest-run card uses that same list, newest start first. A pending
+  decision overtaken by a continuation, or by a later run of the same task on the same
+  tree, is shown as superseded and is not counted as waiting; `decision.json` is left as
+  it was. A total of $0 with unpriced calls is cost unknown, and a call that timed out
+  after the request was sent is marked may be billed. Not yet run live against a vendor.
+  Suites `dashboard`, `run-timeline`.
+- A call that sits with no new bytes can stop before its wall clock. The bound is
+  `limits.stall_seconds`, off unless set: API calls use `stream: false`, so a healthy
+  review call can send nothing until it is done (5–16 minutes measured), and a thinking
+  CLI can be silent too. The failure
+  is `role_stalled`, distinct from `role_api_timeout` / `role_timeout`, and it is eligible
+  for `failover.on_vendor_failure`. A request that already left the machine is marked
+  `may_be_billed`. Not yet run live against a vendor.
+- Automatic failover no longer leaves a subscription CLI for a paid API of the same model
+  family (grok, codex, or claude CLI onto `x-ai` / `openai` / `anthropic`).
+  `failover.subscription_to_same_family_api: allow` is the escape. A stage pinned with
+  `--use` does not take a vendor-failure failover unless `failover.on_pinned` is `confirm`
+  or `auto` (default `stop`); a spent subscription still follows `on_quota_exhausted`.
+  A switch or a refusal is named from→to on the progress line, the role report
+  (`failover_notice`, `failover_blocked`, `role_failovers`) and the run summary. Not yet
+  run live against a vendor. Suites `api-http`, `api-fallback`, `direct-capture`, `config`,
+  `workflow`.
+- A P1 or P2 `product_defect` is checked against the reviewed tree before it can block.
+  The cited file has to exist, the cited line has to exist, and a `quote` (or a backtick
+  span of code) has to appear within 20 lines of that spot. A citation that fails is
+  recorded as `unverified` (a P1 becomes P2 advisory) and shown on the run report, the
+  ledger and the dashboard. The check reads files only; it does not call a model. A later
+  model check of whether the quote means what the finding claims is not done. Not yet
+  run live against a vendor. Suites `citation`, `task loop`, `run-timeline`.
+- A `mode: review` task can record `acceptance_evidence`: the pull request's own test
+  commands and a pasted CI result (a `gh pr checks` summary as a string or a list of
+  lines, plus check-run conclusions). Readers see it in the prompt, including reviewer
+  templates written before the placeholder existed (`oseer setup` does not overwrite
+  them). A P1 `contract_gap` that only says nothing compiles, tests do not run, or the
+  only gate is `git diff --check` is recorded as P2 advisory when that evidence is real
+  acceptance; a gap that says the commands do not cover the behaviour still blocks. The
+  local machine gate is unchanged and Overseer does not fetch CI. Empty evidence is
+  omitted from `acceptance_sha256`. Not yet run live against a vendor. Suites `config`,
+  `findings`, `role runner`, `task loop`.
+- A `vendor: grok` direct CLI profile that declares `model:` but whose args never pass
+  `{{model}}` is refused when it is loaded. Such a profile ran the Grok CLI's default model
+  while its reports named the declared one; the refusal names the line to add
+  (`"--model", "{{model}}"`).
+- A direct CLI profile can set its turn ceiling in `limits.max_turns` (1–500) and pass it with
+  `"--max-turns", "{{max_turns}}"`; without the key the placeholder resolves to 40. A declared
+  `max_turns` that no argument passes, or one on an API profile, is refused. The starter
+  `grok-review` uses it (`max_turns: 40`). Literal `--max-turns N` arguments keep working.
+- A context refusal names every file that did not fit, its size, the limit and the key to
+  raise, instead of "exceeds the 64 KiB per-file limit".
+- The API context no longer refuses committed env templates (`.env.example`, `.env.sample`,
+  `.env.template`, `.env.dist`), which blocked every review of a change that documents a new
+  variable; other `.env.*` files are still refused, and the refusal now names the file.
+- A `mode: review` run no longer checks the repairer's model before it starts (no repair
+  round runs), and its dry run no longer prints "if … sends the work back" repair costs. The
+  launch check had stopped a review with `model_check_failed` on a signed-out implementer.
+- Readers in a `mode: review` run are blind to each other: a later reader no longer receives
+  the earlier readers' finding registry, which had made three readings of one pull request
+  repeat the first reader's ids and wording.
+- `preflight_outside_scope` names the paths that are outside the scope, in the dry-run
+  footer and on the gates line.
+- A dry run that saw a stage fail marks every later line "preview only: a real run stops
+  earlier, at …", instead of printing `ok` under a cast row that said nobody could fill it.
+- The starter `grok-review` profile passes `--model {{model}}` (model `grok-4.6`), so the
+  model in its reports is the one that ran, and allows 40 turns / 40 minutes; 12 turns could
+  not finish the review its own verification note describes.
 - Local attempt accounting retains completed vendor calls when a crash prevents the role
   summary, reconciles partial journals by attempt identity, and withholds exact spend for
   ambiguous coverage. Retry A→A no longer counts as failover; recorded automatic and
@@ -30,6 +107,21 @@ that exists in code but has never been run live says so.
 
 ### Added
 
+- `mode: review` reads an existing branch (a pull request) through the loop without writing
+  to it: writing stages are skipped as `review_only`, the planned implementer no longer counts
+  as an author, the authors come from the required `prior_writers`, no fix round runs, and
+  every reader runs before the run stops at the human gate with all their findings
+  (`objecting_stages`). `oseer do` does not draft this mode.
+- `api_context` on an API profile chooses what the reader is sent: `full` (diff and whole
+  changed files), `diff` (diff only) or `auto` (the default: full when it fits, otherwise the
+  diff with a note in the prompt, the role report and the progress line). `max_files`,
+  `max_file_bytes` and `max_bytes` replace the fixed 64 files / 64 KiB / 256 KiB limits.
+  Measured 2026-11-18: no API reader could review a pull request that edited a 66 KiB README.
+- `oseer role <role> <task> --use <profile>` picks the profile for one standalone dispatch,
+  judged by every roster filter including independence; standalone readings now honour the
+  task's `prior_writers` as well as `--implementer-vendor`.
+- A connection may declare `max_output_tokens` as its output ceiling. GonkaRouter keeps 4096
+  as its default; profiles may now declare up to 65536 output tokens.
 - Dashboard **Launch** tab: start `oseer do` / `oseer run` from the browser against any git
   repository top, with goal, task, risk, mode, preparation, call cap, spend threshold,
   draft-only, in-place, per-stage profile and effort pins and the Orca gate switch. A dry-run

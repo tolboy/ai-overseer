@@ -206,6 +206,72 @@ resolver fails rather than quietly handing the code to its own author for review
 
 ---
 
+### Reviewing a branch somebody else wrote
+
+The loop above writes and then reads. A pull request that already exists only needs the
+reading half. Check the branch out, connect the project as in Step 2, and write the task by
+hand (`oseer do` does not draft reviews, because only a person can vouch for who wrote the
+branch):
+
+```yaml
+# .oseer/tasks/review-pr-72.yaml
+version: 1
+id: review-pr-72
+goal: Review PR #72 as it stands; do not change it
+mode: review
+prior_writers: [codex]        # the vendors that wrote the branch
+risk: high
+scope: all
+checks: ["git diff --check origin/master...HEAD"]
+acceptance_evidence:
+  commands:
+    - "./build.sh"
+    - "./test.sh"
+  ci:
+    source: "gh pr checks"    # a label; Overseer does not run it
+    summary:
+      - "build   pass"
+      - "test    pass"
+    checks:
+      - { name: build, conclusion: success }
+      - { name: test, conclusion: success }
+```
+
+`acceptance_evidence` is what the pull request already ran. The local machine gate may
+still be only `git diff --check`; readers are shown the recorded commands and CI and do
+not file a blocking contract gap that nothing compiles or that tests do not run. A gap
+that says those commands do not cover the behaviour under review still blocks. Paste the
+check output yourself — Overseer does not call GitHub. The config YAML subset has no
+block scalars, so a multi-line summary is a list of lines (or one quoted string).
+Conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`,
+`action_required`, `startup_failure`; `pass` and `fail` are accepted as aliases.
+When the summary is the only evidence, include at least one explicit passing check, for example
+`test: pass`. A summary containing only pending or skipped checks leaves the contract gap open.
+
+With `base_ref` in project.yaml set to the branch the pull request targets:
+
+```
+oseer run review-pr-72 --dry-run
+oseer run review-pr-72 --use review=openrouter-deepseek-review \
+    --use review-second=gonkarouter-glm-review --use review-third=grok-review
+```
+
+`mode: review` skips every writing stage (`skipped: review_only`), so the planned implementer
+no longer counts as an author and cannot disqualify a reader from its vendor. The authors are
+`prior_writers`, and every reader must differ from them. Explicit review mode requires an
+active reviewer even when the task's risk is low. No fix round runs. A reader that
+objects does not stop the readers after it; the run stops at the human gate once all of them
+have read, with `objecting_stages` naming who objected. Machine gates still run the task's
+checks on the branch. Each reader gets its own finding history. Reports keep both the
+stage-scoped identifier and the ID the reader supplied, so two readers can both use `F1`.
+
+A single reading works the same way: `oseer role reviewer review-pr-72 --use grok-review`
+picks the profile for that one dispatch (it need not be on the roster) and honours the task's
+`prior_writers`. API readers get the diff without whole files when the change is too big for
+their `api_context` limits; see [API connections](API-CONNECTIONS.md#context-and-execution-limits).
+
+---
+
 ## Step 8. What happens when a read-only role writes anyway
 
 A stub reviewer that appends a line to a file while returning `verdict: pass`:

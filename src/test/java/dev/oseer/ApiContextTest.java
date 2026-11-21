@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.config.ApiContextSettings;
 import dev.oseer.execution.ApiContextBuilder;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
@@ -73,8 +74,36 @@ public final class ApiContextTest implements Suite {
             Files.writeString(secret, "API_KEY=do-not-leak-secret-value\n");
             git(root, "add", "-f", "--", ".env");
             safeFailure(check, "changed secret files are refused before sending", "secret or credential", root, base);
+            try {
+                ApiContextBuilder.build(root, base, processes);
+            } catch (IOException failure) {
+                check.contains("the secret refusal names the file", failure.getMessage(), ": .env");
+            }
             git(root, "reset", "-q", "--", ".env");
             Files.delete(secret);
+
+            Path localEnv = root.resolve(".env.local");
+            Files.writeString(localEnv, "API_KEY=do-not-leak-secret-value\n");
+            git(root, "add", "-f", "--", ".env.local");
+            safeFailure(check, "a local env file is still refused", "secret or credential", root, base);
+            git(root, "reset", "-q", "--", ".env.local");
+            Files.delete(localEnv);
+
+            Path template = root.resolve(".env.example");
+            Files.writeString(template, "API_KEY=\n");
+            safeFailure(check, "an untracked env template is refused", "env template to be committed", root, base);
+            git(root, "add", "-f", "--", ".env.example");
+            safeFailure(check, "a staged env template is refused", "env template to be committed", root, base);
+            commit(root);
+            String withTemplate = ApiContextBuilder.build(root, base, processes);
+            check.contains("a committed env template is read like any other file", withTemplate, ".env.example");
+            check.contains("whole files come from the committed template", withTemplate, "API_KEY=");
+            Files.writeString(template, "API_KEY=do-not-leak-secret-value\n");
+            safeFailure(check, "a modified committed env template is refused", "env template to be committed", root, base);
+            git(root, "add", "--", ".env.example");
+            Files.writeString(template, "API_KEY=\n");
+            safeFailure(check, "an index-only template change is refused", "env template to be committed", root, base);
+            git(root, "reset", "-q", "--", ".env.example");
 
             Path binary = root.resolve("binary.java");
             Files.write(binary, new byte[]{0, 1, 2, 3});
@@ -98,6 +127,9 @@ public final class ApiContextTest implements Suite {
                 big.add(file);
             }
             safeFailure(check, "total source budget is enforced before request creation", "total limit", root, base);
+            check.rejects("diff-only never exceeds the cumulative untracked source budget", "total limit",
+                    () -> ApiContextBuilder.build(root, base, processes,
+                            new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024)));
             for (Path file : big) Files.delete(file);
 
             List<Path> many = new ArrayList<>();
@@ -111,6 +143,10 @@ public final class ApiContextTest implements Suite {
 
             symlinks(check, scratch, root, base);
             truncatedDiff(check, scratch);
+            settingsModes(check, scratch);
+            manyTrackedPaths(check, scratch);
+            committedTemplateChanges(check, scratch);
+            renderedBudget(check, scratch);
         } finally {
             try (Stream<Path> paths = Files.walk(scratch)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -119,6 +155,77 @@ public final class ApiContextTest implements Suite {
                 }
             }
         }
+    }
+
+    private void manyTrackedPaths(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("long-path-list"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        Path directory = Files.createDirectories(root.resolve("component-" + "a".repeat(78)));
+        List<Path> files = new ArrayList<>();
+        for (int i = 0; i < 350; i++) {
+            Path path = directory.resolve("page-" + i + ".txt");
+            Files.writeString(path, "original\n");
+            files.add(path);
+        }
+        git(root, "add", "--", ".");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        for (Path path : files) Files.writeString(path, "updated\n");
+        var snapshot = ApiContextBuilder.build(root, base, processes, ApiContextSettings.DEFAULT);
+        check.eq("many tracked paths select diff on Windows too", "diff", snapshot.mode());
+        check.eq("the entire tracked candidate is represented", 350, snapshot.changedFiles());
+        check.contains("the last part of the diff is present", snapshot.text(), "page-349.txt");
+        check.that("the complete snapshot fits the configured budget",
+                snapshot.bytes() <= ApiContextBuilder.MAX_CONTEXT_BYTES);
+    }
+
+    private void committedTemplateChanges(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("template-commits"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        Files.writeString(root.resolve(".env.sample"), "DOCUMENTED=old-placeholder\n");
+        git(root, "add", "-f", "--", ".env.sample");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.delete(root.resolve(".env.sample"));
+        Path nested = Files.createDirectories(root.resolve("config"));
+        Files.writeString(nested.resolve(".ENV.DIST"), "DOCUMENTED=new-placeholder\n");
+        git(root, "add", "-A", "-f", "--", ".");
+        commit(root);
+
+        var diff = ApiContextBuilder.build(root, base, processes,
+                new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024));
+        check.contains("committed env template deletion is part of the immutable diff", diff.text(),
+                "-DOCUMENTED=old-placeholder");
+        check.contains("nested env templates are matched case-insensitively", diff.text(),
+                "+DOCUMENTED=new-placeholder");
+        check.eq("both committed template paths participate in the snapshot", 2, diff.changedFiles());
+        String full = ApiContextBuilder.build(root, base, processes);
+        Map<?, ?> document = (Map<?, ?>) Json.parse(full.substring(full.indexOf('{')));
+        check.that("only the added template has an immutable whole-file payload", ((List<?>) document.get("files"))
+                .stream().anyMatch(item -> item instanceof Map<?, ?> file
+                        && "config/.ENV.DIST".equals(file.get("path"))
+                        && "DOCUMENTED=new-placeholder\n".equals(file.get("content"))));
+        Files.writeString(nested.resolve(".ENV.DIST"), "LOCAL=unsaved-placeholder\n");
+        check.rejects("diff-only also refuses modified templates", "env template to be committed",
+                () -> ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 65_536, 262_144)));
+    }
+
+    private void renderedBudget(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("escaped-context"));
+        git(root, "init", "-q");
+        Files.writeString(root.resolve("README.md"), "# documentation\n");
+        git(root, "add", "--", "README.md");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.writeString(root.resolve("quoted.txt"), "\"\\\n".repeat(1024));
+        var full = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("full", 64, 8192, 8192));
+        check.eq("the serialized byte count includes escapes and the full instructions",
+                full.text().getBytes(StandardCharsets.UTF_8).length, full.bytes());
+        check.rejects("escaping cannot push the streamed snapshot past its byte limit", "complete snapshot exceeds",
+                () -> ApiContextBuilder.build(root, base, processes,
+                        new ApiContextSettings("full", 64, 8192, full.bytes() - 1)));
     }
 
     private void symlinks(Check check, Path scratch, Path root, String base) throws Exception {
@@ -141,6 +248,88 @@ public final class ApiContextTest implements Suite {
         } finally {
             Files.deleteIfExists(link);
         }
+    }
+
+    /**
+     * The 2026-11-18 case: a pull request that edits one line of a 66 KiB README could not be
+     * read by any API reviewer, although its diff was a fraction of the budget.
+     */
+    private void settingsModes(Check check, Path scratch) throws Exception {
+        Path root = Files.createDirectories(scratch.resolve("modes"));
+        git(root, "init", "-q");
+        git(root, "config", "core.autocrlf", "false");
+        StringBuilder readme = new StringBuilder("# Title\n");
+        for (int i = 0; i < 1400; i++) readme.append("Line ").append(i).append(" of a long README that nobody touched.\n");
+        readme.append("UNCHANGED-TAIL-MARKER\n");
+        Files.writeString(root.resolve("README.md"), readme.toString());
+        Files.writeString(root.resolve("small.java"), "class Small {}\n");
+        git(root, "add", "--", ".");
+        commit(root);
+        String base = git(root, "rev-parse", "HEAD").strip();
+        Files.writeString(root.resolve("README.md"), readme.toString().replace("# Title", "# New title"));
+        Files.writeString(root.resolve("small.java"), "class Small { int changed; }\n");
+        int readmeBytes = (int) Files.size(root.resolve("README.md"));
+        check.that("fixture README is over the default per-file limit", readmeBytes > ApiContextBuilder.MAX_FILE_BYTES);
+
+        var full = new ApiContextSettings("full", 64, 64 * 1024, 256 * 1024);
+        try {
+            ApiContextBuilder.build(root, base, processes, full);
+            check.that("full mode refuses an oversized file", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the file", refused.getMessage(), "README.md (" + readmeBytes + " bytes)");
+            check.contains("the refusal names the limit and its key", refused.getMessage(), "65536 bytes (api_context.max_file_bytes)");
+            check.contains("the refusal says how to get past it", refused.getMessage(), "api_context.mode to auto or diff");
+        }
+
+        var auto = ApiContextBuilder.build(root, base, processes, ApiContextSettings.DEFAULT);
+        check.eq("auto falls back to the diff", "diff", auto.mode());
+        check.eq("auto records what was asked for", "auto", auto.requestedMode());
+        check.contains("the fallback names the file that did not fit", String.join(";", auto.fallback()), "README.md");
+        check.contains("the model is told it has the diff only", auto.text(), "DIFF-ONLY SNAPSHOT");
+        check.contains("the change itself is sent", auto.text(), "+# New title");
+        check.contains("the other change is sent too", auto.text(), "int changed");
+        check.that("whole files are not sent", !auto.text().contains("UNCHANGED-TAIL-MARKER"));
+        check.contains("the evidence carries the fallback", String.valueOf(auto.evidence(ApiContextSettings.DEFAULT)), "fallback_reasons");
+
+        var diffOnly = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 64 * 1024, 256 * 1024));
+        check.eq("diff mode sends the diff", "diff", diffOnly.mode());
+        check.eq("diff mode chosen on purpose has no fallback reason", List.of(), diffOnly.fallback());
+        check.that("diff mode sends no whole file", !diffOnly.text().contains("UNCHANGED-TAIL-MARKER"));
+
+        var raised = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 64, 128 * 1024, 512 * 1024));
+        check.eq("raised limits keep whole files", "full", raised.mode());
+        check.contains("whole files are then sent", raised.text(), "UNCHANGED-TAIL-MARKER");
+
+        List<Path> many = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            Path file = root.resolve("many-" + i + ".java");
+            Files.writeString(file, "class Many" + i + " {}\n");
+            many.add(file);
+        }
+        var counted = ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 4, 128 * 1024, 512 * 1024));
+        check.eq("too many files falls back too", "diff", counted.mode());
+        check.contains("and says why", String.join(";", counted.fallback()), "4 changed-file limit (api_context.max_files)");
+        check.contains("untracked files keep their text, having no diff", counted.text(), "class Many3");
+        for (Path file : many) Files.delete(file);
+
+        Path untracked = root.resolve("generated.java");
+        Files.writeString(untracked, "a".repeat(2048));
+        try {
+            ApiContextBuilder.build(root, base, processes, new ApiContextSettings("diff", 64, 1024, 512 * 1024));
+            check.that("an untracked file over the limit is refused in diff mode", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the untracked file", refused.getMessage(), "untracked generated.java is 2048 bytes");
+        }
+        Files.delete(untracked);
+
+        try {
+            ApiContextBuilder.build(root, base, processes, new ApiContextSettings("auto", 64, 64 * 1024, 1024));
+            check.that("a diff over the total limit is refused, not cut", false);
+        } catch (IOException refused) {
+            check.contains("the refusal names the total limit", refused.getMessage(), "1024 bytes (api_context.max_bytes)");
+        }
+        check.rejects("an unknown mode is refused", "api_context.mode",
+                () -> new ApiContextSettings("everything", 64, 1, 1));
     }
 
     private void truncatedDiff(Check check, Path scratch) throws Exception {

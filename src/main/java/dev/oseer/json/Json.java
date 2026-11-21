@@ -1,5 +1,8 @@
 package dev.oseer.json;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -235,24 +238,35 @@ public final class Json {
     // ---------------------------------------------------------------- writing
 
     public static String write(Object value) {
-        StringBuilder builder = new StringBuilder();
-        writeValue(builder, value, -1, 0);
-        return builder.toString();
+        return encode(value, -1);
     }
 
     /** Pretty-print with tab indentation, matching the artifacts already on disk. */
     public static String writePretty(Object value) {
+        return encode(value, 0);
+    }
+
+    /** Write pretty JSON to a caller-owned stream without buffering the whole document. */
+    public static void writePretty(Object value, Writer out) throws IOException {
+        writeValue(out, value, 0, 0);
+    }
+
+    private static String encode(Object value, int indent) {
         StringBuilder builder = new StringBuilder();
-        writeValue(builder, value, 0, 0);
+        try {
+            writeValue(builder, value, indent, 0);
+        } catch (IOException impossible) {
+            throw new UncheckedIOException(impossible);
+        }
         return builder.toString();
     }
 
     @SuppressWarnings("unchecked")
-    private static void writeValue(StringBuilder out, Object value, int indent, int depth) {
+    private static void writeValue(Appendable out, Object value, int indent, int depth) throws IOException {
         if (value == null) { out.append("null"); return; }
         if (value instanceof String s) { writeString(out, s); return; }
         if (value instanceof Boolean || value instanceof Long || value instanceof Integer) {
-            out.append(value); return;
+            out.append(value.toString()); return;
         }
         if (value instanceof Double d) {
             if (d.isNaN() || d.isInfinite()) throw new JsonException("cannot write " + d + " as JSON");
@@ -260,7 +274,7 @@ public final class Json {
                 long asLong = d.longValue();
                 out.append(asLong == 0 && 1 / d < 0 ? "-0.0" : String.valueOf(d));
             } else {
-                out.append(d);
+                out.append(d.toString());
             }
             return;
         }
@@ -298,13 +312,13 @@ public final class Json {
         throw new JsonException("cannot write " + value.getClass().getName() + " as JSON");
     }
 
-    private static void newline(StringBuilder out, int indent, int depth) {
+    private static void newline(Appendable out, int indent, int depth) throws IOException {
         if (indent < 0) return;
         out.append('\n');
         out.append("\t".repeat(depth));
     }
 
-    private static void writeString(StringBuilder out, String value) {
+    private static void writeString(Appendable out, String value) throws IOException {
         out.append('"');
         for (int index = 0; index < value.length(); index++) {
             char c = value.charAt(index);

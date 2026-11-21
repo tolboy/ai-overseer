@@ -7,7 +7,9 @@ import dev.oseer.config.UserConfig;
 import dev.oseer.config.UserSetup;
 import dev.oseer.gate.VisualQaRunner;
 import dev.oseer.json.Json;
+import dev.oseer.ledger.Findings;
 import dev.oseer.process.ProcessRunner;
+import dev.oseer.role.RoleRunner;
 import dev.oseer.run.TaskLoop;
 import dev.oseer.run.Workspace;
 import dev.oseer.testing.Check;
@@ -40,6 +42,10 @@ public final class TaskLoopTest implements Suite {
             new UserSetup().run(home);
             readinessStopsBeforeWork(check, sandbox, home);
             writerPinFollowsAFixAndAnAdvance(check, sandbox, home);
+            reviewOnlyReadsAnExistingBranch(check, sandbox, home);
+            reviewOnlyKeepsFindingsSeparate(check, sandbox, home);
+            recordedAcceptanceChecks(check, sandbox, home);
+            unverifiedCitationDoesNotBlock(check, sandbox, home);
 
             // Clean run: implement, gates pass, review passes, stop for a human.
             Path clean = newProject(sandbox, "clean");
@@ -2108,7 +2114,7 @@ public final class TaskLoopTest implements Suite {
         writeVisualStub(home, sandbox, "visual-geo", "loop-eyes", "eyesvendor", "eyes");
         Files.writeString(home.resolve("policy.yaml"), visualGeoPolicy(true, true));
         TaskLoop.Outcome looked = new TaskLoop(new ProcessRunner(),
-                (loaded, runId) -> stubVisual(true, wide)).run(
+                (loaded, runId) -> stubHarness(loaded, runId, wide)).run(
                         new ConfigLoader().load(routed, "hello"), UserConfig.load(home), "geo1", false);
         check.that("a geo 403 on visual_qa fails over and the run finishes", looked.ok());
         check.eq("the refused profile ran once", 1,
@@ -2155,7 +2161,7 @@ public final class TaskLoopTest implements Suite {
         writeVisualStub(home, sandbox, "visual-geo-stop", "loop-eyes", "eyesvendor", "eyes");
         Files.writeString(home.resolve("policy.yaml"), visualGeoPolicy(false, false));
         TaskLoop.Outcome halted = new TaskLoop(new ProcessRunner(),
-                (loaded, runId) -> stubVisual(true, wide)).run(
+                (loaded, runId) -> stubHarness(loaded, runId, wide)).run(
                         new ConfigLoader().load(stopped, "hello"), UserConfig.load(home), "geo2", false);
         check.that("the default still stops", !halted.ok());
         check.eq("on vendor_unavailable", "vendor_unavailable", halted.reason());
@@ -2706,7 +2712,7 @@ public final class TaskLoopTest implements Suite {
         Path unwatched = newProject(sandbox, "visual-role-off", "medium", 20, true);
         writeProfiles(home, sandbox, "visual-role-off", 1, 1);
         TaskLoop.Outcome without = new TaskLoop(new ProcessRunner(),
-                (loaded, runId) -> stubVisual(true, wide, narrow)).run(
+                (loaded, runId) -> stubHarness(loaded, runId, wide, narrow)).run(
                         new ConfigLoader().load(unwatched, "hello"), UserConfig.load(home), "v4", false);
         check.that("a green harness with no visual role configured finishes", without.ok());
         check.that("and nothing was dispatched to look at it",
@@ -2724,7 +2730,7 @@ public final class TaskLoopTest implements Suite {
         writeEyesProfile(home, sandbox, "visual-role-on", 2);
         policyWithEyes(home);
         TaskLoop.Outcome watchedRun = new TaskLoop(new ProcessRunner(),
-                (loaded, runId) -> stubVisual(true, wide, narrow)).run(
+                (loaded, runId) -> stubHarness(loaded, runId, wide, narrow)).run(
                         new ConfigLoader().load(watched, "hello"), UserConfig.load(home), "v5", false);
         check.that("a visual finding that gets fixed still ends green", watchedRun.ok());
         Map<String, Object> eyes = steps(watchedRun).stream()
@@ -2750,7 +2756,7 @@ public final class TaskLoopTest implements Suite {
         writeEyesProfile(home, sandbox, "visual-role-stuck", 99);
         policyWithEyes(home);
         TaskLoop.Outcome unresolved = new TaskLoop(new ProcessRunner(),
-                (loaded, runId) -> stubVisual(true, wide, narrow)).run(
+                (loaded, runId) -> stubHarness(loaded, runId, wide, narrow)).run(
                         new ConfigLoader().load(stubborn, "hello"), UserConfig.load(home), "v6", false);
         check.that("a visual finding that survives the budget stops the run", !unresolved.ok());
         // The eyes object to the same screenshot twice and the stand-in implementer rewrites
@@ -3059,6 +3065,19 @@ public final class TaskLoopTest implements Suite {
         return stubVisual(ok, (Path[]) null);
     }
 
+    private static VisualQaRunner.Outcome stubHarness(ConfigLoader.Loaded loaded, String runId,
+                                                       Path... sources) throws IOException {
+        Path run = loaded.root().resolve(".oseer/runs").resolve(runId);
+        Path directory = Files.createDirectories(run.resolve("screenshots"));
+        Path[] screenshots = new Path[sources.length];
+        for (int i = 0; i < sources.length; i++) {
+            screenshots[i] = Files.copy(sources[i], directory.resolve(sources[i].getFileName()),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        VisualQaRunner.Outcome outcome = stubVisual(true, screenshots);
+        return new VisualQaRunner.Outcome(true, outcome.code(), run.resolve("visual-qa.json"), outcome.data());
+    }
+
     /** A browser report in the shape the real adapter writes. */
     private static VisualQaRunner.Outcome stubVisual(boolean ok, Path... screenshots) {
         Map<String, Object> scenario = new java.util.LinkedHashMap<>();
@@ -3079,6 +3098,10 @@ public final class TaskLoopTest implements Suite {
         adapter.put("scenarios", List.of(scenario));
         Map<String, Object> data = new java.util.LinkedHashMap<>();
         data.put("adapter", adapter);
+        if (screenshots != null) {
+            data.put("image_evidence", java.util.Arrays.stream(screenshots)
+                    .map(shot -> Map.of("path", shot.toString())).toList());
+        }
         return new VisualQaRunner.Outcome(ok, ok ? "passed" : "visual_qa_failed", null, data);
     }
 
@@ -7244,6 +7267,291 @@ public final class TaskLoopTest implements Suite {
         Files.writeString(project.resolve("README.md"), "seed\n");
         seedRepository(project);
         return project;
+    }
+
+    /**
+     * `mode: review` over a branch somebody else wrote: nobody is dispatched to write, the
+     * branch's declared author is the vendor every reader must differ from, and a reader that
+     * objects does not stop the readers after it. Measured 2026-11-18: the loop could not read
+     * an existing pull request at all, because `implement` always ran and the planned
+     * implementer's vendor disqualified a reader nobody was going to have write.
+     */
+    private void reviewOnlyReadsAnExistingBranch(Check check, Path sandbox, Path home) throws Exception {
+        Path branch = newProject(sandbox, "review-only", "low");
+        Path implCounter = sandbox.resolve("review-only-impl.count");
+        Files.deleteIfExists(implCounter);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed", "impl", implCounter, 1);
+        // The implementer shares a vendor with the second reader: in a writing run that reader
+        // would be refused. In a review nobody writes, so it reads.
+        writeProfile(home, "ro-review-a", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-a.count"), 99);
+        writeProfile(home, "ro-review-b", "reviewer", "implvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-b.count"), 1);
+        writeProfile(home, "ro-review-author", "reviewer", "authorvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings", "review",
+                sandbox.resolve("review-only-author.count"), 1);
+        Files.writeString(home.resolve("policy.yaml"), """
+                version: 1
+                roles:
+                  implementer: { profiles: [loop-impl], strategy: first, require_independent_vendor: false }
+                  reviewer: { profiles: [ro-review-a, ro-review-b], strategy: rotate, require_independent_vendor: true }
+                review: { required_for_risk: [medium, high] }
+                workflow:
+                  stages:
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: gates, run: machine_gates, on_fail: fix }
+                    - { stage: review, run: role, role: reviewer, when: [review_required], on_fail: stop, on_findings: fix }
+                    - { stage: review-second, run: role, role: reviewer, when: [review_required], on_fail: stop, on_findings: fix }
+                """);
+        // The branch under review already holds the change.
+        Files.writeString(branch.resolve("src/result.txt"), "written on the PR branch" + System.lineSeparator());
+        Path task = branch.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "")
+                + "mode: review\nprior_writers: [authorvendor]\n");
+
+        TaskLoop.Outcome preview = dryLoop(branch, home, "ro-dry", new Board());
+        check.that("a review-only preview resolves", preview.ok());
+        check.eq("an explicit low-risk review still requires readers", true,
+                preview.summaryReport().get("review_required"));
+        check.that("the writing stage is skipped as review_only",
+                ((List<?>) preview.summaryReport().get("inapplicable_stages")).contains(
+                        Map.of("stage", "implement", "reason", "review_only")));
+
+        TaskLoop.Outcome read = loop(branch, home, "ro1");
+        check.that("nothing was dispatched to write", !Files.exists(implCounter));
+        check.eq("both readers ran although the first objected", 2L, read.summaryReport().get("role_runs"));
+        check.eq("the run stops on the findings, for a person", "blocking_findings_remain", read.reason());
+        check.eq("no fix round was attempted", 0L, read.summaryReport().get("attempts_used"));
+        check.eq("the objecting reader is named", List.of("review"), read.summaryReport().get("objecting_stages"));
+        check.eq("the declared author is the writer set", List.of("authorvendor"),
+                read.summaryReport().get("writer_vendors"));
+        check.eq("so the readings are independent", "independent", read.summaryReport().get("review_assurance"));
+        Path secondPrompt = branch.resolve(".oseer/runs/ro1--review-second-0/prompts/reviewer.md");
+        check.that("the second reader's prompt was written", Files.isRegularFile(secondPrompt));
+        check.that("and it is blind to the first reader's findings",
+                Files.isRegularFile(secondPrompt)
+                        && !Files.readString(secondPrompt).contains("A previous stage has already read this candidate")
+                        && !Files.readString(secondPrompt).contains("Cumulative finding registry"));
+
+        // The launch check asks only about models the run can dispatch: no repair round runs,
+        // so the implementer (signed out, in the run that found this) is not checked.
+        List<String> checkedProfiles = new java.util.ArrayList<>();
+        TaskLoop checked = new TaskLoop(new ProcessRunner()).withReadiness((u, root, profiles, strict, progress) -> {
+            profiles.forEach(profile -> checkedProfiles.add(profile.name()));
+            return Map.of("ok", true, "code", "check_stub", "results", List.of());
+        });
+        checked.run(new ConfigLoader().load(branch, "hello"), UserConfig.load(home), "ro-checked", false);
+        check.that("the launch check covers the readers", checkedProfiles.contains("ro-review-a"));
+        check.that("the launch check leaves out the implementer nobody will dispatch",
+                !checkedProfiles.contains("loop-impl"));
+
+        // The author's own vendor still cannot read its branch.
+        Files.writeString(home.resolve("policy.yaml"), Files.readString(home.resolve("policy.yaml"))
+                .replace("[ro-review-a, ro-review-b]", "[ro-review-author]"));
+        TaskLoop.Outcome refused = dryLoop(branch, home, "ro-dry-author", new Board());
+        check.that("the author's vendor is refused as a reader of its own branch",
+                String.valueOf(refused.summaryReport()).contains("same_vendor_as_writer"));
+        TaskLoop.Outcome liveRefused = loop(branch, home, "ro-live-author");
+        check.eq("absence of an independent reader stops review before dispatch",
+                "independent_review_unavailable", liveRefused.reason());
+        check.eq("no role was dispatched", 0L, liveRefused.summaryReport().get("role_runs"));
+
+        Path policyFile = home.resolve("policy.yaml");
+        String workflowWithReaders = Files.readString(policyFile);
+        Files.writeString(policyFile, workflowWithReaders.replace("[ro-review-author]", "[ro-review-a]")
+                .replace("[review_required]", "[risk_high]"));
+        TaskLoop.Outcome skipped = loop(branch, home, "ro-live-skipped");
+        check.eq("review mode refuses a workflow with no applicable reader",
+                "independent_review_unavailable", skipped.reason());
+        check.eq("no machine gate or role ran for that workflow", List.of(), skipped.summaryReport().get("steps"));
+        Files.writeString(policyFile, workflowWithReaders);
+
+        // `oseer role reviewer <task> --use <profile>`: a reader off the roster, picked for one
+        // dispatch, still judged against the task's declared authors.
+        ConfigLoader.Loaded loaded = new ConfigLoader().load(branch, "hello");
+        var authors = new dev.oseer.role.RoleResolver.Writers(java.util.Set.of("authorvendor"),
+                java.util.Set.of(), true, false);
+        RoleRunner.Outcome offRoster = new RoleRunner(new ProcessRunner()).pinRoleForRun("reviewer", "ro-review-b")
+                .run(loaded, UserConfig.load(home), "reviewer", "ro-role-a", authors, null, List.of(), true,
+                        RoleRunner.UNSTAGED);
+        check.that("a pinned reader that is not on the roster is dispatched", offRoster.ok());
+        check.eq("and it is the one that was named", "ro-review-b", offRoster.profile());
+        RoleRunner.Outcome ownBranch = new RoleRunner(new ProcessRunner()).pinRoleForRun("reviewer", "ro-review-author")
+                .run(loaded, UserConfig.load(home), "reviewer", "ro-role-b", authors, null, List.of(), true,
+                        RoleRunner.UNSTAGED);
+        check.that("a pin cannot put the author's vendor in the reader's chair", !ownBranch.ok());
+        check.eq("and the refusal names the rule", "same_vendor_as_writer",
+                ownBranch.rejected().get("ro-review-author"));
+    }
+
+    /** Blind readers can use the same local ID for unrelated observations. */
+    private void reviewOnlyKeepsFindingsSeparate(Check check, Path sandbox, Path home) throws Exception {
+        Path branch = newProject(sandbox, "review-only-ids");
+        Files.writeString(branch.resolve("src/result.txt"), "candidate\n");
+        Path task = branch.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "")
+                + "mode: review\nprior_writers: [authorvendor]\n");
+        for (String name : List.of("review-a", "review-b", "review-c")) {
+            writeProfile(home, name, "reviewer", name, true, "reviewer",
+                    "role, task_id, status, verdict, summary, findings", "review",
+                    sandbox.resolve(name + ".count"), 1);
+        }
+        Files.writeString(home.resolve("policy.yaml"), """
+                version: 1
+                roles:
+                  reviewer: { profiles: [review-a, review-b, review-c], strategy: rotate, require_independent_vendor: true }
+                workflow:
+                  stages:
+                    - { stage: gates, run: machine_gates, on_fail: stop }
+                    - { stage: reader-one, run: role, role: reviewer, on_fail: stop, on_findings: stop }
+                    - { stage: reader-two, run: role, role: reviewer, on_fail: stop, on_findings: stop }
+                    - { stage: reader-three, run: role, role: reviewer, on_fail: stop }
+                """);
+        TaskLoop loop = new TaskLoop(new ProcessRunner()).withExecutors((profile, processes, git) -> request -> {
+            String message = "Observation from " + profile.name();
+            String category = "review-c".equals(profile.name()) ? "contract_gap" : "product_defect";
+            Map<String, Object> finding = Map.of("id", "F1", "category", category, "severity", "P1",
+                    "path", "src/result.txt", "message", message, "expected", "expected behavior",
+                    "actual", "unexpected behavior", "confidence", "confirmed");
+            return new dev.oseer.execution.RoleExecutor.Result(true, "ok", Duration.ofMillis(1), "",
+                    Map.of("role", "reviewer", "task_id", "hello", "status", "completed",
+                            "verdict", "fail", "summary", message, "findings", List.of(finding)), Map.of());
+        });
+        var loaded = new ConfigLoader().load(branch, "hello");
+        var user = UserConfig.load(home);
+        var first = loop.run(loaded, user, "ro-ids-first", false);
+        check.eq("independent uses of F1 reach the findings stop", "blocking_findings_remain", first.reason());
+        check.eq("all readers object even when on_findings is absent",
+                List.of("reader-one", "reader-two", "reader-three"), first.summaryReport().get("objecting_stages"));
+        check.eq("the report counts all the blockers", 3L, first.summaryReport().get("open_blocking_findings"));
+        List<Map<String, Object>> findings = Findings.openBlockers((List<?>) first.summaryReport().get("finding_history"));
+        check.eq("same- and different-category findings survive the merge",
+                List.of("Observation from review-a", "Observation from review-b", "Observation from review-c"),
+                findings.stream().map(row -> row.get("message")).toList());
+        check.that("the original IDs are still visible",
+                findings.stream().allMatch(row -> "F1".equals(row.get("reviewer_finding_id"))));
+        List<Object> ids = findings.stream().map(row -> row.get("id")).distinct().toList();
+        check.eq("merged findings have distinct stable IDs", 3, ids.size());
+
+        var continued = loop.run(loaded, user, "ro-ids-continued", false, Map.of(),
+                new TaskLoop.Continuation("ro-ids-first", null, true));
+        check.eq("continuing keeps the findings stop", "blocking_findings_remain", continued.reason());
+        List<Map<String, Object>> continuedFindings = Findings.openBlockers(
+                (List<?>) continued.summaryReport().get("finding_history"));
+        check.eq("restored rounds keep their IDs without collisions or duplicate records", ids,
+                continuedFindings.stream().map(row -> row.get("id")).toList());
+    }
+
+    /**
+     * A review whose local gate is only a file check, with the pull request's own tests and a
+     * green CI result recorded on the task. The "nothing compiles" contract gap is noise.
+     * The same words without that evidence still block.
+     */
+    @SuppressWarnings("unchecked")
+    private void recordedAcceptanceChecks(Check check, Path sandbox, Path home) throws Exception {
+        Path reviewed = newProject(sandbox, "recorded-acceptance");
+        Files.writeString(reviewed.resolve("src/result.txt"), "already on the branch\n");
+        Path task = reviewed.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                acceptance_evidence:
+                  commands:
+                    - "./test.sh"
+                  ci:
+                    source: "gh pr checks"
+                    summary:
+                      - "test    pass"
+                    checks:
+                      - name: test
+                        conclusion: success
+                """);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl", sandbox.resolve("recorded-acceptance-impl.count"), 1);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-nothing-runs", sandbox.resolve("recorded-acceptance-review.count"), 1);
+        policy(home, "loop-review", "loop-impl");
+        TaskLoop.Outcome passed = loop(reviewed, home, "ae1");
+        check.that("recorded acceptance lets the noise gap reach the gate", passed.ok());
+        check.eq("as ready for a person", "ready_for_human", passed.reason());
+        Map<String, Object> lowered = lastFinding(passed);
+        check.eq("the gap is recorded as P2", "P2", lowered.get("severity"));
+        check.eq("with the vendor severity beside it", "P1", lowered.get("severity_as_filed"));
+        check.eq("marked as recorded acceptance", "recorded", lowered.get("acceptance_evidence"));
+        check.eq("and nothing blocks", 0L,
+                ((Number) passed.summaryReport().get("blocking_findings")).longValue());
+        check.that("the summary carries the evidence the readers were shown",
+                passed.summaryReport().get("acceptance_evidence") instanceof Map<?, ?>);
+        String prompt = Files.readString(reviewed.resolve(
+                ".oseer/runs/ae1--reviewer-0/prompts/reviewer.md"));
+        check.contains("the prompt names the pull request's command", prompt, "./test.sh");
+        check.contains("and the recorded CI line", prompt, "test    pass");
+        Map<String, Object> artifact = readJson(reviewed.resolve(
+                ".oseer/runs/ae1--reviewer-0/artifacts/reviewer.json"));
+        check.eq("the vendor file is still the P1 they filed", "P1",
+                ((List<Map<String, Object>>) artifact.get("findings")).get(0).get("severity"));
+        Map<String, Object> report = new dev.oseer.ledger.RunReport().of(reviewed, "ae1");
+        check.that("the run report carries the same evidence",
+                report.get("acceptance_evidence") instanceof Map<?, ?>);
+        check.contains("and the text report says it was recorded",
+                dev.oseer.ledger.RunReport.render(report), "accepted ");
+
+        Path bare = newProject(sandbox, "recorded-acceptance-bare");
+        Files.writeString(bare.resolve("src/result.txt"), "already on the branch\n");
+        Path bareTask = bare.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(bareTask, Files.readString(bareTask).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                """);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-nothing-runs", sandbox.resolve("recorded-acceptance-bare.count"), 1);
+        TaskLoop.Outcome stopped = loop(bare, home, "ae2");
+        check.that("the same words without evidence still stop the run", !stopped.ok());
+        check.eq("for a person", "blocking_findings_remain", stopped.reason());
+        check.eq("at the vendor's P1", "P1", lastFinding(stopped).get("severity"));
+        check.that("and the summary has no acceptance evidence",
+                stopped.summaryReport().get("acceptance_evidence") == null);
+    }
+
+    /** A product P1 whose file is not in the tree is recorded as unverified and does not block. */
+    @SuppressWarnings("unchecked")
+    private void unverifiedCitationDoesNotBlock(Check check, Path sandbox, Path home) throws Exception {
+        Path reviewed = newProject(sandbox, "false-cite");
+        Files.writeString(reviewed.resolve("src/result.txt"), "already on the branch\n");
+        Path task = reviewed.resolve(".oseer/tasks/hello.yaml");
+        Files.writeString(task, Files.readString(task).replace("max_fix_attempts: 2\n", "") + """
+                mode: review
+                prior_writers: [otherwriter]
+                """);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl", sandbox.resolve("false-cite-impl.count"), 1);
+        writeProfile(home, "loop-review", "reviewer", "reviewvendor", true,
+                "reviewer", "role, task_id, status, verdict, summary, findings",
+                "review-false-cite", sandbox.resolve("false-cite-review.count"), 1);
+        policy(home, "loop-review", "loop-impl");
+        TaskLoop.Outcome passed = loop(reviewed, home, "cite1");
+        check.that("an unverifiable product finding still reaches the gate", passed.ok());
+        check.eq("as ready for a person", "ready_for_human", passed.reason());
+        Map<String, Object> lowered = lastFinding(passed);
+        check.eq("recorded as P2", "P2", lowered.get("severity"));
+        check.eq("flagged unverified", true, lowered.get("unverified"));
+        check.eq("because the file is not in the tree", "file_missing", lowered.get("verification_reason"));
+        check.eq("and nothing blocks", 0L,
+                ((Number) passed.summaryReport().get("blocking_findings")).longValue());
+        List<Map<String, Object>> unverified =
+                (List<Map<String, Object>>) passed.summaryReport().get("unverified_findings");
+        check.eq("the summary lists its original ID", "made-up-line", unverified.get(0).get("reviewer_finding_id"));
+        String rendered = dev.oseer.ledger.RunReport.render(
+                new dev.oseer.ledger.RunReport().of(reviewed, "cite1"));
+        check.contains("the run report names the unverified finding", rendered, "unverified 1");
+        check.contains("and the reason", rendered, "file_missing");
     }
 
     /** Stand-ins whose success attempt is set per scenario, so fix rounds are forced, not hoped for. */

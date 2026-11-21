@@ -11,6 +11,7 @@ import dev.oseer.execution.RoleExecutor;
 import dev.oseer.execution.ExecutionActivity;
 import dev.oseer.git.GitRepository;
 import dev.oseer.json.Json;
+import dev.oseer.ledger.CitationCheck;
 import dev.oseer.ledger.EvidenceLedger;
 import dev.oseer.ledger.Findings;
 import dev.oseer.ledger.HomeCorpus;
@@ -356,6 +357,20 @@ public final class RoleRunner {
     }
 
     /**
+     * `oseer role <role> <task> --use <profile>`: a person picks the reader for one
+     * standalone dispatch. Judged like {@link #pinForRun}: every roster filter, including
+     * independence from the writers, still applies, and the profile need not be on the
+     * role's roster list — the point is to read with someone the rotation would not pick.
+     */
+    public RoleRunner pinRoleForRun(String role, String profile) {
+        roleAssignments.put(role, profile);
+        operatorPinnedRoles.add(role);
+        return this;
+    }
+
+    private final Set<String> operatorPinnedRoles = new LinkedHashSet<>();
+
+    /**
      * Pin {@code profile} for every later dispatch of the stage called {@code stage}.
      *
      * The escalation ladder's pin, and it takes the stage over: a rung reached after a
@@ -501,7 +516,17 @@ public final class RoleRunner {
         if (stage != null && stageAssignments.containsKey(stage)) {
             return operatorPinnedStages.contains(stage);
         }
-        return false;
+        return stage == null && operatorPinnedRoles.contains(role);
+    }
+
+    /**
+     * A pin the operator typed for this run. A failover replacement is not one of these:
+     * {@link #pinnedByOperator} treats a replacement as pinned so rotation cannot wander
+     * off it, and that must not be read as "the operator named this profile".
+     */
+    private boolean namedByOperator(String stage, String role) {
+        if (stage != null && operatorPinnedStages.contains(stage)) return true;
+        return stage == null && operatorPinnedRoles.contains(role);
     }
 
     public RoleRunner(ProcessRunner processes) { this(processes, ALWAYS, null, null); }
@@ -901,9 +926,23 @@ public final class RoleRunner {
             String prompt = PromptRenderer.render(template, values, templateFile.toString());
             boolean backfilled = backfillNeeded(role, task, template);
             if (backfilled) prompt = prompt + browserScenarioSection(values.get("visual_scenarios"));
+            // setup never overwrites ~/.oseer/prompts, so a reviewer template written before
+            // acceptance evidence existed would otherwise hide the pull request's CI from the
+            // reader and every one of them would file the same contract_gap.
+            if (acceptanceBackfillNeeded(role, template)) {
+                prompt = prompt + acceptanceEvidenceSection(values.get("acceptance_evidence"));
+            }
+            // Same reason as the acceptance block: setup does not rewrite an old reviewer
+            // prompt, and a reader that never hears about the citation check keeps inventing
+            // lines. The check itself does not depend on the paragraph.
+            if (citationBackfillNeeded(role, template)) prompt = prompt + citationSection();
+            Map<String, Object> apiContextEvidence = null;
             if ("api".equals(profile.runner())) {
                 try {
-                    prompt += "\n\n" + dev.oseer.execution.ApiContextBuilder.build(root, mergeBase, processes);
+                    var snapshot = dev.oseer.execution.ApiContextBuilder.build(root, mergeBase, processes,
+                            profile.apiContext());
+                    prompt += "\n\n" + snapshot.text();
+                    apiContextEvidence = snapshot.evidence(profile.apiContext());
                 } catch (java.io.IOException unavailableContext) {
                     Map<String, Object> refusal = new LinkedHashMap<>();
                     refusal.put("ok", false);
@@ -913,6 +952,7 @@ public final class RoleRunner {
                     refusal.put("vendor", profile.vendor());
                     refusal.put("vendor_turn_started", false);
                     refusal.put("message", unavailableContext.getMessage());
+                    refusal.put("api_context_limits", profile.apiContext().toMap());
                     Path path = ledger.writeReport("role-" + role + "-context-refused", refusal);
                     ledger.append("role_api_context_unavailable", refusal);
                     return new Outcome(false, "role_api_context_unavailable", role, profile.name(),
@@ -979,6 +1019,7 @@ public final class RoleRunner {
             report.put("prompt_path", root.relativize(promptFile).toString().replace('\\', '/'));
             report.put("prompt_sha256", GitRepository.sha256(promptFile));
             report.put("diff_base_commit", mergeBase);
+            if (apiContextEvidence != null) report.put("api_context", apiContextEvidence);
             report.put("wall_clock_minutes", profile.wallClockMinutes());
             if ("local".equals(profile.runner()) || "api".equals(profile.runner())) {
                 report.put("dispatch_preview", dispatchPreview(profile));
@@ -1134,8 +1175,16 @@ public final class RoleRunner {
             }
 
             if (result.artifact() != null) {
-                List<Findings.Finding> found = Findings.acknowledging(
-                        Findings.of(result.artifact()), task.manualVerification());
+                List<Findings.Finding> found = Findings.adjusted(
+                        Findings.of(result.artifact()), task.manualVerification(),
+                        task.acceptanceEvidence().recordsRealAcceptance());
+                if (!"visual_qa".equals(role)) {
+                    found = CitationCheck.verify(found, root);
+                } else if (attachments != null && !attachments.isEmpty()) {
+                    found = CitationCheck.verifyVisual(found, root, attachments);
+                }
+                // A self-acquiring visual role's screenshots are checked after it returns
+                // to the task loop. Only that checked list can verify its finding citations.
                 if (!found.isEmpty()) {
                     report.put("findings", found.stream().map(Findings.Finding::toMap).toList());
                 }
@@ -1209,9 +1258,11 @@ public final class RoleRunner {
                 quotaEvent.put("role_invocation_id", roleInvocationId);
                 quotaEvent.put("quota", result.evidence().getOrDefault("quota", Map.of()));
                 ledger.append("role_quota_exhausted", quotaEvent);
-                Profile candidate = apiFallbackActive
-                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch).profile()
-                        : failoverCandidate(role, user, writers, rotation);
+                Successor quotaNext = apiFallbackActive
+                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch, profile)
+                        : failoverCandidate(role, user, writers, rotation, profile);
+                noteBlocked(ledger, report, quotaNext.blocked());
+                Profile candidate = quotaNext.profile();
                 if (candidate != null) {
                     String mode = user.policy().failoverMode();
                     boolean preAuthorized = candidate.name().equals(authorizedFailover.get(
@@ -1248,6 +1299,10 @@ public final class RoleRunner {
                         ledger.append("role_failover", failover);
                         roleFailovers.add(failover);
                         replacements.put(stageName == null ? role : stageName, candidate.name());
+                        String notice = profile.name() + " -> " + candidate.name();
+                        report.put("failover_notice", notice);
+                        progress.line("      failover: " + notice + " (role_quota_exhausted, "
+                                + (preAuthorized ? "confirmed" : "policy_auto") + ")");
                         continue;
                     }
                     if ("confirm".equals(mode)) {
@@ -1295,10 +1350,13 @@ public final class RoleRunner {
                 report.put("exhausted_profiles", List.copyOf(exhausted));
                 report.put("resolution", candidate != null
                         ? "another profile could fill this role, but failover.on_quota_exhausted is 'stop'"
+                        : !quotaNext.blocked().isEmpty()
+                        ? "another profile could fill this role, but failover refused it ("
+                          + quotaNext.blocked().get(0).get("rule") + ")"
                         : "every profile able to fill this role reported a spent subscription; "
                           + "add a profile from another vendor, or wait for the quota window "
                           + "named in the vendor message and re-run");
-            } else if (!result.ok() && ((transientApiFailure(result.code())
+            } else if (!result.ok() && ((apiSideFailure(result.code(), profile)
                         && !Thread.currentThread().isInterrupted()
                         && !"cancelled".equals(result.evidence().get("api_retry_stopped"))
                         && !"cancel".equals(result.evidence().get("failure_phase")))
@@ -1317,10 +1375,11 @@ public final class RoleRunner {
                 int maxSwitches = user.policy().maxVendorFailovers();
                 String mode = user.policy().vendorFailureModeFor(role);
                 boolean bounded = vendorFailovers >= maxSwitches;
-                apiFallbackActive |= transientApiFailure(result.code());
+                apiFallbackActive |= apiSideFailure(result.code(), profile);
                 Successor next = apiFallbackActive
-                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch)
-                        : seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch);
+                        ? seekApiSuccessor(role, user, writers, vendorFailedThisDispatch, profile)
+                        : seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch, profile);
+                noteBlocked(ledger, report, next.blocked());
                 Profile candidate = next.profile();
                 boolean preAuthorized = candidate != null && (candidate.name().equals(
                         authorizedFailover.get(stageKey))
@@ -1328,10 +1387,30 @@ public final class RoleRunner {
                 String cause = vendorFailureCause(result.code());
                 String setting = spec.vendorFailureMode() != null
                         ? "roles." + role + ".on_vendor_failure" : "failover.on_vendor_failure";
+                // A --use pin is the operator naming this profile. Vendor-failure auto does
+                // not leave it unless failover.on_pinned says so. A continuation that already
+                // recorded the switch is the operator's answer and still runs.
+                String pinMode = user.policy().onPinned();
+                boolean pinHolds = candidate != null && !preAuthorized && namedByOperator(stageName, role)
+                        && !"auto".equals(pinMode);
                 if (apiFallbackActive) {
                     report.put("api_fallback_profiles", spec.apiFallbackProfiles());
                 }
-                if (candidate != null && !bounded && ("auto".equals(mode) || preAuthorized)) {
+                if (pinHolds && "stop".equals(pinMode)) {
+                    Map<String, Object> pinBlock = blockEvent("pinned", profile, candidate,
+                            "stage " + stageKey + " is pinned with --use; failover.on_pinned is stop, "
+                                    + "so " + profile.name() + " was not switched to " + candidate.name()
+                                    + ". Set failover.on_pinned: confirm to ask, or auto to switch unattended");
+                    List<Map<String, Object>> held = new ArrayList<>(next.blocked());
+                    held.add(pinBlock);
+                    ledger.append("role_failover_blocked", pinBlock);
+                    progress.line("      failover refused: " + profile.name() + " -> " + candidate.name()
+                            + " (pinned)");
+                    report.put("failover_blocked", List.copyOf(held));
+                    report.put("resolution", "stage " + stageKey + " is pinned with --use; "
+                            + profile.name() + " was not switched to " + candidate.name()
+                            + " (failover.on_pinned is stop)");
+                } else if (candidate != null && !bounded && ("auto".equals(mode) || preAuthorized) && !pinHolds) {
                     if (!gate.hasRoom()) {
                         report.put("failover_declined_by_budget", candidate.name());
                         report.put("resolution", "another profile could fill this role, but "
@@ -1353,11 +1432,13 @@ public final class RoleRunner {
                     roleFailovers.add(failover);
                     replacements.put(stageKey, candidate.name());
                     vendorFailovers++;
-                    progress.line("      " + profile.name() + " produced no artifact ("
-                            + cause + "); switching to " + candidate.name());
+                    String notice = profile.name() + " -> " + candidate.name();
+                    report.put("failover_notice", notice);
+                    progress.line("      failover: " + notice + " (" + cause + ", "
+                            + (preAuthorized ? "confirmed" : "policy_auto") + ")");
                     continue;
-                }
-                if (candidate != null && !bounded && "confirm".equals(mode)) {
+                } else if (candidate != null && !bounded
+                        && ("confirm".equals(mode) || (pinHolds && "confirm".equals(pinMode)))) {
                     Map<String, Object> pending = failoverEvent(role, profile, candidate, result,
                             "pending_human_confirmation", cause, setting);
                     if (apiFallbackActive) pending.put("api_fallback_profiles", spec.apiFallbackProfiles());
@@ -1387,17 +1468,21 @@ public final class RoleRunner {
                     report.put("vendor_attempts", attempts);
                     report.put("attempts_cost_usd", spent);
                     rememberFailovers(report, roleFailovers);
-                    report.put("resolution", "policy failover.on_vendor_failure is 'confirm'. "
-                            + "Record the choice with `oseer approve <run-id> --decision switch`, "
-                            + "then re-run with `--continue <run-id>`; or set "
-                            + "failover.on_vendor_failure: auto to let Overseer switch unattended.");
+                    report.put("resolution", pinHolds
+                            ? "stage " + stageKey + " is pinned with --use and failover.on_pinned is "
+                                    + "'confirm'. Record the choice with `oseer approve <run-id> "
+                                    + "--decision switch`, then re-run with `--continue <run-id>`; "
+                                    + "or set failover.on_pinned: auto to switch unattended."
+                            : "policy failover.on_vendor_failure is 'confirm'. "
+                                    + "Record the choice with `oseer approve <run-id> --decision switch`, "
+                                    + "then re-run with `--continue <run-id>`; or set "
+                                    + "failover.on_vendor_failure: auto to let Overseer switch unattended.");
                     Path pendingPath = ledger.writeReport("role-" + reportStem, report);
                     ledger.append("role_run", report);
                     return new Outcome(false, "role_failover_requires_confirmation", role,
                             profile.name(), profile.vendor(), resolution.rejected(),
                             pendingPath, report);
-                }
-                if (candidate != null && bounded && !"stop".equals(mode)) {
+                } else if (candidate != null && bounded && !"stop".equals(mode) && !pinHolds) {
                     report.put("failover_bound", candidate.name());
                     report.put("resolution", "another profile could fill this role, but "
                             + "failover.max_per_stage (" + maxSwitches + ") already allowed "
@@ -1406,11 +1491,14 @@ public final class RoleRunner {
                     report.put("failover_declined_by_policy", candidate.name());
                     report.put("resolution", "another profile could fill this role, but "
                             + setting + " is 'stop'");
+                } else if (!next.blocked().isEmpty() && candidate == null) {
+                    report.put("resolution", "automatic failover refused: "
+                            + next.blocked().get(0).get("rule"));
                 } else if (!next.rejected().isEmpty()) {
                     report.put("failover_rejected", next.rejected());
                     report.put("resolution", "no other profile can fill this role: "
                             + next.rejected());
-                } else {
+                } else if (candidate == null) {
                     report.put("resolution", apiFallbackActive
                             ? "no eligible profile remains in roles." + role + ".api_fallback_profiles"
                             : "no other profile can fill this role");
@@ -1471,9 +1559,9 @@ public final class RoleRunner {
      * Profiles that already returned no artifact in this dispatch are excluded. Naming one
      * of them would record a switch to a profile the next iteration cannot run.
      */
-    private Profile failoverCandidate(String role, UserConfig user, RoleResolver.Writers writers,
-                                      long rotation) {
-        return seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch).profile();
+    private Successor failoverCandidate(String role, UserConfig user, RoleResolver.Writers writers,
+                                        long rotation, Profile from) {
+        return seekSuccessor(role, user, writers, rotation, vendorFailedThisDispatch, from);
     }
 
     /**
@@ -1481,32 +1569,53 @@ public final class RoleRunner {
      *
      * {@code vendorFailed} names profiles that already returned no artifact in this
      * dispatch. They are skipped with their own reason, not labelled as a spent plan.
+     * A subscription CLI is not offered a paid API of the same model family unless the
+     * policy says {@code allow}. That filter runs after the resolver's own verdict so the
+     * refusal is not recorded as a missing executable.
      */
     private Successor seekSuccessor(String role, UserConfig user, RoleResolver.Writers writers,
-                                    long rotation, Set<String> vendorFailed) {
+                                    long rotation, Set<String> vendorFailed, Profile from) {
+        List<Map<String, Object>> blocked = new ArrayList<>();
         try {
-            Profile candidate = new RoleResolver().resolve(role, user.policy(), user.profiles(),
-                    writers, rotation, profile -> {
+            List<RoleResolver.Candidate> verdicts = new RoleResolver().candidates(role, user.policy(),
+                    user.profiles(), writers, profile -> {
                         if (overlay.problem(stageName, profile, user.profiles()) != null) return false;
                         Profile effective = overlay.adapt(stageName, profile, user.profiles());
                         return !exhausted.contains(effective.name())
                                 && !unavailable.contains(effective.name())
                                 && !vendorFailed.contains(effective.name())
                                 && available(effective);
-                    }, exhausted, vendorFailed, unavailable).selected();
-            return new Successor(overlay.adapt(stageName, candidate, user.profiles()), Map.of());
-        } catch (RoleResolver.Unresolvable none) {
-            return new Successor(null, none.rejected());
+                    }, exhausted, vendorFailed, unavailable);
+            Policy.RoleSpec spec = user.policy().roles().get(role);
+            List<Profile> eligible = new ArrayList<>();
+            Map<String, String> rejected = new LinkedHashMap<>();
+            for (RoleResolver.Candidate verdict : verdicts) {
+                if (!verdict.eligible()) {
+                    rejected.put(verdict.profile(), verdict.rejected());
+                    continue;
+                }
+                Profile effective = overlay.adapt(stageName, user.profiles().get(verdict.profile()),
+                        user.profiles());
+                if (!admitsFamily(user.policy(), from, effective, blocked)) continue;
+                eligible.add(effective);
+            }
+            if (eligible.isEmpty() || spec == null) return new Successor(null, rejected, blocked);
+            List<Profile> starters = eligible.stream().filter(item -> !spec.standby(item.name())).toList();
+            if (!starters.isEmpty()) eligible = starters;
+            int index = "first".equals(spec.strategy()) ? 0 : Math.floorMod(rotation, eligible.size());
+            return new Successor(eligible.get(index), rejected, blocked);
         } catch (RuntimeException none) {
-            return new Successor(null, Map.of());
+            return new Successor(null, Map.of(), blocked);
         }
     }
 
-    private record Successor(Profile profile, Map<String, String> rejected) {}
+    private record Successor(Profile profile, Map<String, String> rejected,
+                             List<Map<String, Object>> blocked) {}
 
     /** Explicit API fallback order, filtered through the ordinary admission rules. */
     private Successor seekApiSuccessor(String role, UserConfig user, RoleResolver.Writers writers,
-                                      Set<String> vendorFailed) {
+                                      Set<String> vendorFailed, Profile from) {
+        List<Map<String, Object>> blocked = new ArrayList<>();
         List<RoleResolver.Candidate> candidates = new RoleResolver().candidates(role,
                 user.policy(), user.profiles(), writers, profile -> {
                     if (overlay.problem(stageName, profile, user.profiles()) != null) return false;
@@ -1519,10 +1628,81 @@ public final class RoleRunner {
             RoleResolver.Candidate candidate = byName.get(name);
             if (candidate == null) rejected.put(name, "profile_not_in_roster");
             else if (!candidate.eligible()) rejected.put(name, candidate.rejected());
-            else return new Successor(overlay.adapt(stageName, user.profiles().get(name),
-                    user.profiles()), rejected);
+            else {
+                Profile chosen = overlay.adapt(stageName, user.profiles().get(name), user.profiles());
+                if (!admitsFamily(user.policy(), from, chosen, blocked)) continue;
+                return new Successor(chosen, rejected, blocked);
+            }
         }
-        return new Successor(null, rejected);
+        return new Successor(null, rejected, blocked);
+    }
+
+    /**
+     * A grok/codex/claude subscription CLI must not be moved onto a paid API serving that
+     * same family. Cross-family (grok CLI to a DeepSeek API) is a different rule: the pin.
+     */
+    private static boolean admitsFamily(Policy policy, Profile from, Profile to,
+                                        List<Map<String, Object>> blocked) {
+        if (from == null || to == null || policy == null) return true;
+        if (!"never".equals(policy.subscriptionToSameFamilyApi())) return true;
+        if (!subscriptionCli(from) || !paidApi(to) || !sameFamily(from, to)) return true;
+        blocked.add(blockEvent("subscription_to_same_family_api", from, to,
+                "a subscription CLI is not failed over onto a paid API of the same model family; "
+                        + "set failover.subscription_to_same_family_api: allow to permit it"));
+        return false;
+    }
+
+    static boolean subscriptionCli(Profile profile) {
+        if (profile.harness() != null) return false;
+        if (!"direct".equals(profile.runner()) && !"orca".equals(profile.runner())) return false;
+        String family = familyOf(profile);
+        return "x-ai".equals(family) || "openai".equals(family) || "anthropic".equals(family);
+    }
+
+    static boolean paidApi(Profile profile) {
+        return "api".equals(profile.runner()) || profile.harness() != null;
+    }
+
+    static String familyOf(Profile profile) {
+        String vendor = Profile.canonicalVendor(profile.vendor());
+        String modelVendor = Profile.canonicalVendor(profile.modelVendor());
+        for (String token : new String[] {vendor, modelVendor}) {
+            if ("x-ai".equals(token) || "openai".equals(token) || "anthropic".equals(token)) return token;
+        }
+        String model = profile.model() == null ? "" : profile.model().toLowerCase(java.util.Locale.ROOT);
+        if (model.startsWith("x-ai/") || model.startsWith("grok")) return "x-ai";
+        if (model.startsWith("openai/") || model.startsWith("gpt-")) return "openai";
+        if (model.startsWith("anthropic/") || model.startsWith("claude")) return "anthropic";
+        return null;
+    }
+
+    static boolean sameFamily(Profile left, Profile right) {
+        String one = familyOf(left);
+        return one != null && one.equals(familyOf(right));
+    }
+
+    private static Map<String, Object> blockEvent(String rule, Profile from, Profile to, String detail) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("rule", rule);
+        event.put("from_profile", from.name());
+        event.put("from_vendor", from.vendor());
+        event.put("to_profile", to.name());
+        event.put("to_vendor", to.vendor());
+        event.put("from", from.name());
+        event.put("to", to.name());
+        event.put("detail", detail);
+        return event;
+    }
+
+    private void noteBlocked(EvidenceLedger ledger, Map<String, Object> report,
+                             List<Map<String, Object>> blocked) throws Exception {
+        if (blocked == null || blocked.isEmpty()) return;
+        report.put("failover_blocked", List.copyOf(blocked));
+        for (Map<String, Object> event : blocked) {
+            ledger.append("role_failover_blocked", event);
+            progress.line("      failover refused: " + event.get("from") + " -> " + event.get("to")
+                    + " (" + event.get("rule") + ")");
+        }
     }
 
     // Auth, identity, parse, cancellation and admission/configuration errors are
@@ -1534,6 +1714,16 @@ public final class RoleRunner {
     private static boolean transientApiFailure(String code) {
         return code != null && Set.of("role_api_network_error", "role_api_timeout",
                 "role_api_rate_limited", "role_api_provider_error", "role_api_output_truncated").contains(code);
+    }
+
+    /**
+     * An API stall takes the API fallback list. The same code from a direct CLI takes the
+     * roster, because a CLI has no {@code api_fallback_profiles}. Putting the code in
+     * {@link #transientApiFailure} would send the CLI down the API list.
+     */
+    private static boolean apiSideFailure(String code, Profile profile) {
+        return transientApiFailure(code)
+                || ("role_stalled".equals(code) && "api".equals(profile.runner()));
     }
 
     /**
@@ -1551,7 +1741,8 @@ public final class RoleRunner {
             "role_artifact_schema_violation",
             "role_local_endpoint_unreachable",
             "role_local_http_error",
-            "role_vendor_unavailable");
+            "role_vendor_unavailable",
+            "role_stalled");
 
     private static boolean vendorFailure(String code) {
         // Harness admission/configuration/identity failures describe the execution boundary.
@@ -1572,6 +1763,7 @@ public final class RoleRunner {
                     "role_local_http_error", "role_api_network_error",
                     "role_api_provider_error", "role_api_rate_limited" -> "vendor_call_failed";
             case "role_timeout", "role_api_timeout" -> "role_timeout";
+            case "role_stalled" -> "role_stalled";
             case "role_artifact_unparseable", "role_artifact_incomplete",
                     "role_artifact_schema_violation", "role_api_output_truncated" -> "artifact_invalid";
             case "role_vendor_unavailable" -> "vendor_unavailable";
@@ -1622,13 +1814,26 @@ public final class RoleRunner {
         String value = cause == null ? "" : String.valueOf(cause);
         return "vendor_call_failed".equals(value)
                 || "role_timeout".equals(value)
+                || "role_stalled".equals(value)
                 || "artifact_invalid".equals(value)
                 || "vendor_unavailable".equals(value);
     }
 
     private static void rememberFailovers(Map<String, Object> report,
                                           List<Map<String, Object>> roleFailovers) {
-        if (!roleFailovers.isEmpty()) report.put("role_failovers", List.copyOf(roleFailovers));
+        if (roleFailovers.isEmpty()) return;
+        report.put("role_failovers", List.copyOf(roleFailovers));
+        // Each attempt builds a fresh report, so the line printed at the switch would
+        // otherwise die with the attempt that failed. The report that is kept is the
+        // last one, and it has to name every from→to itself.
+        if (!report.containsKey("failover_notice")) {
+            StringBuilder notice = new StringBuilder();
+            for (Map<String, Object> event : roleFailovers) {
+                if (!notice.isEmpty()) notice.append("; ");
+                notice.append(event.get("from")).append(" -> ").append(event.get("to"));
+            }
+            report.put("failover_notice", notice.toString());
+        }
     }
 
     private static Map<String, Object> failoverEvent(String role, Profile from, Profile to,
@@ -1773,7 +1978,8 @@ public final class RoleRunner {
                 "model_requested", "model_reported", "model_served", "correlation_id",
                 "api_attempts", "api_attempt_count", "api_retries", "api_retry_policy",
                 "api_retry_stopped", "failure_phase", "delivery", "http_status",
-                "request_id", "cost_status", "unpriced_attempts", "reported_cost_usd_subtotal", "relay")) {
+                "request_id", "cost_status", "unpriced_attempts", "reported_cost_usd_subtotal", "relay",
+                "may_be_billed")) {
             if (result.evidence().containsKey(key)) entry.put(key, result.evidence().get(key));
         }
         Object raw = result.evidence().get("raw_stdout");
@@ -1784,7 +1990,7 @@ public final class RoleRunner {
         if (unavailableEvidence != null) entry.put("vendor_unavailable", unavailableEvidence);
         // The failed call stays readable after a switch. The home corpus allowlist drops
         // these tails; the local attempt does not.
-        for (String tail : List.of("stderr_tail", "stdout_tail", "exit_code", "timed_out", "start_error")) {
+        for (String tail : List.of("stderr_tail", "stdout_tail", "exit_code", "timed_out", "stalled", "start_error")) {
             if (result.evidence().containsKey(tail)) entry.put(tail, result.evidence().get(tail));
         }
         if (inheritsUnfinishedWork) entry.put("inherited_unfinished_work", true);
@@ -1811,6 +2017,45 @@ public final class RoleRunner {
                 && task.visualQa().required()
                 && !task.visualQa().scenarios().isEmpty()
                 && !PromptRenderer.uses(template, "visual_scenarios");
+    }
+
+    /** A reviewer prompt that predates {@code {{acceptance_evidence}}}. See the call site. */
+    private static boolean acceptanceBackfillNeeded(String role, String template) {
+        return "reviewer".equals(role) && !PromptRenderer.uses(template, "acceptance_evidence");
+    }
+
+    /** A reviewer prompt that does not yet mention the mechanical citation check. */
+    private static boolean citationBackfillNeeded(String role, String template) {
+        return "reviewer".equals(role) && !template.contains("unverified");
+    }
+
+    private static String citationSection() {
+        return """
+
+                ## Citations that can block
+
+                A P1 or P2 product_defect has to name a file that is in the tree. When you name
+                a line, that line has to exist. Put current source in `quote`, or use backticks
+                in `actual` for a literal source excerpt. Overseer checks within 20 lines of the cited
+                line before the finding can block. A citation it cannot check is recorded as
+                unverified and does not block. The check reads the files; it does not call a model.
+
+                """;
+    }
+
+    private static String acceptanceEvidenceSection(String evidence) {
+        return """
+
+                ## Recorded acceptance evidence
+
+                The machine gate's command list is not the whole of what this change already
+                ran. The block below was supplied with the task (commands and a recorded CI
+                summary). Overseer did not look it up. When it records real acceptance, do
+                not file a contract_gap claiming that nothing compiles, that tests do not run,
+                or that the only acceptance is a whitespace check. File a contract_gap only
+                when those commands do not cover the behaviour under review.
+
+                """ + (evidence == null ? "(none recorded)" : evidence) + "\n";
     }
 
     /** Items the task already accepts as checked by hand, or an explicit empty list. */
@@ -1867,6 +2112,7 @@ public final class RoleRunner {
         values.put("scope_paths", String.join(", ", task.scopePaths()));
         values.put("changed_files", changedFileList(loaded.root(), mergeBase));
         values.put("acceptance_commands", bullets(task.acceptanceCommands()));
+        values.put("acceptance_evidence", task.acceptanceEvidence().promptText());
         values.put("visual_scenarios", bullets(task.visualQa().scenarios()));
         values.put("manual_verification", manualLines(task.manualVerification()));
         values.put("authority", "workspace_write=" + task.authority().workspaceWrite()

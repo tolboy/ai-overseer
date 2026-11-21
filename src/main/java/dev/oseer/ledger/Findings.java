@@ -65,7 +65,10 @@ public final class Findings {
     public record Finding(String id, String idSource, String category, String categorySource,
                           String severity, String path, String message, Map<String, Object> raw) {
 
-        public boolean blocking() { return "P1".equals(severity); }
+        public boolean blocking() { return "P1".equals(severity) && !unverified(); }
+
+        /** A citation the controller could not find in the tree. Such a finding does not block. */
+        public boolean unverified() { return Boolean.TRUE.equals(raw.get("unverified")); }
 
         /** A P1 an implementer can be expected to close by editing the candidate. */
         public boolean repairable() {
@@ -76,6 +79,9 @@ public final class Findings {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("id", id);
             value.put("id_source", idSource);
+            if (raw.get("reviewer_finding_id") instanceof String reviewerId) {
+                value.put("reviewer_finding_id", reviewerId);
+            }
             value.put("category", category);
             value.put("category_source", categorySource);
             value.put("severity", severity);
@@ -104,7 +110,24 @@ public final class Findings {
             if (acknowledged instanceof String item && !item.isBlank()) {
                 value.put("manual_verification", item);
             }
+            // Set when Overseer lowered a "nothing was tested" contract_gap because the task
+            // already recorded commands or a passing CI result. Absent on a finding the vendor
+            // filed, so the two stay distinguishable in the ledger.
+            Object evidence = raw.get("acceptance_evidence");
+            if (evidence instanceof String marker && !marker.isBlank()) {
+                value.put("acceptance_evidence", marker);
+            }
             if (Boolean.TRUE.equals(raw.get("advisory"))) value.put("advisory", true);
+            // A product finding whose file, line or quote was not in the tree. The reason is a
+            // short code; the detail is the sentence an operator reads. Both are omitted when
+            // the citation checked out, so a verified finding stays what it was.
+            if (Boolean.TRUE.equals(raw.get("unverified"))) {
+                value.put("unverified", true);
+                Object reason = raw.get("verification_reason");
+                if (reason instanceof String code && !code.isBlank()) value.put("verification_reason", code);
+                Object detail = raw.get("verification_detail");
+                if (detail instanceof String text && !text.isBlank()) value.put("verification_detail", text);
+            }
             value.put("evidence_refs", refs(raw.get("evidence_refs")));
             value.put("supersedes", refs(raw.get("supersedes")));
             // A serialized empty list is indistinguishable from a field the vendor never
@@ -169,18 +192,104 @@ public final class Findings {
         return acknowledged;
     }
 
+    /**
+     * {@link #acknowledging} and then {@link #recordedAcceptance}, in that order.
+     *
+     * Both downgrades are applied before a finding is recorded, so the first round and a
+     * later reading of the same words agree. Applying only one of them leaves the other
+     * path treating the vendor's P1 as a blocker.
+     */
+    public static List<Finding> adjusted(List<Finding> findings, List<String> manual,
+                                         boolean realAcceptance) {
+        return recordedAcceptance(acknowledging(findings, manual), realAcceptance);
+    }
+
+    /**
+     * A P1 {@code contract_gap} that only says nothing was compiled or tested is noise when
+     * the task already recorded the pull request's commands or a passing CI result.
+     *
+     * The match is narrow on purpose: the claim has to be that execution is absent
+     * ({@code nothing compiles}, {@code tests do not run}, {@code git diff --check}), and a
+     * claim that the recorded commands do not cover the behaviour stays a blocker. A product
+     * defect is never lowered. The vendor's map is not written to.
+     */
+    public static List<Finding> recordedAcceptance(List<Finding> findings, boolean realAcceptance) {
+        if (!realAcceptance || findings == null || findings.isEmpty()) {
+            return findings == null ? List.of() : findings;
+        }
+        List<Finding> adjusted = new ArrayList<>();
+        for (Finding finding : findings) {
+            if (!finding.blocking() || !"contract_gap".equals(finding.category())
+                    || !absenceOfExecution(finding)) {
+                adjusted.add(finding);
+                continue;
+            }
+            Map<String, Object> copy = new LinkedHashMap<>(finding.raw());
+            copy.put("severity", "P2");
+            copy.put("severity_as_filed", finding.severity());
+            copy.put("acceptance_evidence", "recorded");
+            copy.put("advisory", true);
+            adjusted.add(new Finding(finding.id(), finding.idSource(), finding.category(),
+                    finding.categorySource(), "P2", finding.path(), finding.message(), copy));
+        }
+        return adjusted;
+    }
+
+    /**
+     * Phrases that mean "nobody compiled or ran anything", not "the tests miss a behaviour".
+     * A coverage phrase anywhere in the same finding keeps the P1: the reader may have
+     * mentioned {@code git diff --check} and then said what it fails to cover.
+     */
+    private static final List<String> ABSENCE_OF_EXECUTION = List.of(
+            "nothing compiles", "does not compile", "doesn't compile", "do not compile",
+            "don't compile", "never compiles",
+            "nothing builds", "does not build", "doesn't build", "do not build", "don't build",
+            "no build", "never builds",
+            "nothing runs", "tests do not run", "tests don't run", "tests never run",
+            "tests are not run", "tests aren't run", "no tests run", "no tests are run",
+            "tests are never run",
+            "git diff --check", "only checks whitespace", "whitespace check");
+
+    private static final List<String> COVERAGE_GAP = List.of(
+            "does not cover", "doesn't cover", "do not cover", "don't cover", "not covered",
+            "does not assert", "doesn't assert", "do not assert", "never asserts",
+            "missing assertion", "no assertion",
+            "does not check", "doesn't check", "do not check",
+            "does not exercise", "doesn't exercise", "not exercised",
+            "no test for", "no tests for", "without a test", "untested");
+
+    private static boolean absenceOfExecution(Finding finding) {
+        String haystack = haystack(finding);
+        boolean absence = false;
+        for (String phrase : ABSENCE_OF_EXECUTION) {
+            if (haystack.contains(phrase)) {
+                absence = true;
+                break;
+            }
+        }
+        if (!absence) return false;
+        for (String phrase : COVERAGE_GAP) {
+            if (haystack.contains(phrase)) return false;
+        }
+        return true;
+    }
+
     /** The first declared item that occurs in the finding's checkable text, or null. */
     private static String matchedItem(Finding finding, List<String> items) {
-        String haystack = (finding.message() + "\n"
+        String haystack = haystack(finding);
+        for (String item : items) {
+            if (haystack.contains(item.toLowerCase(java.util.Locale.ROOT))) return item;
+        }
+        return null;
+    }
+
+    private static String haystack(Finding finding) {
+        return (finding.message() + "\n"
                 + text(finding.raw().get("expected")) + "\n"
                 + text(finding.raw().get("actual")) + "\n"
                 + text(finding.raw().get("scenario")) + "\n"
                 + text(finding.raw().get("suggestion")))
                 .toLowerCase(java.util.Locale.ROOT);
-        for (String item : items) {
-            if (haystack.contains(item.toLowerCase(java.util.Locale.ROOT))) return item;
-        }
-        return null;
     }
 
     /**
@@ -252,7 +361,7 @@ public final class Findings {
      * punctuation dropped — so that reformatting alone does not mint a new finding. Nothing
      * here understands meaning; see the class comment for what that costs.
      */
-    private static String derive(String path, String message) {
+    static String derive(String path, String message) {
         String normalised = message.toLowerCase(java.util.Locale.ROOT)
                 .replaceAll("\\s+", " ")
                 .replaceAll("[\\s.,;:!?]+$", "")

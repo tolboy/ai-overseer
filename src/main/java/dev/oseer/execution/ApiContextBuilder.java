@@ -1,10 +1,15 @@
 package dev.oseer.execution;
 
+import dev.oseer.config.ApiContextSettings;
 import dev.oseer.json.Json;
 import dev.oseer.process.ProcessRunner;
 
+import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -20,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 /** A complete, bounded changed-source snapshot for a model without filesystem tools. */
@@ -27,14 +33,23 @@ public final class ApiContextBuilder {
     public static final int MAX_FILES = 64;
     public static final int MAX_FILE_BYTES = 64 * 1024;
     public static final int MAX_CONTEXT_BYTES = 256 * 1024;
-    private static final int DISCOVERY_BYTES = 64 * 1024;
+    private static final int DISCOVERY_BYTES = ApiContextSettings.CEILING_BYTES;
     private static final Duration GIT_TIMEOUT = Duration.ofSeconds(30);
+    private static final List<String> INTERNAL_PATHSPECS = List.of(
+            ":(exclude,icase,top).oseer", ":(exclude,icase,top).oseer/**",
+            ":(exclude,icase,top).git", ":(exclude,icase,top).git/**");
     private static final Set<String> SECRET_FILES = Set.of(
             ".npmrc", ".pypirc", ".netrc", ".git-credentials", "credentials",
             "credentials.json", "credentials.yaml", "credentials.yml", "credentials.toml", "credentials.ini",
             "secrets.json", "secrets.yaml", "secrets.yml", "secrets.toml", "secrets.ini",
             "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519");
     private static final Set<String> SECRET_DIRECTORIES = Set.of(".ssh", ".aws", ".azure", "gcloud");
+    // Committed templates that document which variables exist. They are meant to be read by
+    // anyone with the repository, so refusing them blocked every review of a change that adds
+    // a variable. Only these exact names are exempt; `.env.local`, `.env.production` and the
+    // rest are still refused.
+    private static final List<String> ENV_TEMPLATES = List.of(
+            ".env.example", ".env.sample", ".env.template", ".env.dist");
     private static final String INSTRUCTIONS = """
             API CHANGED-SOURCE CONTEXT v1
             You have no filesystem, shell, network, or repository tools. The JSON below is a
@@ -47,11 +62,50 @@ public final class ApiContextBuilder {
             or other unavailable evidence is necessary, report an inconclusive or blocked
             result; never claim to have read omitted files or executed checks.
             """;
+    private static final String DIFF_ONLY = """
+            DIFF-ONLY SNAPSHOT: whole changed files are NOT included (see contents and
+            whole_files_omitted_because). Tracked files are described only by git_diff with three
+            lines of context; untracked files carry their whole text. Code outside the hunks is
+            absent: do not claim a defect that depends on it, report it as unverified instead.
+            """;
 
     private ApiContextBuilder() {}
 
+    /**
+     * The historical contract: the diff and every changed file whole, within the default
+     * limits, refusing anything that does not fit. Kept for callers and tests that pinned it.
+     */
     public static String build(Path root, String mergeBase, ProcessRunner processes)
             throws IOException, InterruptedException {
+        return build(root, mergeBase, processes, new ApiContextSettings("full",
+                MAX_FILES, MAX_FILE_BYTES, MAX_CONTEXT_BYTES)).text();
+    }
+
+    /**
+     * What was packed and why.
+     *
+     * @param mode      {@code full} or {@code diff}: what the snapshot actually carries, which
+     *                  for an {@code auto} profile may differ from what it asked for
+     * @param fallback  why whole files were left out, one line per limit that did not hold;
+     *                  empty when nothing was left out or the profile asked for the diff only
+     */
+    public record Snapshot(String text, String requestedMode, String mode, List<String> fallback,
+                           int changedFiles, int bytes) {
+        public Map<String, Object> evidence(ApiContextSettings settings) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("requested_mode", requestedMode);
+            value.put("mode", mode);
+            value.put("changed_files", (long) changedFiles);
+            value.put("bytes", (long) bytes);
+            value.put("limits", settings.toMap());
+            if (!fallback.isEmpty()) value.put("fallback_reasons", fallback);
+            return value;
+        }
+    }
+
+    public static Snapshot build(Path root, String mergeBase, ProcessRunner processes,
+                                 ApiContextSettings settings) throws IOException, InterruptedException {
+        if (settings == null) settings = ApiContextSettings.DEFAULT;
         if (mergeBase == null || !mergeBase.matches("(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})")) {
             throw refused("requires an explicit base commit hash");
         }
@@ -67,89 +121,264 @@ public final class ApiContextBuilder {
                 List.of("cat-file", "-t", mergeBase), DISCOVERY_BYTES).strip())) {
             throw refused("requires a commit as its diff base");
         }
-        List<String> discovery = new ArrayList<>(List.of("diff", "--name-only", "--no-ext-diff",
-                "--no-textconv", "--no-renames", "-z", mergeBase));
-        discovery.addAll(discoveryPaths());
-        Set<String> tracked = names(git(processes, workspace, discovery, DISCOVERY_BYTES));
+        String head = git(processes, workspace, List.of("rev-parse", "--verify", "HEAD^{commit}"), DISCOVERY_BYTES).strip();
         List<String> untrackedCommand = new ArrayList<>(List.of("ls-files", "-o", "--exclude-standard", "-z"));
-        untrackedCommand.addAll(discoveryPaths());
+        untrackedCommand.addAll(workspacePaths());
         Set<String> untracked = names(git(processes, workspace, untrackedCommand, DISCOVERY_BYTES));
-        Set<String> changed = new TreeSet<>(tracked);
-        changed.addAll(untracked);
-        changed.removeIf(ApiContextBuilder::internal);
-        if (changed.size() > MAX_FILES) throw refused("exceeds the 64 changed-file limit; no partial snapshot was produced");
+        rejectLocalTemplates(processes, workspace, head, untracked);
 
+        // Each patch and its raw modes and paths are emitted together by Git. Validate that
+        // inventory before including any patch bytes. Only the immutable commit comparison
+        // can contribute template hunks, even if files move while the snapshot is being built.
+        TreeMap<String, Source> sources = new TreeMap<>();
+        String patch = collectPatch(processes, workspace, List.of(mergeBase),
+                false, settings.maxBytes(), sources);
+        int patchBytes = byteCount(patch);
+        String templates = collectPatch(processes, workspace, List.of(mergeBase, head),
+                true, settings.maxBytes() - patchBytes, sources);
+        patch += templates;
+        patchBytes += byteCount(templates);
+        for (String name : untracked) {
+            // Git can list a staged deletion as both a tracked deletion and untracked file.
+            // The current untracked content still belongs in the snapshot.
+            Path current = inspectPath(workspace, name, false);
+            sources.put(name, new Source(current, "untracked", null));
+        }
+
+        List<String> overLimit = new ArrayList<>();
+        if (settings.wholeFilesAllowed()) {
+            if (sources.size() > settings.maxFiles()) {
+                overLimit.add(sources.size() + " changed files exceed the " + settings.maxFiles()
+                        + " changed-file limit (api_context.max_files)");
+            }
+            Map<String, Long> sizes = contentSizes(workspace, processes, sources, true);
+            List<String> oversized = new ArrayList<>();
+            long sourceBytes = 0;
+            for (Map.Entry<String, Long> entry : sizes.entrySet()) {
+                long size = entry.getValue();
+                if (size > settings.maxFileBytes()) {
+                    oversized.add(entry.getKey() + " (" + size + " bytes)");
+                } else {
+                    sourceBytes += size;
+                }
+            }
+            if (!oversized.isEmpty()) {
+                overLimit.add(String.join(", ", oversized) + " exceed the per-file limit of "
+                        + settings.maxFileBytes() + " bytes (api_context.max_file_bytes)");
+            }
+            if (sourceBytes + patchBytes > settings.maxBytes()) {
+                overLimit.add("the diff and changed files exceed the total limit of "
+                        + settings.maxBytes() + " bytes (api_context.max_bytes)");
+            }
+            if (overLimit.isEmpty()) {
+                try {
+                    return snapshot("full", workspace, processes, mergeBase, patch, sources, sizes, settings, List.of());
+                } catch (SnapshotExceeded exceeded) {
+                    overLimit.add("the complete snapshot exceeds the total limit of "
+                            + settings.maxBytes() + " bytes (api_context.max_bytes)");
+                }
+            }
+            if (!settings.fallsBackToDiff()) {
+                throw refused("exceeds its limits: " + String.join("; ", overLimit)
+                        + ". No file was truncated. Raise the limit in the profile's api_context block, "
+                        + "or set api_context.mode to auto or diff");
+            }
+        }
+
+        // Untracked files have no Git hunks. Bound their cumulative bytes before opening
+        // any of them, separately from the rendered JSON budget.
+        Map<String, Long> sizes = contentSizes(workspace, processes, sources, false);
+        long remaining = settings.maxBytes() - patchBytes;
+        for (Map.Entry<String, Long> entry : sizes.entrySet()) {
+            long size = entry.getValue();
+            if (size > settings.maxFileBytes()) {
+                throw refused("exceeds the per-file limit of " + settings.maxFileBytes()
+                        + " bytes (api_context.max_file_bytes): untracked " + entry.getKey()
+                        + " is " + size + " bytes and has no diff to send instead; no file was truncated");
+            }
+            remaining -= size;
+            if (remaining < 0) throw diffSnapshotExceeded(settings.maxBytes());
+        }
+        try {
+            return snapshot("diff", workspace, processes, mergeBase, patch, sources, sizes, settings, overLimit);
+        } catch (SnapshotExceeded exceeded) {
+            throw diffSnapshotExceeded(settings.maxBytes());
+        }
+    }
+
+    private record Source(Path path, String state, String committedBlob) {}
+
+    private static Map<String, Long> contentSizes(Path workspace, ProcessRunner processes, Map<String, Source> sources,
+                                                  boolean full) throws IOException, InterruptedException {
+        Map<String, Long> sizes = new LinkedHashMap<>();
+        for (Map.Entry<String, Source> entry : sources.entrySet()) {
+            Source source = entry.getValue();
+            if ("deleted".equals(source.state()) || (!full && !"untracked".equals(source.state()))) continue;
+            long size = source.committedBlob() == null ? Files.size(source.path())
+                    : Long.parseLong(git(processes, workspace,
+                            List.of("cat-file", "-s", source.committedBlob()), DISCOVERY_BYTES).strip());
+            sizes.put(entry.getKey(), size);
+        }
+        return sizes;
+    }
+
+    private static Path inspectPath(Path workspace, String name, boolean committedTemplate) throws IOException {
+        Path current = checkedPath(workspace, name);
+        if (internal(name)) throw refused("refuses repository metadata paths");
+        if (secret(name, committedTemplate)) throw refused("refuses a changed secret or credential file: " + name);
+        if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(current, LinkOption.NOFOLLOW_LINKS)) {
+            throw refused("refuses a changed symlink, directory, or other nonregular file");
+        }
+        return current;
+    }
+
+    private static void rejectLocalTemplates(ProcessRunner processes, Path workspace, String head, Set<String> untracked)
+            throws IOException, InterruptedException {
+        for (String name : untracked) {
+            if (envTemplate(name)) throw refused("requires an env template to be committed: " + name);
+        }
+        List<String> staged = new ArrayList<>(List.of("diff", "--cached", "--name-only", "-z",
+                "--no-renames", "--no-ext-diff", "--no-textconv", head));
+        staged.addAll(templatePaths());
+        List<String> unstaged = new ArrayList<>(List.of("diff", "--name-only", "-z",
+                "--no-renames", "--no-ext-diff", "--no-textconv"));
+        unstaged.addAll(templatePaths());
+        for (List<String> command : List.of(staged, unstaged)) {
+            Set<String> dirty = names(git(processes, workspace, command, DISCOVERY_BYTES));
+            if (!dirty.isEmpty()) throw refused("requires an env template to be committed: " + dirty.iterator().next());
+        }
+    }
+
+    private static String collectPatch(ProcessRunner processes, Path workspace, List<String> revisions,
+                                       boolean templates, int limit, Map<String, Source> sources)
+            throws IOException, InterruptedException {
+        List<String> command = new ArrayList<>(List.of("-c", "core.quotePath=false", "diff",
+                "--raw", "--numstat", "--patch", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
+                "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
+                "--src-prefix=a/", "--dst-prefix=b/"));
+        command.addAll(revisions);
+        command.addAll(templates ? templatePaths() : ordinaryPaths());
+        String captured;
+        try {
+            captured = git(processes, workspace, command, DISCOVERY_BYTES + limit);
+        } catch (CaptureExceeded exceeded) {
+            throw patchExceeded(limit);
+        }
+        if (captured.isEmpty()) return "";
+        int separator = captured.indexOf("\0\0");
+        if (separator < 0 || separator > DISCOVERY_BYTES) {
+            throw refused("could not collect a complete repository path and mode list");
+        }
+        String[] metadata = captured.substring(0, separator).split("\0", -1);
+        int index = 0;
+        for (; index < metadata.length && metadata[index].startsWith(":"); index += 2) {
+            String[] fields = metadata[index].substring(1).split(" ");
+            if (fields.length != 5 || index + 1 >= metadata.length) {
+                throw refused("received an incomplete repository mode list");
+            }
+            rejectSpecialMode(fields[0]);
+            rejectSpecialMode(fields[1]);
+            String name = metadata[index + 1];
+            if (templates != envTemplate(name)) throw refused("received an unexpected repository path");
+            Path current = inspectPath(workspace, name, templates);
+            boolean deleted = "000000".equals(fields[1]);
+            String blob = templates && !deleted ? revisions.getLast() + ":" + name : null;
+            sources.put(name, new Source(current, deleted ? "deleted" : "current", blob));
+        }
+        if (index == 0) throw refused("received a patch without repository modes");
+        for (; index < metadata.length; index++) {
+            if (metadata[index].startsWith("-\t")) throw refused("refuses a changed binary file");
+        }
+        String patch = captured.substring(separator + 2);
+        if (byteCount(patch) > limit) throw patchExceeded(limit);
+        ensureText(patch);
+        return patch;
+    }
+
+    private static Snapshot snapshot(String mode, Path workspace, ProcessRunner processes, String mergeBase,
+                                     String diff, Map<String, Source> sources, Map<String, Long> sizes,
+                                     ApiContextSettings settings, List<String> fallback)
+            throws IOException, InterruptedException {
         List<Map<String, Object>> files = new ArrayList<>();
-        long sourceBytes = 0;
-        for (String name : changed) {
-            Path current = checkedPath(workspace, name);
-            if (secret(name)) throw refused("refuses a changed secret or credential file");
+        for (Map.Entry<String, Source> entry : sources.entrySet()) {
+            String name = entry.getKey();
+            Source source = entry.getValue();
             Map<String, Object> file = new LinkedHashMap<>();
             file.put("path", name);
-            if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
-                file.put("state", "deleted");
-            } else {
-                if (!Files.isRegularFile(current, LinkOption.NOFOLLOW_LINKS)) {
-                    throw refused("refuses a changed symlink, directory, or other nonregular file");
-                }
-                byte[] bytes;
-                try (InputStream input = Files.newInputStream(current,
-                        StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-                    bytes = input.readNBytes(MAX_FILE_BYTES + 1);
-                } catch (IOException failure) {
-                    throw refused("could not read a changed source file safely");
-                }
-                if (bytes.length > MAX_FILE_BYTES) throw refused("exceeds the 64 KiB per-file limit; no file was truncated");
-                sourceBytes += bytes.length;
-                if (sourceBytes > MAX_CONTEXT_BYTES) throw refused("exceeds the 256 KiB total limit; no partial snapshot was produced");
-                if (!current.toRealPath().startsWith(workspace)) throw refused("refuses a file outside the repository");
-                String content = utf8(bytes);
+            Long size = sizes.get(name);
+            file.put("state", size == null && "current".equals(source.state()) ? "changed_see_diff" : source.state());
+            if (size != null) {
+                int bytes = Math.toIntExact(size);
+                String content = source.committedBlob() == null
+                        ? readText(workspace, source.path(), bytes)
+                        : git(processes, workspace, List.of("cat-file", "blob", source.committedBlob()), bytes);
                 ensureText(content);
-                file.put("state", untracked.contains(name) ? "untracked" : "current");
                 file.put("content", content);
             }
             files.add(file);
         }
 
-        String diff = "";
-        if (!tracked.isEmpty()) {
-            List<String> paths = new ArrayList<>();
-            paths.add("--");
-            for (String name : tracked) if (!internal(name)) paths.add(":(literal)" + name);
-            if (paths.size() > 1) {
-                List<String> raw = new ArrayList<>(List.of("diff", "--raw", "--no-ext-diff",
-                        "--no-textconv", "--no-renames", "-z", mergeBase));
-                raw.addAll(paths);
-                rejectSpecialModes(git(processes, workspace, raw, DISCOVERY_BYTES));
-                List<String> stat = new ArrayList<>(List.of("diff", "--numstat", "--no-ext-diff",
-                        "--no-textconv", "--no-renames", "-z", mergeBase));
-                stat.addAll(paths);
-                for (String entry : git(processes, workspace, stat, DISCOVERY_BYTES).split("\0", -1)) {
-                    if (entry.startsWith("-\t")) throw refused("refuses a changed binary file");
-                }
-                List<String> command = new ArrayList<>(List.of("-c", "core.quotePath=false", "diff",
-                        "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
-                        "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
-                        "--src-prefix=a/", "--dst-prefix=b/", mergeBase));
-                command.addAll(paths);
-                diff = git(processes, workspace, command, MAX_CONTEXT_BYTES);
-                ensureText(diff);
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("base_commit", mergeBase.toLowerCase(Locale.ROOT));
+        document.put("scope", "changed_source_only");
+        document.put("contents", mode.equals("full") ? "diff_and_whole_changed_files" : "diff_only");
+        if (!fallback.isEmpty()) document.put("whole_files_omitted_because", fallback);
+        document.put("git_diff", diff);
+        document.put("files", files);
+
+        int limit = settings.maxBytes();
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        OutputStream bounded = new OutputStream() {
+            @Override public void write(int value) throws IOException {
+                if (buffer.size() >= limit) throw new SnapshotExceeded();
+                buffer.write(value);
             }
+
+            @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+                if (length > limit - buffer.size()) throw new SnapshotExceeded();
+                buffer.write(bytes, offset, length);
+            }
+        };
+        try (var writer = new BufferedWriter(new OutputStreamWriter(bounded, StandardCharsets.UTF_8))) {
+            writer.write(mode.equals("full") ? INSTRUCTIONS : INSTRUCTIONS + DIFF_ONLY);
+            writer.write('\n');
+            Json.writePretty(document, writer);
         }
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        snapshot.put("base_commit", mergeBase.toLowerCase(Locale.ROOT));
-        snapshot.put("scope", "changed_source_only");
-        snapshot.put("git_diff", diff);
-        snapshot.put("files", files);
-        String result = INSTRUCTIONS + "\n" + Json.writePretty(snapshot);
-        if (result.getBytes(StandardCharsets.UTF_8).length > MAX_CONTEXT_BYTES) {
-            throw refused("exceeds the 256 KiB total limit; no diff or file was truncated");
-        }
-        return result;
+        return new Snapshot(buffer.toString(StandardCharsets.UTF_8), settings.mode(), mode,
+                List.copyOf(fallback), sources.size(), buffer.size());
     }
 
-    private static List<String> discoveryPaths() {
-        return List.of("--", ".", ":(exclude,top).oseer", ":(exclude,top).oseer/**");
+    private static String readText(Path workspace, Path current, int size) throws IOException {
+        byte[] bytes;
+        try (InputStream input = Files.newInputStream(current,
+                StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = input.readNBytes(size + 1);
+        } catch (IOException failure) {
+            throw refused("could not read a changed source file safely");
+        }
+        if (bytes.length > size) throw refused("will not read a file that grew while the snapshot was prepared");
+        if (!current.toRealPath().startsWith(workspace)) throw refused("refuses a file outside the repository");
+        return utf8(bytes);
+    }
+
+    private static List<String> workspacePaths() {
+        List<String> paths = new ArrayList<>(List.of("--", "."));
+        paths.addAll(INTERNAL_PATHSPECS);
+        return paths;
+    }
+
+    private static List<String> ordinaryPaths() {
+        List<String> paths = workspacePaths();
+        for (String name : ENV_TEMPLATES) paths.add(":(exclude,icase,glob,top)**/" + name);
+        return paths;
+    }
+
+    private static List<String> templatePaths() {
+        List<String> paths = new ArrayList<>(List.of("--"));
+        for (String name : ENV_TEMPLATES) paths.add(":(icase,glob,top)**/" + name);
+        paths.addAll(INTERNAL_PATHSPECS);
+        return paths;
     }
 
     private static Set<String> names(String output) throws IOException {
@@ -194,26 +423,24 @@ public final class ApiContextBuilder {
                 || lower.equals(".git") || lower.startsWith(".git/");
     }
 
-    private static boolean secret(String name) {
+    private static boolean envTemplate(String name) {
+        return ENV_TEMPLATES.contains(name.substring(name.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean secret(String name, boolean committedTemplate) {
         String lower = name.toLowerCase(Locale.ROOT);
         String[] parts = lower.split("/");
         String file = parts[parts.length - 1];
         for (String part : parts) if (SECRET_DIRECTORIES.contains(part)) return true;
+        if (committedTemplate && ENV_TEMPLATES.contains(file)) return false;
         return file.equals(".env") || file.startsWith(".env.") || SECRET_FILES.contains(file)
                 || file.endsWith(".pem") || file.endsWith(".key") || file.endsWith(".p12")
                 || file.endsWith(".pfx") || file.endsWith(".jks") || file.endsWith(".keystore");
     }
 
-    private static void rejectSpecialModes(String raw) throws IOException {
-        for (String entry : raw.split("\0", -1)) {
-            if (!entry.startsWith(":")) continue;
-            String[] header = entry.substring(1).split(" ");
-            if (header.length < 2) throw refused("received an incomplete repository mode list");
-            for (int i = 0; i < 2; i++) {
-                if (header[i].equals("120000") || header[i].equals("160000")) {
-                    throw refused("refuses changed symlinks or submodules, including deleted ones");
-                }
-            }
+    private static void rejectSpecialMode(String mode) throws IOException {
+        if (mode.equals("120000") || mode.equals("160000")) {
+            throw refused("refuses changed symlinks or submodules, including deleted ones");
         }
     }
 
@@ -227,7 +454,7 @@ public final class ApiContextBuilder {
         catch (IOException failure) { throw refused("could not run its repository inspection"); }
         if (!result.ok()) throw refused("could not collect repository evidence");
         if (result.stdoutTruncated() || result.stderrTruncated()) {
-            throw refused("repository output exceeded its capture limit; no partial context was produced");
+            throw new CaptureExceeded();
         }
         if (result.stdout().indexOf('\ufffd') >= 0) throw refused("requires UTF-8 repository paths and diff text");
         return result.stdout();
@@ -248,4 +475,25 @@ public final class ApiContextBuilder {
     }
 
     private static IOException refused(String message) { return new IOException("API context " + message); }
+
+    private static int byteCount(String value) {
+        return value.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static IOException patchExceeded(int limit) {
+        return refused("diff exceeds its remaining capture limit of " + limit
+                + " bytes (api_context.max_bytes); no partial context was produced");
+    }
+
+    private static IOException diffSnapshotExceeded(int limit) {
+        return refused("exceeds the total limit of " + limit
+                + " bytes (api_context.max_bytes) even as a diff only; no diff or file was truncated");
+    }
+
+    private static final class SnapshotExceeded extends IOException {}
+
+    /** Repository output past its capture bound; the caller names the limit that bound it. */
+    private static final class CaptureExceeded extends IOException {
+        CaptureExceeded() { super("API context repository output exceeded its capture limit; no partial context was produced"); }
+    }
 }

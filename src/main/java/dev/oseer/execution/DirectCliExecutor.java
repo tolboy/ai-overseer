@@ -161,7 +161,7 @@ public final class DirectCliExecutor implements RoleExecutor {
         try (LiveCliOutput live = LiveCliOutput.follow(stdoutFile, stderrFile, activity)) {
             process = processes.runVendor(command, request.projectRoot(),
                     Duration.ofMinutes(profile.wallClockMinutes()), PREVIEW_BYTES, stdinText,
-                    stdoutFile, stderrFile, ProcessRunner.DEFAULT_RAW_BYTES);
+                    stdoutFile, stderrFile, ProcessRunner.DEFAULT_RAW_BYTES, profile.stallTimeout());
         } catch (ProcessRunner.CaptureException incomplete) {
             recordEffortTransmission(profile, evidence);
             String code = incomplete.settled() ? "role_output_capture_failed" : "role_process_unsettled";
@@ -194,6 +194,7 @@ public final class DirectCliExecutor implements RoleExecutor {
         evidence.put("capture_preview", "head_and_tail");
         evidence.put("exit_code", (long) process.exitCode());
         evidence.put("timed_out", process.timedOut());
+        evidence.put("stalled", process.stalled());
         evidence.put("duration_millis", process.durationMillis());
 
         Duration duration = Duration.ofMillis(process.durationMillis());
@@ -249,6 +250,8 @@ public final class DirectCliExecutor implements RoleExecutor {
             artifact.putIfAbsent("role", request.role());
             artifact.putIfAbsent("task_id", request.task().id());
             artifact.putIfAbsent("run_id", request.runId());
+            int derived = deriveFindingMessages(artifact);
+            if (derived > 0) evidence.put("finding_messages_derived", derived);
             List<String> missing = missingFields(profile, artifact);
             List<String> schemaProblems = missing.isEmpty()
                     ? schemaErrors(profile, request, artifact) : List.of();
@@ -258,7 +261,8 @@ public final class DirectCliExecutor implements RoleExecutor {
                 // off at the byte cap can hide the later turn entirely, so a non-zero exit
                 // or a timeout on a truncated transcript is not success either. A child
                 // can exit 0 after SIGTERM; the timeout flag is the fact that matters.
-                if (protocol.superseded() && (process.exitCode() != 0 || process.timedOut() || protocol.turnFailed())) {
+                if (protocol.superseded() && (process.exitCode() != 0 || process.timedOut()
+                        || process.stalled() || protocol.turnFailed())) {
                     return rejectedStaleArtifact(request, process, duration, evidence, retainedQuota, retainedUnavailable, retainedTurns);
                 }
                 String semanticFailure = semanticFailure(request.role(), artifact);
@@ -269,6 +273,10 @@ public final class DirectCliExecutor implements RoleExecutor {
                 }
                 evidence.put("verdict", artifact.get("verdict"));
                 return new Result(true, "ok", duration, process.stdout(), artifact, evidence);
+            }
+            if (process.stalled()) {
+                evidence.put("failure", "role_stalled");
+                return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
             }
             if (process.timedOut()) {
                 evidence.put("failure", "role_timeout");
@@ -304,6 +312,10 @@ public final class DirectCliExecutor implements RoleExecutor {
             }
         }
 
+        if (process.stalled()) {
+            evidence.put("failure", "role_stalled");
+            return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
+        }
         if (process.timedOut()) {
             evidence.put("failure", "role_timeout");
             return new Result(false, "role_timeout", duration, process.stdout(), null, evidence);
@@ -477,6 +489,36 @@ public final class DirectCliExecutor implements RoleExecutor {
     }
 
     /** Conformance is ours, even when the vendor claimed to enforce the schema. */
+    /**
+     * A finding that says everything except {@code message} is still a finding.
+     *
+     * Measured: a Grok CLI review of a pull request (22 minutes, verdict fail, three findings
+     * with path, line, scenario, expected, actual and suggestion) was thrown away as a schema
+     * violation because no finding carried {@code message}; "whatever it concluded is
+     * unknown" was false, the conclusion was in {@code actual}. The vendor's own words are
+     * copied, in the order a reader would summarise them: {@code actual}, then
+     * {@code scenario}, then {@code expected}. Nothing is invented: a finding with none of
+     * them stays invalid. Returns how many messages were filled in, for the evidence.
+     */
+    static int deriveFindingMessages(Map<String, Object> artifact) {
+        if (artifact == null || !(artifact.get("findings") instanceof List<?> findings)) return 0;
+        int derived = 0;
+        for (Object item : findings) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Object message = raw.get("message");
+            if (message instanceof String text && !text.isBlank()) continue;
+            for (String source : List.of("actual", "scenario", "expected")) {
+                if (raw.get(source) instanceof String text && !text.isBlank()) {
+                    @SuppressWarnings("unchecked") Map<String, Object> finding = (Map<String, Object>) raw;
+                    finding.put("message", text);
+                    derived++;
+                    break;
+                }
+            }
+        }
+        return derived;
+    }
+
     static List<String> schemaErrors(Profile profile, Request request, Map<String, Object> artifact)
             throws Exception {
         // The planner's draft is compiled into a contract. A profile may skip schema
@@ -708,6 +750,10 @@ public final class DirectCliExecutor implements RoleExecutor {
         if (quota != null) return quota;
         Result ceiling = turnCeilingFailure(request.profile(), process, duration, evidence, retainedTurns);
         if (ceiling != null) return ceiling;
+        if (process.stalled()) {
+            evidence.put("failure", "role_stalled");
+            return new Result(false, "role_stalled", duration, process.stdout(), null, evidence);
+        }
         if (process.timedOut()) {
             evidence.put("failure", "role_timeout");
             return new Result(false, "role_timeout", duration, process.stdout(), null, evidence);

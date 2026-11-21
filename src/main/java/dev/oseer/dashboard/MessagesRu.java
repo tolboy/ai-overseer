@@ -370,6 +370,7 @@ decision.task = · задача
 decision.that_did_not_stop_the = которые петлю не остановили (останавливает только P1). Прочитайте их до решения:
 decision.the_tooltip_shows_what_was = Что на снимке проверено — во всплывающей подсказке.
 decision.this_run_has_no_pending = У этого прогона нет ожидающего решения.
+decision.unverified = цитата не подтверждена
 decision.verify_manually = Проверить самому
 decision.visible = виден
 decision.warning = . Внимание:
@@ -810,6 +811,7 @@ shell.stopped = остановлен
 shell.stopped_without_results = остановлен без итогов
 shell.tokens = токены:
 shell.unpriced_call_s_total_is = вызов(ов) без цены — сумма неполная
+shell.unverified_findings = неподтверждённые находки:
 shell.verdict_reused_from = вердикт переиспользован из
 shell.visual_qa = визуальная проверка
 shell.who_works_on_the_next = Кто работает в следующем запуске
@@ -970,6 +972,11 @@ models.ping = Проверить связь
 shell.overview_lineup_note = По личной политике, до настроек задачи. Закрепления стадий в задаче, флаги CLI и Jev могут выбрать другого участника. Точный состав для задачи — во вкладке «Следующий запуск»; менять участников и модели — во вкладке «Роли и вендоры».
 timeline.attempt_failed = попытка не удалась:
 timeline.switched = смена вендора:
+dash.cost_is_unknown = стоимость неизвестна
+dash.may_be_billed = может быть списано
+dash.decision_superseded = устарело
+shell.not_reached = не достигнута
+shell.earlier_candidate = вердикт по старому дереву
 """;
 
     static final String TEXT = String.join("\n", CONN, DASH, DECISION, DIFF, MODELS, NEXT, PREVIEW, SHELL, VENDORS, ADDED);

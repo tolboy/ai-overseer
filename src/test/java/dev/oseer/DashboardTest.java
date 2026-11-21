@@ -48,6 +48,18 @@ public final class DashboardTest implements Suite {
         check.eq("title-free stage identity survives", "review-second", row.get("stage"));
         check.eq("launch update keeps role identity", "reviewer", row.get("role"));
         check.eq("controller death is unknown, not completed", "unknown_controller_stopped", row.get("view_state"));
+        var self = ProcessHandle.current();
+        var liveView = new LinkedHashMap<String, Object>();
+        liveView.put("view_state", "running");
+        liveView.put("controller_pid", self.pid());
+        liveView.put("controller_started_at", self.info().startInstant().orElseThrow().toString());
+        check.eq("a live controller stays in progress", "running", Dashboard.publicAttempt(liveView).get("view_state"));
+        var tick = new LinkedHashMap<String, Object>(liveView);
+        tick.put("controller_started_at", self.info().startInstant().orElseThrow().minusMillis(50).toString());
+        check.eq("a clock tick of skew is still this controller", "running", Dashboard.publicAttempt(tick).get("view_state"));
+        var recycled = new LinkedHashMap<String, Object>(liveView);
+        recycled.put("controller_started_at", self.info().startInstant().orElseThrow().minus(java.time.Duration.ofHours(1)).toString());
+        check.eq("a recycled pid is not this controller", "unknown_controller_stopped", Dashboard.publicAttempt(recycled).get("view_state"));
         check.that("public data excludes raw output and arbitrary launch keys", !Json.write(rows).contains("secret"));
         check.eq("projection is not evidence", false, Json.parseObject(Files.readString(run.resolve("view-reviewer.json"))).get("evidence"));
         RoleView.update(run, "../escape", Map.of("value", "bad"));
@@ -103,6 +115,89 @@ public final class DashboardTest implements Suite {
         check.that("budget omits paying stage names", !budget.containsKey("paying_stages"));
         check.that("run list does not include the dry-run id",
                 runs.stream().noneMatch(item -> "run-dry".equals(((Map<?, ?>) item).get("run_id"))));
+
+        var going = self;
+        Path goingDir = root.resolve(".oseer/runs/run-going");
+        Files.createDirectories(goingDir);
+        Files.writeString(goingDir.resolve("run.json"), Json.write(Map.of("run_id", "run-going", "task_id", "demo-task",
+                "reserved_at", "2026-09-20T00:00:00Z")));
+        var goingView = new LinkedHashMap<String, Object>();
+        goingView.put("workflow_run_id", "run-going");
+        goingView.put("stage", "review");
+        goingView.put("role", "reviewer");
+        goingView.put("profile", "reader");
+        goingView.put("view_state", "running");
+        goingView.put("controller_pid", going.pid());
+        goingView.put("controller_started_at", going.info().startInstant().orElseThrow().toString());
+        Files.writeString(goingDir.resolve("view-reviewer.json"), Json.write(goingView));
+        Path deadDir = root.resolve(".oseer/runs/run-dead");
+        Files.createDirectories(deadDir);
+        Files.writeString(deadDir.resolve("run.json"), Json.write(Map.of("run_id", "run-dead", "task_id", "demo-task",
+                "reserved_at", "2026-09-19T00:00:00Z")));
+        Files.writeString(deadDir.resolve("view-reviewer.json"), Json.write(Map.of("workflow_run_id", "run-dead",
+                "stage", "review", "role", "reviewer", "view_state", "running", "controller_pid", -1L,
+                "controller_started_at", "2026-09-19T00:00:00Z")));
+        Path liveFile = root.resolve(".oseer/runs/run-live/task-run.json");
+        Map<String, Object> liveBody = Json.parseObject(Files.readString(liveFile));
+        liveBody.put("candidate_fingerprint", "tree-a");
+        Files.writeString(liveFile, Json.write(liveBody));
+        Files.writeString(root.resolve(".oseer/runs/run-live/run.json"), Json.write(Map.of("run_id", "run-live",
+                "task_id", "demo-task", "reserved_at", "2026-09-18T12:00:00Z")));
+        writeDecision(root, "run-prior");
+        Map<String, Object> prior = new LinkedHashMap<>();
+        prior.put("run_id", "run-prior");
+        prior.put("task_id", "demo-task");
+        prior.put("ok", false);
+        prior.put("reason", "role_api_timeout");
+        writeSummary(root, "run-prior", prior);
+        Files.writeString(root.resolve(".oseer/runs/run-prior/run.json"), Json.write(Map.of("run_id", "run-prior",
+                "task_id", "demo-task", "reserved_at", "2026-09-10T00:00:00Z")));
+        Map<String, Object> stale = new LinkedHashMap<>();
+        stale.put("run_id", "run-stale");
+        stale.put("task_id", "demo-task");
+        stale.put("ok", false);
+        stale.put("reason", "model_check_failed");
+        stale.put("candidate_fingerprint", "sha256:candidate");
+        stale.put("total_cost_usd", 0.0);
+        stale.put("unpriced_calls", 1L);
+        stale.put("steps", List.of(Map.of("step", "review", "ok", false, "code", "role_api_timeout",
+                "vendor_attempts", List.of(Map.of("ok", false, "may_be_billed", true, "code", "role_api_timeout")))));
+        writeSummary(root, "run-stale", stale);
+        writeDecision(root, "run-stale");
+        Files.writeString(root.resolve(".oseer/runs/run-stale/run.json"), Json.write(Map.of("run_id", "run-stale",
+                "task_id", "demo-task", "reserved_at", "2026-09-01T00:00:00Z")));
+        Map<String, Object> laterFailure = new LinkedHashMap<>(stale);
+        laterFailure.put("run_id", "run-later-failure");
+        writeSummary(root, "run-later-failure", laterFailure);
+        writeDecision(root, "run-later-failure");
+        Files.writeString(root.resolve(".oseer/runs/run-later-failure/run.json"), Json.write(Map.of(
+                "run_id", "run-later-failure", "task_id", "demo-task", "reserved_at", "2026-09-18T15:00:00Z")));
+
+        var again = Dashboard.snapshot(root, UserConfig.load(root.resolve("empty-home")));
+        var ordered = (List<?>) again.get("runs");
+        check.eq("newest start is first, ahead of a later file mtime", "run-going", ((Map<?, ?>) ordered.get(0)).get("run_id"));
+        check.eq("a live reservation is in progress", "running", ((Map<?, ?>) ordered.get(0)).get("state"));
+        var dead = ordered.stream().map(item -> (Map<?, ?>) item).filter(item -> "run-dead".equals(item.get("run_id"))).findFirst().orElseThrow();
+        check.eq("a dead controller is listed and not called running", "controller_stopped", dead.get("state"));
+        var priorRow = ordered.stream().map(item -> (Map<?, ?>) item).filter(item -> "run-prior".equals(item.get("run_id"))).findFirst().orElseThrow();
+        check.eq("a continued run's decision is superseded", "superseded", ((Map<?, ?>) priorRow.get("decision")).get("state"));
+        var staleRow = ordered.stream().map(item -> (Map<?, ?>) item).filter(item -> "run-stale".equals(item.get("run_id"))).findFirst().orElseThrow();
+        check.eq("a later approval of the same final tree supersedes the question", "superseded", ((Map<?, ?>) staleRow.get("decision")).get("state"));
+        check.eq("the call that already left may be billed", true, staleRow.get("may_be_billed"));
+        var waiting = (List<?>) again.get("pending_decisions");
+        check.that("a superseded decision does not need attention", waiting.stream().noneMatch(item -> {
+            Object id = ((Map<?, ?>) item).get("run_id");
+            return "run-prior".equals(id) || "run-stale".equals(id);
+        }));
+        check.that("a later failed run cannot hide the earlier approval", waiting.stream().anyMatch(item -> "run-live".equals(((Map<?, ?>) item).get("run_id"))));
+        check.eq("the ledger decision is still pending", "pending",
+                Json.parseObject(Files.readString(root.resolve(".oseer/runs/run-stale/decision.json"))).get("state"));
+        check.eq("the run page shows that decision as superseded", "superseded",
+                ((Map<?, ?>) dev.oseer.dashboard.RunTimeline.read(root, "run-stale").get("decision_record")).get("state"));
+        check.eq("the run page keeps the earlier approval visible after a failed run", "pending",
+                ((Map<?, ?>) dev.oseer.dashboard.RunTimeline.read(root, "run-live").get("decision_record")).get("state"));
+        check.eq("the card and the list name the same newest run", ((Map<?, ?>) ordered.get(0)).get("run_id"),
+                ((Map<?, ?>) ((List<?>) again.get("runs")).get(0)).get("run_id"));
         String projected = Json.write(snapshot);
         check.that("summary goal marker is absent from the snapshot", !projected.contains("SECRET_GOAL_MARKER"));
         check.that("finding message marker is absent from the snapshot", !projected.contains("SECRET_FINDING_MARKER"));
@@ -115,6 +210,10 @@ public final class DashboardTest implements Suite {
             check.contains("UI treats configured fields as text", page.body(), "td.textContent");
             check.contains("runs section is on the page", page.body(), "Запуски");
             check.contains("one cost formatter for every cost on the page", page.body(), "function costText(usd,unpriced)");
+            check.contains("a zero total with unpriced calls is not a dollar amount", page.body(), "amount===0");
+            check.contains("a stage that never ran is not still open", page.body(), "не достигнута");
+            check.contains("a timed-out call can say it may be billed", page.body(), "может быть списано");
+            check.contains("a superseded decision has its own word", page.body(), "устарело");
             String launchPage = page.body();
             check.that("a waiting job badges the tab title", launchPage.contains("document.title=(waiting.length?"));
             check.that("notifications are asked for on a click, not on load", launchPage.contains("addEventListener('click',async()=>{askToNotify();"));
@@ -274,6 +373,17 @@ public final class DashboardTest implements Suite {
         body.put("reason", "budget_exhausted");
         body.put("safe_next_step", "raise the call ceiling");
         return body;
+    }
+
+    private static void writeDecision(Path root, String runId) throws Exception {
+        Path file = root.resolve(".oseer/runs").resolve(runId).resolve("decision.json");
+        Files.createDirectories(file.getParent());
+        Map<String, Object> decision = new LinkedHashMap<>();
+        decision.put("state", "pending");
+        decision.put("kind", "failure");
+        decision.put("options", List.of("retry"));
+        decision.put("created_at", "2026-09-01T00:00:00Z");
+        Files.writeString(file, Json.write(decision));
     }
 
     private static Map<String, Object> drySummary() {

@@ -52,7 +52,8 @@ public record Profile(
         String verificationExpect,
         String harness,
         ApiSettings apiSettings,
-        CliService cliService) {
+        CliService cliService,
+        Integer stallSeconds) {
 
     /**
      * The service and account a CLI profile authenticates against. Null for legacy files that
@@ -73,14 +74,25 @@ public record Profile(
         this(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, null);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness,
+                apiSettings, null, null);
     }
 
     /** Connection metadata contains references only; never a credential value. */
     public record ApiSettings(String connection, String modelVendor, int maxOutputTokens,
                               String verificationFingerprint, Connection resolved, java.nio.file.Path home,
                               java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes,
-                              Integer maxRequests) {
+                              Integer maxRequests, ApiContextSettings apiContext) {
+        public ApiSettings {
+            if (apiContext == null) apiContext = ApiContextSettings.DEFAULT;
+        }
+        public ApiSettings(String connection, String modelVendor, int maxOutputTokens,
+                           String verificationFingerprint, Connection resolved, java.nio.file.Path home,
+                           java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes,
+                           Integer maxRequests) {
+            this(connection, modelVendor, maxOutputTokens, verificationFingerprint, resolved, home,
+                    harnessExecutable, declaredWallClockMinutes, maxRequests, null);
+        }
         public ApiSettings(String connection, String modelVendor, int maxOutputTokens,
                            String verificationFingerprint, Connection resolved, java.nio.file.Path home,
                            java.nio.file.Path harnessExecutable, Long declaredWallClockMinutes) {
@@ -127,6 +139,10 @@ public record Profile(
     }
 
     public int maxOutputTokens() { return apiSettings == null ? 2048 : apiSettings.maxOutputTokens(); }
+    /** What an API reader is sent about the candidate; defaults for every other runner. */
+    public ApiContextSettings apiContext() {
+        return apiSettings == null ? ApiContextSettings.DEFAULT : apiSettings.apiContext();
+    }
     public Connection apiConnection() { return apiSettings == null ? null : apiSettings.resolved(); }
     /** Model turns one OpenCode dispatch may take through the relay. */
     public int maxRequests() {
@@ -138,6 +154,33 @@ public record Profile(
     public long declaredWallClockMinutes() {
         return apiSettings == null || apiSettings.declaredWallClockMinutes() == null
                 ? wallClockMinutes : apiSettings.declaredWallClockMinutes();
+    }
+
+    /**
+     * How long a call may sit with no new bytes before it is given up, while the wall clock
+     * still has time left. Null means only the wall clock applies.
+     *
+     * Off unless the profile names {@code limits.stall_seconds}. API calls are sent with
+     * {@code stream: false}, so a healthy reasoning model can return no byte at all until it
+     * has finished: measured review calls took 5–16 minutes (GLM) and 8.5 minutes (DeepSeek)
+     * and succeeded. A default shorter than that would stop exactly the calls that work. Set
+     * the key per profile when the provider is known to send headers or keep-alive bytes
+     * early, or to bound a provider that is known to hang. Zero is the explicit off switch.
+     */
+    public java.time.Duration stallTimeout() {
+        if (stallSeconds != null) {
+            return stallSeconds == 0 ? null : java.time.Duration.ofSeconds(stallSeconds);
+        }
+        return null;
+    }
+
+    /** The same profile with an explicit stall bound. Zero disables it. */
+    public Profile withStallSeconds(Integer seconds) {
+        return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
+                maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
+                quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness,
+                apiSettings, cliService, seconds);
     }
     @Override public boolean verified() {
         // A hand-written stamp cannot make a coding harness eligible. Tool-loop proof is separate.
@@ -153,11 +196,11 @@ public record Profile(
         if (apiConnection() == null) throw new IllegalArgumentException("API probe requires a bound connection");
         ApiSettings probe = new ApiSettings(connectionRef(), modelVendor(), maxOutputTokens(), null,
                 apiConnection(), apiSettings.home(), harnessExecutable(), declaredWallClockMinutes(),
-                apiSettings.maxRequests());
+                apiSettings.maxRequests(), apiSettings.apiContext());
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, false, mcpConfig, verificationExpect, harness, probe, cliService);
+                verificationProbe, verificationChecks, false, mcpConfig, verificationExpect, harness, probe, cliService, stallSeconds);
     }
 
     /** Effective identity for independence; the legacy label remains in historical evidence. */
@@ -191,19 +234,19 @@ public record Profile(
         String boundEndpoint = harness == null ? connection.endpoint() : connection.baseUrl();
         ApiSettings settings = new ApiSettings(connectionRef(), modelVendor(), maxOutputTokens(),
                 apiSettings.verificationFingerprint(), connection, home.toAbsolutePath().normalize(), harnessExecutable(), declaredWallClockMinutes(),
-                apiSettings.maxRequests());
+                apiSettings.maxRequests(), apiSettings.apiContext());
         Profile bound = new Profile(name, role, vendor, model, effort, command, args, readOnly,
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, promptDelivery, attachmentFlag, vision,
                 runner, boundEndpoint, connection.apiKeyEnv(), verificationProbe,
-                verificationChecks, verified, mcpConfig, verificationExpect, harness, settings, cliService);
+                verificationChecks, verified, mcpConfig, verificationExpect, harness, settings, cliService, stallSeconds);
         boolean checked = verified
                 && bound.apiFingerprint().equals(settings.verificationFingerprint());
         return new Profile(name, role, vendor, model, effort, command, args, readOnly,
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, promptDelivery, attachmentFlag, vision,
                 runner, boundEndpoint, connection.apiKeyEnv(), verificationProbe,
-                verificationChecks, checked, mcpConfig, verificationExpect, harness, settings, cliService);
+                verificationChecks, checked, mcpConfig, verificationExpect, harness, settings, cliService, stallSeconds);
     }
 
     /** Changes to model, endpoint, adapter or output bound invalidate API verification. */
@@ -273,7 +316,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, resolved, verificationExpect, harness, apiSettings, cliService);
+                verificationProbe, verificationChecks, verified, resolved, verificationExpect, harness, apiSettings, cliService, stallSeconds);
     }
 
     /** Effort for one dispatch. Does not rewrite the home file or drop {@code verified_on}. */
@@ -281,7 +324,7 @@ public record Profile(
         return new Profile(name, role, vendor, model, next, command, args, readOnly, wallClockMinutes,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, cliService);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, apiSettings, cliService, stallSeconds);
     }
 
     /**
@@ -302,7 +345,7 @@ public record Profile(
                 wallClockMinutes, maxCostUsd, promptTemplate, jsonSchema, enforceSchema,
                 requiredArtifactFields, quotaSignatures, "workspace_file", attachmentFlag,
                 vision, "orca", endpoint, apiKeyEnv, verificationProbe, verificationChecks,
-                verified, mcpConfig, verificationExpect, null, null, cliService);
+                verified, mcpConfig, verificationExpect, null, null, cliService, stallSeconds);
     }
 
     private static final Set<String> TOP_LEVEL = Set.of(
@@ -310,10 +353,19 @@ public record Profile(
             "limits", "prompt_template", "json_schema", "enforce_schema", "artifact", "quota",
             "prompt_delivery", "attachments", "capabilities", "runner", "endpoint", "api_key_env",
             "verification", "notes", "mcp", "connection", "model_vendor", "harness", "harness_executable",
-            "service", "account");
+            "service", "account", "api_context");
     private static final Set<String> MCP = Set.of("config", "note");
     private static final Set<String> LIMITS = Set.of("wall_clock_minutes", "max_cost_usd", "max_output_tokens",
-            "max_requests");
+            "max_requests", "max_turns", "stall_seconds");
+
+
+
+    /**
+     * The turn ceiling a direct CLI profile gets when its args carry {@code {{max_turns}}} and
+     * its limits do not name one. A pull-request review measured 17 turns; 12 could not finish.
+     */
+    public static final int DEFAULT_MAX_TURNS = 40;
+    public static final int MAX_TURNS_CEILING = 500;
     private static final Set<String> ARTIFACT = Set.of("required_fields");
     private static final Set<String> QUOTA = Set.of("signatures");
     private static final Set<String> ATTACHMENTS = Set.of("flag");
@@ -321,6 +373,9 @@ public record Profile(
     private static final Set<String> VISION = Set.of("delivery", "verification", "acquires");
     private static final Set<String> VERIFICATION = Set.of(
             "verified_on", "status", "probe", "what_to_check", "note", "expect", "connection_fingerprint");
+
+    /** The largest output cap a profile may declare; a connection may set a lower one. */
+    public static final int MAX_OUTPUT_TOKENS_CEILING = 65536;
 
     public static final Set<String> ROLES = Set.of(
             "implementer", "reviewer", "architect", "visual_qa", "planner", "plan_reviewer");
@@ -377,14 +432,14 @@ public record Profile(
         if (scoped != null && scoped.declaredWallClockMinutes() == null) {
             scoped = new ApiSettings(scoped.connection(), scoped.modelVendor(), scoped.maxOutputTokens(),
                     scoped.verificationFingerprint(), scoped.resolved(), scoped.home(), scoped.harnessExecutable(), wallClockMinutes,
-                    scoped.maxRequests());
+                    scoped.maxRequests(), scoped.apiContext());
         }
         // A per-dispatch override can only tighten a harness's verified declaration.
         long bounded = harness == null ? minutes : Math.min(minutes, Math.min(wallClockMinutes, declaredWallClockMinutes()));
         return new Profile(name, role, vendor, model, effort, command, args, readOnly, bounded,
                 maxCostUsd, promptTemplate, jsonSchema, enforceSchema, requiredArtifactFields,
                 quotaSignatures, promptDelivery, attachmentFlag, vision, runner, endpoint, apiKeyEnv,
-                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, scoped, cliService);
+                verificationProbe, verificationChecks, verified, mcpConfig, verificationExpect, harness, scoped, cliService, stallSeconds);
     }
 
     public boolean hasVerifiedVision() {
@@ -454,6 +509,17 @@ public record Profile(
         } else if (args.stream().anyMatch(a -> a.contains("{{effort}}"))) {
             root.collector().add("{{effort}} in args requires effort");
         }
+        // A model a direct CLI never receives is a label: the CLI runs its own default and the
+        // report's model column becomes a wish. Measured: grok-review declared a model, its args
+        // had no --model, and every review ran the CLI default. Scoped to grok: its CLI has no
+        // other way to select a model per call, whereas a Codex profile may select one through
+        // `--profile` in its own config.toml, where the declared model is a faithful label.
+        if ("direct".equals(runner) && !opencode && "grok".equals(vendor) && model != null && !model.isBlank()
+                && args.stream().noneMatch(a -> a.contains("{{model}}"))) {
+            root.collector().add("model is declared but no args entry passes {{model}} to the vendor, so the "
+                    + "CLI would run its own default model; add \"--model\", \"{{model}}\" to args "
+                    + "or remove model");
+        }
         if ("orca".equals(runner) && !args.isEmpty()) {
             root.collector().add("runner: orca cannot forward args (including tool grants, sandbox and turn limits); "
                     + "keep runner: direct for those constraints instead of dropping them");
@@ -486,7 +552,7 @@ public record Profile(
         // no price cannot honestly declare one, and a strict cap then refuses the roster.
         Double maxCostUsd = limits.has("max_cost_usd")
                 ? limits.optDouble("max_cost_usd", 1.0, 0.0, 10000.0) : null;
-        int maxOutputTokens = (int) limits.optInt("max_output_tokens", 2048, 1, 16384);
+        int maxOutputTokens = (int) limits.optInt("max_output_tokens", 2048, 1, MAX_OUTPUT_TOKENS_CEILING);
         // An omitted cap is not a promise of 2048. API keeps its historical default.
         if (opencode && !limits.has("max_output_tokens")) maxOutputTokens = 0;
         // Relay turns for one OpenCode dispatch. Only a coding harness has turns to count.
@@ -495,6 +561,46 @@ public record Profile(
             if (!opencode) root.collector().add("limits.max_requests applies only to harness: opencode");
             else maxRequests = (int) limits.optInt("max_requests", CodingAttestation.MAX_REQUESTS,
                     1, CodingAttestation.REQUEST_CEILING);
+        }
+        // The vendor's own turn ceiling, for a direct CLI. Written once in limits and handed to
+        // the CLI through {{max_turns}}, so a review that needs more room is a limits edit,
+        // not a hunt through args for a bare number.
+        boolean usesMaxTurns = args.stream().anyMatch(a -> a.contains("{{max_turns}}"));
+        if (limits.has("max_turns")) {
+            if (!"direct".equals(runner) || opencode) {
+                root.collector().add("limits.max_turns applies only to runner: direct CLI profiles");
+            } else if (!usesMaxTurns) {
+                root.collector().add("limits.max_turns is declared but no args entry passes {{max_turns}} to the "
+                        + "vendor (for grok and claude: \"--max-turns\", \"{{max_turns}}\"), so the ceiling "
+                        + "would never be applied");
+            }
+        }
+        if (usesMaxTurns) {
+            long maxTurns = limits.optInt("max_turns", DEFAULT_MAX_TURNS, 1, MAX_TURNS_CEILING);
+            String turns = Long.toString(maxTurns);
+            args = args.stream().map(a -> a.replace("{{max_turns}}", turns)).toList();
+        }
+        // 0 is off. 1–4 are shorter than a slow TLS handshake and would fail calls that are
+        // merely connecting, so they are refused rather than stored as a surprise.
+        Integer stallSeconds = null;
+        if (limits.has("stall_seconds")) {
+            long raw = limits.optInt("stall_seconds", 0, 0, 3600);
+            if (raw != 0 && raw < 5) {
+                root.collector().add("limits.stall_seconds must be 0 (off) or from 5 to 3600");
+            }
+            stallSeconds = (int) raw;
+        }
+        ApiContextSettings apiContext = null;
+        if (root.has("api_context")) {
+            if (!"api".equals(runner)) {
+                root.collector().add("api_context applies only to runner: api; other runners read the worktree themselves");
+            } else {
+                try {
+                    apiContext = ApiContextSettings.parse(root.optMap("api_context"));
+                } catch (IllegalArgumentException invalid) {
+                    root.collector().add(invalid.getMessage());
+                }
+            }
         }
         if (harnessExecutable != null && maxOutputTokens == 0) {
             root.collector().add("harness_executable requires an explicit limits.max_output_tokens");
@@ -706,8 +812,8 @@ public record Profile(
                 probe, whatToCheck, verified, mcpConfig, expect, harness,
                 connects ? new ApiSettings(connection, canonicalVendor(modelVendor),
                         maxOutputTokens, connectionFingerprint, null, null, harnessExecutable, wallClock,
-                        maxRequests) : null,
-                cliService);
+                        maxRequests, apiContext) : null,
+                cliService, stallSeconds);
     }
 
     /**

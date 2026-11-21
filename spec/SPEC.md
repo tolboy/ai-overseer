@@ -188,6 +188,45 @@ actual, scenario or suggestion contains an item (case-insensitive substring) is 
 as P2 with `severity_as_filed`, the matched item, and `advisory: true`. It does not block.
 A product defect is never lowered. The vendor artifact is left as filed.
 
+Optional task `acceptance_evidence` records acceptance the pull request already has, so a
+review whose local gate is only `git diff --check` can still show readers the commands
+and the CI result. Overseer does not fetch either; the operator pastes them.
+
+```yaml
+acceptance_evidence:
+  commands: ["./build.sh", "./test.sh"]   # at most 20 single lines, each ≤2000 characters
+  ci:
+    source: "gh pr checks"                # optional label, ≤200 characters
+    summary: ["build   pass", "test    pass"]   # a string or a list of lines, ≤8000 characters
+    checks:
+      - { name: build, conclusion: success }
+```
+
+Check conclusions are `success`, `failure`, `neutral`, `cancelled`, `skipped`,
+`timed_out`, `action_required`, `startup_failure`. `pass` and `fail` are stored as
+`success` and `failure`. Unknown keys and unknown conclusions are refused. Absent or
+empty evidence is omitted from `acceptance_sha256`. When the evidence is real acceptance
+— any command, any check concluded `success`, or a summary that does not itself say the
+run failed — a P1 `contract_gap` whose text only claims that nothing compiles, that tests
+do not run, or that the gate is `git diff --check` is recorded as P2 with
+`severity_as_filed`, `acceptance_evidence: recorded`, and `advisory: true`. A gap that
+says those commands do not cover or do not assert the behaviour stays a P1. A product
+defect is never lowered. The vendor artifact is left as filed. The reviewer prompt
+carries the block as `{{acceptance_evidence}}`; a template that predates the placeholder
+has the block appended, because `oseer setup` does not overwrite `prompts/reviewer.md`.
+
+A P1 or P2 `product_defect` is checked against the worktree before it can block. The
+`path` (optionally `path:line` or `path:start-end`), the integer `line` / `end_line`, and
+any `quote` or `snippet` must agree with the file. A backtick span of at least 12
+characters that looks like code is treated as a quote; a backtick that only names the
+file is not. The quote has to occur within 20 lines of the cited line, or anywhere in
+the file when no line is cited. A miss is recorded with `unverified: true`,
+`verification_reason` and `verification_detail`. A P1 is stored as P2 with
+`severity_as_filed` and `advisory: true`. A P2 stays a P2 and is not repaired. Other
+categories are not checked. The vendor artifact is left as filed. No model is called.
+The run summary lists them as `unverified_findings`, and the report and dashboard show
+that list. A template that does not mention the check has a short paragraph appended.
+
 `oseer pilot prepare` requires a declared `reproduction.command` to be in
 `checks.acceptance` and writes it into the task's `reproduce` list. Preparation executes
 nothing: `reproduction_check.status` is `enforced_by_oseer_run`, or `not_declared` when
@@ -392,6 +431,13 @@ spent subscription: it never fails over, and the run stops with `rate_limited`.
 `on_vendor_failure` is the same three choices for a call that produced no artifact, and it
 defaults to `stop`. `max_per_stage` (default 1) bounds how many times one dispatch may switch.
 A review finding, a gate failure and a rejection are not this.
+`subscription_to_same_family_api` defaults to `never`: a grok, codex, or claude subscription
+CLI is not failed over onto a paid API of the same family. `allow` permits it.
+`on_pinned` defaults to `stop`: a stage named with `--use` does not take that vendor-failure
+failover unless the value is `confirm` or `auto`. Quota failover is unchanged.
+A switch and a refusal are both recorded from→to (`role_failovers`, `failover_blocked`).
+`limits.stall_seconds` (off unless set; `0` is off) stops a silent
+call as `role_stalled` while the wall clock remains. That code follows `on_vendor_failure`.
 
 A stop caused by a vendor's endpoint rather than by its reading of the work has its own reason:
 `quota_exhausted`, `rate_limited`, `role_timed_out`, `vendor_call_failed`,

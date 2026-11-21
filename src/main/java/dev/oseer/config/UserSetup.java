@@ -265,10 +265,10 @@ public final class UserSetup {
             role: reviewer
             vendor: grok
             effort: high
-            # A label unless the args below pass it on. Overseer makes the value available as
-            # {{model}}; each vendor spells its own flag, so the profile writes the flag out.
+            # Passed to the CLI below as --model {{model}}. Without that flag the value was only
+            # a label and the CLI ran its own default, which made the report's model a guess.
             # When the vendor reports a different model, the run report says so.
-            model: grok-4.6-build
+            model: grok-4.6
             command: grok
             runner: direct
             read_only: true
@@ -282,21 +282,28 @@ public final class UserSetup {
             #   --always-approve     the flag that actually auto-approves tool execution.
             #   --reasoning-effort   must be pinned here; unset it is inherited from
             #                        ~/.grok/config.toml, which makes cost depend on ambient state.
+            #   --max-turns          the verification review below took 17 turns; 12 could not
+            #                        finish it. A pull-request-sized review needs room to read.
+            #                        The ceiling lives in limits.max_turns and reaches the CLI
+            #                        through {{max_turns}}.
             args:
               - "--prompt-file"
               - "{{prompt_file}}"
               - "--output-format"
               - "json"
+              - "--model"
+              - "{{model}}"
               - "--always-approve"
               - "--reasoning-effort"
               - "{{effort}}"
               - "--max-turns"
-              - "12"
+              - "{{max_turns}}"
               - "--disable-web-search"
               - "--verbatim"
 
             limits:
-              wall_clock_minutes: 25
+              wall_clock_minutes: 40
+              max_turns: 40
 
             prompt_template: prompts/reviewer.md
             json_schema: schemas/reviewer.json
@@ -604,7 +611,7 @@ public final class UserSetup {
             Browser scenarios the harness asserts, after you and before a human
             {{visual_scenarios}}
 
-            Those two lists are the whole of the machine acceptance, and the second one is not
+            Those two lists are what Overseer itself runs, and the second one is not
             a plan — a headless browser runs it at the named viewports. The grammar is
             `testid=` / `css=` / `role=` / `text=` with `visible`, `hidden`, `click`,
             `click@x,y` or `focused`, plus `press=KEY` (Escape, Enter, Tab, Space, an arrow,
@@ -626,6 +633,15 @@ public final class UserSetup {
             file a blocking contract_gap for one of them:
 
             {{manual_verification}}
+
+            Acceptance already recorded for this change, beyond the local machine gate
+            {{acceptance_evidence}}
+
+            That block was supplied with the task — the pull request's own commands and a CI
+            result — and Overseer did not look it up. When it names commands or a check that
+            passed, do not file a contract_gap claiming that nothing compiles, that tests do
+            not run, or that the only acceptance is `git diff --check`. File a contract_gap
+            only when those commands do not cover the behaviour under review.
 
             ## Hard constraints
 
@@ -682,6 +698,12 @@ public final class UserSetup {
               the work.
             - `review_disagreement` — you believe an earlier finding was wrong. Say why, on the
               evidence.
+
+            A P1 or P2 `product_defect` must name a file that is in the tree. When you name a
+            line, that line must exist. Put current source in `quote`, or use backticks in
+            `actual` for a literal source excerpt. Overseer checks the file, the line, and that
+            the quote sits within 20 lines of it. A citation it cannot check is recorded as
+            unverified and does not block. Overseer checks the worktree directly.
 
             A finding an implementer cannot act on is not a reason to soften a defect. File a
             product defect at the severity it deserves. A check the grammar cannot express is
@@ -798,6 +820,8 @@ public final class UserSetup {
                       "severity": { "enum": ["P1", "P2", "P3"] },
                       "path": { "type": "string" },
                       "line": { "type": "integer" },
+                      "end_line": { "type": "integer" },
+                      "quote": { "type": "string" },
                       "message": { "type": "string" },
                       "scenario": { "type": "string" },
                       "expected": { "type": "string" },

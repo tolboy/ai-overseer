@@ -16,15 +16,30 @@ import java.util.regex.Pattern;
  * Imported references retain their exact vault target; new connections use oseer/.
  */
 public record Connection(String id, String provider, String protocol, String baseUrl,
-                         String credentialRef, boolean enabled) {
+                         String credentialRef, boolean enabled, Integer maxOutputTokens) {
 
     private static final Pattern ID = Pattern.compile("[a-z][a-z0-9_-]{0,63}");
     private static final Pattern ENV = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
     private static final Set<String> PROVIDERS = Set.of("openrouter", "gonkarouter", "joingonka", "custom");
     private static final Set<String> FIELDS = Set.of(
-            "version", "connection", "provider", "protocol", "base_url", "auth", "enabled");
+            "version", "connection", "provider", "protocol", "base_url", "auth", "enabled",
+            "max_output_tokens");
+    /**
+     * GonkaRouter refused a max_tokens above this when the limit was measured (see
+     * docs/API-CONNECTIONS.md). It is the default for that provider, not a law: a connection
+     * that has been shown to accept more declares its own {@code max_output_tokens}.
+     */
+    public static final int GONKAROUTER_DEFAULT_OUTPUT_CEILING = 4096;
+
+    public Connection(String id, String provider, String protocol, String baseUrl,
+                      String credentialRef, boolean enabled) {
+        this(id, provider, protocol, baseUrl, credentialRef, enabled, null);
+    }
 
     public Connection {
+        if (maxOutputTokens != null && (maxOutputTokens < 1 || maxOutputTokens > Profile.MAX_OUTPUT_TOKENS_CEILING)) {
+            throw invalid("max_output_tokens must be between 1 and " + Profile.MAX_OUTPUT_TOKENS_CEILING);
+        }
         requireId(id);
         if (!PROVIDERS.contains(provider == null ? "" : provider)) {
             throw invalid("provider must be openrouter, gonkarouter, joingonka, or custom");
@@ -95,6 +110,9 @@ public record Connection(String id, String provider, String protocol, String bas
         String protocol = values.requireString("protocol");
         String baseUrl = values.requireString("base_url");
         boolean enabled = values.optBool("enabled", true);
+        Integer ceiling = values.has("max_output_tokens")
+                ? (int) values.optInt("max_output_tokens", GONKAROUTER_DEFAULT_OUTPUT_CEILING, 1,
+                        Profile.MAX_OUTPUT_TOKENS_CEILING) : null;
         Values auth = values.optMap("auth").rejectUnknownKeys(Set.of("type", "credential_ref"));
         String type = auth.requireString("type");
         String reference = auth.optString("credential_ref", null);
@@ -107,10 +125,20 @@ public record Connection(String id, String provider, String protocol, String bas
         }
         values.throwIfAny();
         try {
-            return new Connection(id, provider, protocol, baseUrl, reference, enabled);
+            return new Connection(id, provider, protocol, baseUrl, reference, enabled, ceiling);
         } catch (ConfigException failure) {
             throw new ConfigException(source, failure.issues());
         }
+    }
+
+    /**
+     * The largest output cap a profile on this connection may send, or null when the
+     * connection imposes none beyond the profile's own. An explicit {@code max_output_tokens}
+     * wins; otherwise GonkaRouter keeps its measured default.
+     */
+    public Integer outputCeiling() {
+        if (maxOutputTokens != null) return maxOutputTokens;
+        return "gonkarouter".equals(provider) ? GONKAROUTER_DEFAULT_OUTPUT_CEILING : null;
     }
 
     /** The only protocol supported by the first connection implementation. */
@@ -131,6 +159,9 @@ public record Connection(String id, String provider, String protocol, String bas
     public String fingerprint() {
         String material = String.join("\n", "connection-v1", id, provider, protocol, baseUrl,
                 credentialRef == null ? "none" : credentialRef, Boolean.toString(enabled));
+        // Appended only when declared, so every connection that predates the key keeps the
+        // fingerprint its profiles were verified against.
+        if (maxOutputTokens != null) material += "\nmax_output_tokens=" + maxOutputTokens;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(material.getBytes(StandardCharsets.UTF_8)));
@@ -140,7 +171,7 @@ public record Connection(String id, String provider, String protocol, String bas
     }
 
     public Connection withEnabled(boolean value) {
-        return new Connection(id, provider, protocol, baseUrl, credentialRef, value);
+        return new Connection(id, provider, protocol, baseUrl, credentialRef, value, maxOutputTokens);
     }
 
     /** All serialized values have been validated; quote the URL to keep YAML unambiguous. */
@@ -149,7 +180,8 @@ public record Connection(String id, String provider, String protocol, String bas
                 + "\nprotocol: " + protocol + "\nbase_url: '" + baseUrl.replace("'", "''")
                 + "'\nauth:\n  type: " + (credentialRef == null ? "none" : "api_key")
                 + (credentialRef == null ? "" : "\n  credential_ref: " + credentialRef)
-                + "\nenabled: " + enabled + "\n";
+                + "\nenabled: " + enabled + "\n"
+                + (maxOutputTokens == null ? "" : "max_output_tokens: " + maxOutputTokens + "\n");
     }
 
     static void requireId(String id) {

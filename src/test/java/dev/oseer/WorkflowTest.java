@@ -37,6 +37,7 @@ public final class WorkflowTest implements Suite {
         reuseAfterAFailureThatWasNotAboutTheWork(check);
         apiFallbackPolicyChecks(check);
         apiFallbackContractChecks(check);
+        apiContextContractChecks(check);
         Policy silent = Policy.parse(ROLES, "policy.yaml");
         check.that("a policy that declares no workflow is not treated as declaring one",
                 !silent.workflowDeclared());
@@ -49,6 +50,10 @@ public final class WorkflowTest implements Suite {
                 silent.roles().get("reviewer").vendorFailureMode());
         check.eq("so the effective mode is the policy default", "stop",
                 silent.vendorFailureModeFor("reviewer"));
+        check.eq("a subscription CLI is not moved onto a paid API of the same family",
+                "never", silent.subscriptionToSameFamilyApi());
+        check.eq("a stage named with --use does not fail over on a vendor failure",
+                "stop", silent.onPinned());
 
         Policy opted = Policy.parse("""
                 version: 1
@@ -62,6 +67,28 @@ public final class WorkflowTest implements Suite {
         check.eq("a role may override it", "confirm", opted.vendorFailureModeFor("implementer"));
         check.eq("and a role that does not still inherits", "auto",
                 opted.vendorFailureModeFor("reviewer"));
+        Policy family = Policy.parse("""
+                version: 1
+                failover: { on_vendor_failure: auto, subscription_to_same_family_api: allow, on_pinned: auto }
+                roles:
+                  reviewer: { profiles: [b], strategy: first }
+                """, "policy.yaml");
+        check.eq("the family escape is explicit", "allow", family.subscriptionToSameFamilyApi());
+        check.eq("an unattended pin failover is explicit", "auto", family.onPinned());
+        check.rejects("an unknown family rule is refused", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { subscription_to_same_family_api: sometimes }
+                        roles:
+                          reviewer: { profiles: [b], strategy: first }
+                        """, "policy.yaml"));
+        check.rejects("an unknown pin rule is refused", "must be one of",
+                () -> Policy.parse("""
+                        version: 1
+                        failover: { on_pinned: maybe }
+                        roles:
+                          reviewer: { profiles: [b], strategy: first }
+                        """, "policy.yaml"));
         check.rejects("an unknown vendor-failure mode is refused", "must be one of",
                 () -> Policy.parse("""
                         version: 1
@@ -396,6 +423,45 @@ public final class WorkflowTest implements Suite {
                   reviewer: { profiles: [a, b, c], strategy: first%s }
                 """.formatted(fallback), "policy.yaml");
         return new UserConfig(Path.of("."), policy, Map.of(reader.name(), reader), Map.of(), true);
+    }
+
+    private void apiContextContractChecks(Check check) {
+        Workflow.Stage stage = Workflow.builtIn().stages().stream()
+                .filter(candidate -> "review".equals(candidate.name())).findFirst().orElseThrow();
+        Profile diff = contextReader("diff", 262144);
+        UserConfig diffUser = fallbackContractUser(diff, "");
+        Map<String, Object> recorded = RoleContract.of(stage.name(), stage.role(),
+                diffUser.policy().roles().get(stage.role()), diff, diffUser);
+        recorded.putAll(RoleContract.routingOf(stage));
+        check.eq("the same API context settings can reuse a review",
+                null, RoleContract.differenceFrom(recorded, stage, diffUser));
+        Profile full = contextReader("full", 262144);
+        UserConfig fullUser = fallbackContractUser(full, "");
+        check.contains("full context cannot reuse a verdict reached with diff-only context",
+                RoleContract.differenceFrom(recorded, stage, fullUser), "api_context changed");
+        check.contains("a different API context byte limit invalidates reuse",
+                RoleContract.differenceFrom(recorded, stage,
+                        fallbackContractUser(contextReader("diff", 524288), "")), "api_context changed");
+        recorded.remove("api_context");
+        check.eq("older default full API receipts remain reusable with those settings",
+                null, RoleContract.differenceFrom(recorded, stage, fullUser));
+        check.contains("older full API receipts do not establish current diff terms",
+                RoleContract.differenceFrom(recorded, stage, diffUser), "api_context changed");
+    }
+
+    private Profile contextReader(String mode, int maxBytes) {
+        return Profile.parse("""
+                version: 1
+                profile: a
+                role: reviewer
+                vendor: openai
+                model: openai/test-model
+                model_vendor: openai
+                runner: api
+                connection: test-api
+                read_only: true
+                api_context: {mode: %s, max_bytes: %d}
+                """.formatted(mode, maxBytes), "a.yaml");
     }
 
     private void repairPreviewChecks(Check check) {

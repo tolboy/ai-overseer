@@ -75,7 +75,7 @@ public final class RosterTest implements Suite {
         List<Map<String, Object>> profiles = (List<Map<String, Object>>) reviewer.get("profiles");
         check.eq("reviewer profiles stay in policy order", "grok-review", profiles.get(0).get("profile"));
         check.eq("grok vendor", "grok", profiles.get(0).get("vendor"));
-        check.eq("grok model", "grok-4.6-build", profiles.get(0).get("model"));
+        check.eq("grok model", "grok-4.6", profiles.get(0).get("model"));
         check.eq("grok effort", "high", profiles.get(0).get("effort"));
         check.eq("grok runner", "direct", profiles.get(0).get("runner"));
         check.eq("grok read_only", true, profiles.get(0).get("read_only"));
@@ -200,9 +200,10 @@ public final class RosterTest implements Suite {
         check.that("visual_qa independence", parsed.roles().get("visual_qa").requireIndependentVendor());
     }
 
-    /** The shipped grok-review keeps its model as a label; give it the vendor's flag. */
+    /** Give a profile the vendor's model flag unless it already passes one (the starter now does). */
     private static void forwardsModel(Path profile) throws Exception {
         String text = Files.readString(profile, StandardCharsets.UTF_8);
+        if (text.contains("{{model}}")) return;
         Files.writeString(profile, text.replace("args:\n", "args:\n  - \"--model\"\n  - \"{{model}}\"\n"),
                 StandardCharsets.UTF_8);
     }
@@ -224,7 +225,7 @@ public final class RosterTest implements Suite {
         check.contains("model line rewritten", after, "model: grok-4.20");
         check.that("verified_on is gone so the old probe cannot stamp a new model",
                 !after.contains("verified_on"));
-        check.contains("profile comments survived", after, "A label unless the args");
+        check.contains("profile comments survived", after, "Passed to the CLI below");
         Path backup = Path.of(String.valueOf(dropped.report().get("backup")));
         check.eq("profile backup equals original", original,
                 Files.readString(backup, StandardCharsets.UTF_8));
@@ -338,10 +339,15 @@ public final class RosterTest implements Suite {
     private void modelReachesTheVendorOrIsRefused(Check check, Path sandbox) throws Exception {
         Path labelled = home(sandbox, "model-label");
         Path grok = labelled.resolve("profiles").resolve("grok-review.yaml");
+        // The starter now forwards its model; this case is about a profile that does not.
+        Files.writeString(grok, Files.readString(grok, StandardCharsets.UTF_8)
+                .replace("  - \"--model\"\n  - \"{{model}}\"\n", ""), StandardCharsets.UTF_8);
         String untouched = Files.readString(grok, StandardCharsets.UTF_8);
         RosterCommand.Outcome refused = roster(labelled, "roster", "model", "grok-review",
                 "--model", "grok-4.20");
-        check.eq("a profile that passes no model is refused", "model_not_forwarded",
+        // A grok profile whose model never reaches the CLI is now refused when it is loaded,
+        // before any roster edit or run can use it.
+        check.eq("a profile that passes no model is refused", "profile_unreadable",
                 refused.report().get("code"));
         check.contains("and told which line to add",
                 String.valueOf(refused.report().get("message")), "\"{{model}}\"");
