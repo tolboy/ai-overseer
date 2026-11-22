@@ -39,6 +39,7 @@ final class CodingRelay implements AutoCloseable {
     private String failure;
     private Map<String, Object> failureDetail;
     private int turns;
+    private volatile Map<String, Object> latestEvidence;
     /** Pause between resends of a request that never left; replaceable by tests. */
     ApiRetry.Sleeper sleeper = ApiRetry.REAL_SLEEP;
 
@@ -100,6 +101,7 @@ final class CodingRelay implements AutoCloseable {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(workers);
         server.createContext("/", this::handle);
+        latestEvidence = snapshot(false);
         server.start();
     }
 
@@ -111,14 +113,19 @@ final class CodingRelay implements AutoCloseable {
         return bearer;
     }
 
-    synchronized Map<String, Object> evidence() {
+    Map<String, Object> evidence() {
+        return latestEvidence;
+    }
+
+    // The single request worker owns the counters. Other threads read a published copy.
+    private Map<String, Object> snapshot(boolean handling) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("requests", turns);
         result.put("responses", List.copyOf(receipts));
         result.put("observed_tool_results", List.copyOf(observedTools));
         result.put(
                 "identity_confirmed",
-                failure == null && !receipts.isEmpty() && receipts.size() == turns);
+                !handling && failure == null && !receipts.isEmpty() && receipts.size() == turns);
         result.put("cost_status", "provider_usage_recorded_no_strict_cap");
         result.put("upstream_attempts", List.copyOf(upstreamAttempts));
         ApiEffort.copy(effortReceipt, result);
@@ -132,225 +139,233 @@ final class CodingRelay implements AutoCloseable {
         return sanitizedMap(result);
     }
 
-    private synchronized void handle(HttpExchange exchange) throws IOException {
-        try {
-            String authority = "127.0.0.1:" + server.getAddress().getPort();
-            String supplied = exchange.getRequestHeaders().getFirst("Authorization");
-            if (!authority.equals(exchange.getRequestHeaders().getFirst("Host"))
-                    || exchange.getRequestHeaders().getFirst("Origin") != null
-                    || supplied == null
-                    || !MessageDigest.isEqual(
-                            ("Bearer " + bearer).getBytes(StandardCharsets.UTF_8),
-                            supplied.getBytes(StandardCharsets.UTF_8))) {
-                send(exchange, 403, "application/json", "{}");
-                return;
-            }
-            if (!"POST".equals(exchange.getRequestMethod())
+    private void handle(HttpExchange exchange) throws IOException {
+        try (exchange) {
+            Reply reply;
+            if (!authorized(exchange)) {
+                reply = Reply.empty(403);
+            } else if (!"POST".equals(exchange.getRequestMethod())
                     || !"/v1/chat/completions".equals(exchange.getRequestURI().getRawPath())
                     || exchange.getRequestURI().getRawQuery() != null) {
-                send(exchange, 404, "application/json", "{}");
-                return;
-            }
-            if (failure != null || turns >= maxRequests || System.nanoTime() >= deadline) {
-                if (failure == null) failure = turns >= maxRequests ? "probe_turn_limit" : "probe_time_limit";
-                // This dispatch cannot resume. A retryable status would make the SDK wait
-                // and would obscure the first upstream failure without permitting progress.
-                send(
-                        exchange,
-                        400,
-                        "application/json",
-                        Json.write(
-                                Map.of(
-                                        "error",
-                                        Map.of(
-                                                "message",
-                                                "Overseer coding probe stopped",
-                                                "type",
-                                                "invalid_request_error",
-                                                "code",
-                                                failure))));
-                return;
-            }
-            byte[] raw = exchange.getRequestBody().readNBytes(512 * 1024 + 1);
-            if (raw.length > 512 * 1024) {
-                failure = "probe_request_too_large";
-                send(exchange, 413, "application/json", "{}");
-                return;
-            }
-            Map<String, Object> body =
-                    Json.parseObject(
-                            StandardCharsets.UTF_8
-                                    .newDecoder()
-                                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                                    .decode(java.nio.ByteBuffer.wrap(raw))
-                                    .toString());
-            if (!model.equals(body.get("model"))) {
-                failure = "probe_requested_model_mismatch";
-                send(exchange, 400, "application/json", "{}");
-                return;
-            }
-            noteToolResults(body.get("messages"));
-            Map<String, Object> projected = new LinkedHashMap<>();
-            for (String field :
-                    List.of(
-                            "messages",
-                            "tools",
-                            "tool_choice",
-                            "parallel_tool_calls",
-                            "temperature",
-                            "top_p",
-                            "frequency_penalty",
-                            "presence_penalty",
-                            "stop",
-                            "seed",
-                            "response_format"))
-                if (body.containsKey(field)) projected.put(field, body.get(field));
-            body = projected;
-            // A coding dispatch must start by using the offered tools. Metadata/title
-            // requests have no tools and remain ordinary text completions.
-            if (observedTools.isEmpty()
-                    && body.get("tools") instanceof List<?> tools
-                    && !tools.isEmpty()) body.put("tool_choice", "required");
-            body.put("model", model);
-            body.put("n", 1);
-            body.put("stream", false);
-            body.put("max_tokens", maxOutputTokens);
-            // Overseer owns this setting. Harness-provided reasoning fields were not projected.
-            ApiEffort.apply(effort, body);
-            if ("openrouter".equals(connection.provider()))
-                body.put("provider", Map.of("require_parameters", true, "allow_fallbacks", false));
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                failure = "probe_deadline";
-                send(exchange, 504, "application/json", "{}");
-                return;
-            }
-            turns++;
-            effortReceipt.put("effort_reported", null);
-            effortReceipt.put("effort_verification", "not_reported_by_provider");
-            // Resent only when the request provably never left this machine. OpenCode applies
-            // a tool call only from a response this relay forwarded, and nothing is forwarded
-            // until one upstream attempt answered completely, so a resend can never deliver
-            // the same edit twice. An unknown outcome (dropped after sending, a 5xx, a
-            // deadline) is not resent: it may already have been billed.
-            ApiRetry.Outcome sent =
-                    ApiRetry.send(
-                            connection,
-                            "POST",
-                            URI.create(connection.endpoint()),
-                            Json.write(body),
-                            secret,
-                            turnDeadline(remaining),
-                            ApiRetry.Policy.NOT_SENT_ONLY,
-                            sleeper,
-                            ApiRetry.correlation(null, null, "implementer", "relay-turn-" + turns));
-            upstreamAttempts.addAll(sent.attempts());
-            ApiEffort.sent(effort, sent.reply() != null, sent.nothingSent(), effortReceipt);
-            if (sent.failure() != null) throw sent.failure();
-            ApiExecutor.HttpReply reply = sent.reply();
-            if (reply.status() != 200) {
-                failure = "probe_upstream_http_" + reply.status();
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            // Identity is checked before OpenCode receives content or a tool request.
-            Map<String, Object> parsed = Json.parseObject(reply.body());
-            if (containsCredential(parsed)) {
-                failure = "probe_credential_reflected";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            if (!model.equals(parsed.get("model"))) {
-                failure = "probe_served_model_mismatch";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            var turnEffort = new LinkedHashMap<String,Object>();
-            ApiEffort.initialize(effort, turnEffort);
-            if (!ApiEffort.reported(effort, parsed, turnEffort)) {
-                ApiEffort.copy(turnEffort, effortReceipt);
-                ApiEffort.sent(effort, true, false, effortReceipt);
-                failure = "probe_served_effort_mismatch";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            allEffortsReported &= turnEffort.get("effort_reported") != null;
-            if (allEffortsReported) {
-                effortReceipt.put("effort_reported", turnEffort.get("effort_reported"));
-                effortReceipt.put("effort_verification", turnEffort.get("effort_verification"));
+                reply = Reply.empty(404);
             } else {
-                effortReceipt.put("effort_reported", null);
-                effortReceipt.put("effort_verification", "not_reported_by_provider");
+                reply = dispatch(exchange);
             }
-            if (!(parsed.get("choices") instanceof List<?> choices)
-                    || choices.size() != 1
-                    || !(choices.getFirst() instanceof Map<?, ?> choice)
-                    || !(choice.get("message") instanceof Map<?, ?> message)) {
-                failure = "probe_upstream_protocol";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            String finish = String.valueOf(choice.get("finish_reason"));
-            if (!Set.of("stop", "tool_calls").contains(finish)) {
-                failure = "probe_incomplete_response";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            Map<String, Object> receipt = new LinkedHashMap<>();
-            receipt.put("model", model);
-            receipt.put("finish_reason", finish);
-            receipt.put("id", parsed.get("id"));
-            receipt.put("usage", parsed.get("usage"));
-            ApiEffort.sent(effort, true, false, turnEffort);
-            ApiEffort.copy(turnEffort, receipt);
-            receipts.add(receipt);
-            Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("role", "assistant");
-            if (message.get("content") instanceof String content) delta.put("content", content);
-            if (message.get("tool_calls") instanceof List<?> tools) {
-                List<Map<String, Object>> indexed = new ArrayList<>();
-                for (int index = 0; index < tools.size(); index++) {
-                    if (!(tools.get(index) instanceof Map<?, ?> tool)
-                            || !(tool.get("function") instanceof Map<?, ?> function))
-                        throw new IllegalArgumentException();
-                    Map<String, Object> copy = new LinkedHashMap<>();
-                    tool.forEach((k, v) -> copy.put(String.valueOf(k), v));
-                    copy.put("index", index);
-                    indexed.add(copy);
-                    if (tool.get("id") instanceof String id
-                            && function.get("name") instanceof String name) calls.put(id, name);
-                }
-                delta.put("tool_calls", indexed);
-            }
-            String id = parsed.get("id") instanceof String value ? value : "oseer-probe";
-            Map<String, Object> chunk = new LinkedHashMap<>();
-            chunk.put("id", id);
-            chunk.put("object", "chat.completion.chunk");
-            chunk.put("created", System.currentTimeMillis() / 1000);
-            chunk.put("model", model);
-            chunk.put("choices", List.of(Map.of("index", 0, "delta", delta)));
-            String first = "data: " + Json.write(chunk) + "\n\n";
-            chunk.put(
-                    "choices",
-                    List.of(Map.of("index", 0, "delta", Map.of(), "finish_reason", finish)));
-            if (parsed.get("usage") != null) chunk.put("usage", parsed.get("usage"));
-            String response = first + "data: " + Json.write(chunk) + "\n\ndata: [DONE]\n\n";
-            if (secret != null && response.contains(secret)) {
-                failure = "probe_credential_reflected";
-                send(exchange, 502, "application/json", "{}");
-                return;
-            }
-            send(exchange, 200, "text/event-stream", response);
+            send(exchange, reply.status(), reply.contentType(), reply.body());
+        }
+    }
+
+    private boolean authorized(HttpExchange exchange) {
+        String authority = "127.0.0.1:" + server.getAddress().getPort();
+        String supplied = exchange.getRequestHeaders().getFirst("Authorization");
+        return authority.equals(exchange.getRequestHeaders().getFirst("Host"))
+                && exchange.getRequestHeaders().getFirst("Origin") == null
+                && supplied != null
+                && MessageDigest.isEqual(("Bearer " + bearer).getBytes(StandardCharsets.UTF_8),
+                        supplied.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private Reply dispatch(HttpExchange exchange) throws IOException {
+        latestEvidence = snapshot(true);
+        try {
+            return forward(exchange);
         } catch (ApiExecutor.CallFailure failed) {
             failure = failed.code;
             failureDetail = new LinkedHashMap<>();
             failed.describe(failureDetail);
-            send(exchange, 502, "application/json", "{}");
+            return Reply.empty(502);
         } catch (RuntimeException | java.nio.charset.CharacterCodingException invalid) {
             failure = "probe_relay_protocol";
-            send(exchange, 502, "application/json", "{}");
+            return Reply.empty(502);
         } finally {
-            exchange.close();
+            latestEvidence = snapshot(false);
+        }
+    }
+
+    private Reply forward(HttpExchange exchange) throws IOException, ApiExecutor.CallFailure {
+        if (failure != null || turns >= maxRequests || System.nanoTime() >= deadline) {
+            if (failure == null) failure = turns >= maxRequests ? "probe_turn_limit" : "probe_time_limit";
+            // This dispatch cannot resume. A retryable status would make the SDK wait
+            // and would obscure the first upstream failure without permitting progress.
+            return new Reply(400, "application/json", Json.write(Map.of("error", Map.of(
+                    "message", "Overseer coding probe stopped",
+                    "type", "invalid_request_error",
+                    "code", failure))));
+        }
+        byte[] raw = exchange.getRequestBody().readNBytes(512 * 1024 + 1);
+        if (raw.length > 512 * 1024) {
+            failure = "probe_request_too_large";
+            return Reply.empty(413);
+        }
+        Map<String, Object> body =
+                Json.parseObject(
+                        StandardCharsets.UTF_8
+                                .newDecoder()
+                                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                                .decode(java.nio.ByteBuffer.wrap(raw))
+                                .toString());
+        if (!model.equals(body.get("model"))) {
+            failure = "probe_requested_model_mismatch";
+            return Reply.empty(400);
+        }
+        noteToolResults(body.get("messages"));
+        body = project(body);
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+            failure = "probe_deadline";
+            return Reply.empty(504);
+        }
+        turns++;
+        effortReceipt.put("effort_reported", null);
+        effortReceipt.put("effort_verification", "not_reported_by_provider");
+        latestEvidence = snapshot(true);
+        // Resent only when the request provably never left this machine. OpenCode applies
+        // a tool call only from a response this relay forwarded, and nothing is forwarded
+        // until one upstream attempt answered completely, so a resend can never deliver
+        // the same edit twice. An unknown outcome (dropped after sending, a 5xx, a
+        // deadline) is not resent: it may already have been billed.
+        ApiRetry.Outcome sent =
+                ApiRetry.send(
+                        connection,
+                        "POST",
+                        URI.create(connection.endpoint()),
+                        Json.write(body),
+                        secret,
+                        turnDeadline(remaining),
+                        ApiRetry.Policy.NOT_SENT_ONLY,
+                        sleeper,
+                        ApiRetry.correlation(null, null, "implementer", "relay-turn-" + turns));
+        upstreamAttempts.addAll(sent.attempts());
+        ApiEffort.sent(effort, sent.reply() != null, sent.nothingSent(), effortReceipt);
+        if (sent.failure() != null) throw sent.failure();
+        ApiExecutor.HttpReply reply = sent.reply();
+        if (reply.status() != 200) {
+            failure = "probe_upstream_http_" + reply.status();
+            return Reply.empty(502);
+        }
+        return checkedReply(reply.body());
+    }
+
+    private Reply checkedReply(String body) {
+        // Identity is checked before OpenCode receives content or a tool request.
+        Map<String, Object> parsed = Json.parseObject(body);
+        if (containsCredential(parsed)) {
+            failure = "probe_credential_reflected";
+            return Reply.empty(502);
+        }
+        if (!model.equals(parsed.get("model"))) {
+            failure = "probe_served_model_mismatch";
+            return Reply.empty(502);
+        }
+        var turnEffort = new LinkedHashMap<String,Object>();
+        ApiEffort.initialize(effort, turnEffort);
+        if (!ApiEffort.reported(effort, parsed, turnEffort)) {
+            ApiEffort.copy(turnEffort, effortReceipt);
+            ApiEffort.sent(effort, true, false, effortReceipt);
+            failure = "probe_served_effort_mismatch";
+            return Reply.empty(502);
+        }
+        allEffortsReported &= turnEffort.get("effort_reported") != null;
+        if (allEffortsReported) {
+            effortReceipt.put("effort_reported", turnEffort.get("effort_reported"));
+            effortReceipt.put("effort_verification", turnEffort.get("effort_verification"));
+        } else {
+            effortReceipt.put("effort_reported", null);
+            effortReceipt.put("effort_verification", "not_reported_by_provider");
+        }
+        if (!(parsed.get("choices") instanceof List<?> choices)
+                || choices.size() != 1
+                || !(choices.getFirst() instanceof Map<?, ?> choice)
+                || !(choice.get("message") instanceof Map<?, ?> message)) {
+            failure = "probe_upstream_protocol";
+            return Reply.empty(502);
+        }
+        String finish = String.valueOf(choice.get("finish_reason"));
+        if (!Set.of("stop", "tool_calls").contains(finish)) {
+            failure = "probe_incomplete_response";
+            return Reply.empty(502);
+        }
+        Map<String, Object> receipt = new LinkedHashMap<>();
+        receipt.put("model", model);
+        receipt.put("finish_reason", finish);
+        receipt.put("id", parsed.get("id"));
+        receipt.put("usage", parsed.get("usage"));
+        ApiEffort.sent(effort, true, false, turnEffort);
+        ApiEffort.copy(turnEffort, receipt);
+        receipts.add(receipt);
+        Map<String, Object> delta = new LinkedHashMap<>();
+        delta.put("role", "assistant");
+        if (message.get("content") instanceof String content) delta.put("content", content);
+        if (message.get("tool_calls") instanceof List<?> tools) {
+            List<Map<String, Object>> indexed = new ArrayList<>();
+            for (int index = 0; index < tools.size(); index++) {
+                if (!(tools.get(index) instanceof Map<?, ?> tool)
+                        || !(tool.get("function") instanceof Map<?, ?> function))
+                    throw new IllegalArgumentException();
+                Map<String, Object> copy = new LinkedHashMap<>();
+                tool.forEach((k, v) -> copy.put(String.valueOf(k), v));
+                copy.put("index", index);
+                indexed.add(copy);
+                if (tool.get("id") instanceof String id
+                        && function.get("name") instanceof String name) calls.put(id, name);
+            }
+            delta.put("tool_calls", indexed);
+        }
+        String id = parsed.get("id") instanceof String value ? value : "oseer-probe";
+        Map<String, Object> chunk = new LinkedHashMap<>();
+        chunk.put("id", id);
+        chunk.put("object", "chat.completion.chunk");
+        chunk.put("created", System.currentTimeMillis() / 1000);
+        chunk.put("model", model);
+        chunk.put("choices", List.of(Map.of("index", 0, "delta", delta)));
+        String first = "data: " + Json.write(chunk) + "\n\n";
+        chunk.put(
+                "choices",
+                List.of(Map.of("index", 0, "delta", Map.of(), "finish_reason", finish)));
+        if (parsed.get("usage") != null) chunk.put("usage", parsed.get("usage"));
+        String response = first + "data: " + Json.write(chunk) + "\n\ndata: [DONE]\n\n";
+        if (secret != null && response.contains(secret)) {
+            failure = "probe_credential_reflected";
+            return Reply.empty(502);
+        }
+        return new Reply(200, "text/event-stream", response);
+    }
+
+    private Map<String, Object> project(Map<String, Object> body) {
+        Map<String, Object> projected = new LinkedHashMap<>();
+        for (String field :
+                List.of(
+                        "messages",
+                        "tools",
+                        "tool_choice",
+                        "parallel_tool_calls",
+                        "temperature",
+                        "top_p",
+                        "frequency_penalty",
+                        "presence_penalty",
+                        "stop",
+                        "seed",
+                        "response_format"))
+            if (body.containsKey(field)) projected.put(field, body.get(field));
+        // A coding dispatch must start by using the offered tools. Metadata/title
+        // requests have no tools and remain ordinary text completions.
+        if (observedTools.isEmpty()
+                && projected.get("tools") instanceof List<?> tools
+                && !tools.isEmpty()) projected.put("tool_choice", "required");
+        projected.put("model", model);
+        projected.put("n", 1);
+        projected.put("stream", false);
+        projected.put("max_tokens", maxOutputTokens);
+        // Overseer owns this setting. Harness-provided reasoning fields were not projected.
+        ApiEffort.apply(effort, projected);
+        if ("openrouter".equals(connection.provider()))
+            projected.put("provider", Map.of("require_parameters", true, "allow_fallbacks", false));
+        return projected;
+    }
+
+    private record Reply(int status, String contentType, String body) {
+        static Reply empty(int status) {
+            return new Reply(status, "application/json", "{}");
         }
     }
 
@@ -379,7 +394,7 @@ final class CodingRelay implements AutoCloseable {
     private Map<String, Object> sanitizedMap(Map<?, ?> input) {
         Map<String, Object> clean = new LinkedHashMap<>();
         input.forEach((key, value) -> clean.put(cleanText(String.valueOf(key)), sanitized(value)));
-        return clean;
+        return Collections.unmodifiableMap(clean);
     }
 
     private Object sanitized(Object value) {
