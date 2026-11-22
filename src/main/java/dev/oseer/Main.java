@@ -8,7 +8,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 
 public final class Main {
-    public static final String VERSION = "0.2.0";
+    public static final String VERSION = "0.3.0";
 
     private Main() {}
 
