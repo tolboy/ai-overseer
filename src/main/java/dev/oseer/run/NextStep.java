@@ -20,7 +20,7 @@ import java.util.Map;
  *
  * Pure, apart from an optional read of the task file through {@link ConfigLoader} when the
  * summary did not already record the acceptance commands. It does not write, and it does
- * not change {@code safeNextStep}.
+ * not change the sentence {@link SafeNextStep} puts in {@code safe_next_step}.
  */
 public final class NextStep {
 
@@ -444,10 +444,15 @@ public final class NextStep {
                 rows.add("No budget is part of what the work is judged by, so the verdicts "
                         + "this run already reached on this tree are kept rather than paid for "
                         + "a second time.");
-                if ("raise_cost_budget".equals(kind) && summary.get("unpriced_calls") != null) {
-                    rows.add("The money ceiling only measures calls whose vendor reported a price: "
-                            + summary.get("unpriced_calls")
-                            + " of this run's calls reported none and were not counted against it.");
+                if ("raise_cost_budget".equals(kind)) {
+                    String strictTreatment = SafeNextStep.strictCostCeilingTreatment(summary);
+                    if (strictTreatment != null) {
+                        rows.add(strictTreatment + ".");
+                    } else if (summary.get("unpriced_calls") != null) {
+                        rows.add("The money ceiling only measures calls whose vendor reported a price: "
+                                + summary.get("unpriced_calls")
+                                + " of this run's calls reported none and were not counted against it.");
+                    }
                 }
                 yield List.copyOf(rows);
             }

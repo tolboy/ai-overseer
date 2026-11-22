@@ -390,26 +390,33 @@ public final class DecisionPageTest implements Suite {
      * first attempt could push the final ones off the page.
      */
     private void onlyTheLastAttemptIsShown(Check check) throws Exception {
+        lastBrowserAttempts(check, List.of("visual-qa"));
+        lastBrowserAttempts(check, List.of("-4-browser", "-5-browser-secondary"));
+    }
+
+    private void lastBrowserAttempts(Check check, List<String> stages) throws Exception {
         Path root = project("Toggle the greeting");
         new ApprovalStore(root).createSuccess("run-1", "hello", "every stage that ran passed",
                 root.resolve(".oseer/runs/run-1/task-run.json"), "fingerprint-shown");
-        for (int attempt : List.of(0, 1)) {
-            Path shots = root.resolve(".oseer/runs/run-1--visual-qa-" + attempt + "/screenshots");
-            Files.createDirectories(shots);
-            String picture = attempt == 0 ? "1280x720-failed.png" : "1280x720.png";
-            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(4, 4,
-                    java.awt.image.BufferedImage.TYPE_INT_RGB), "png", shots.resolve(picture).toFile());
-            Map<String, Object> scenario = new LinkedHashMap<>();
-            scenario.put("raw", "1280x720: testid=toggle click -> testid=greeting hidden");
-            scenario.put("ok", attempt == 1);
-            scenario.put("viewport", Map.of("width", 1280, "height", 720, "mobile", false));
-            scenario.put("screenshot", shots.resolve(picture).toString());
-            if (attempt == 0) scenario.put("why", "the greeting stayed on the page");
-            scenario.put("steps", List.of(
-                    Map.of("matcher", "testid=toggle", "assertion", "click", "ok", true),
-                    Map.of("matcher", "testid=greeting", "assertion", "hidden", "ok", attempt == 1)));
-            Files.writeString(shots.resolve("visual-qa.json"),
-                    Json.write(Map.of("ok", attempt == 1, "scenarios", List.of(scenario))));
+        for (String stage : stages) {
+            for (int attempt : List.of(0, 1)) {
+                Path shots = root.resolve(".oseer/runs/run-1--" + stage + "-" + attempt + "/screenshots");
+                Files.createDirectories(shots);
+                String picture = attempt == 0 ? "1280x720-failed.png" : "1280x720.png";
+                javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(4, 4,
+                        java.awt.image.BufferedImage.TYPE_INT_RGB), "png", shots.resolve(picture).toFile());
+                Map<String, Object> scenario = new LinkedHashMap<>();
+                scenario.put("raw", "1280x720: testid=toggle click -> testid=greeting hidden");
+                scenario.put("ok", attempt == 1);
+                scenario.put("viewport", Map.of("width", 1280, "height", 720, "mobile", false));
+                scenario.put("screenshot", shots.resolve(picture).toString());
+                if (attempt == 0) scenario.put("why", "the greeting stayed on the page");
+                scenario.put("steps", List.of(
+                        Map.of("matcher", "testid=toggle", "assertion", "click", "ok", true),
+                        Map.of("matcher", "testid=greeting", "assertion", "hidden", "ok", attempt == 1)));
+                Files.writeString(shots.resolve("visual-qa.json"),
+                        Json.write(Map.of("ok", attempt == 1, "scenarios", List.of(scenario))));
+            }
         }
         try (DecisionPage page = new DecisionPage(root, "run-1", (choice, note, expected, finding) -> Map.of("ok", false))) {
             page.start();
@@ -417,7 +424,7 @@ public final class DecisionPageTest implements Suite {
             check.contains("the repaired pass is shown", body, "✓ 1280×720");
             check.that("the failed attempt it replaced is not", !body.contains("the greeting stayed on the page"));
             check.that("nor its verdict", !body.contains("✗ 1280×720"));
-            check.eq("and only the final attempt's frame is on the page", 1,
+            check.eq("one frame from the final attempt of each browser stage is shown", stages.size(),
                     body.split("src='shot/", -1).length - 1);
         }
     }

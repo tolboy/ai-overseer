@@ -330,6 +330,7 @@ public final class TaskLoopTest implements Suite {
             localVendorFailureFailoverChecks(check, sandbox, home);
             launchErrorStaysOnTheAttempt(check, sandbox, home);
             declaredWorkflowChecks(check, sandbox, home);
+            repeatedStageEvidenceChecks(check, sandbox, home);
             pairedReviewChecks(check, sandbox, home);
             visualLoopChecks(check, sandbox, home);
             a11yReportChecks(check, sandbox);
@@ -2152,7 +2153,9 @@ public final class TaskLoopTest implements Suite {
                 ((Map<String, String>) secondLook.get("rejected_profiles")).get("loop-eyes-geo"));
         check.eq("independence still refuses the same vendor", "same_vendor_as_writer",
                 ((Map<String, String>) secondLook.get("rejected_profiles")).get("loop-eyes-self"));
-        String evidence = Files.readString(routed.resolve(".oseer/runs/geo1--visual-role-0/evidence.jsonl"));
+        Path firstLookEvidence = routed.resolve(".oseer/runs")
+                .resolve((String) firstLook.get("evidence_dir")).resolve("evidence.jsonl");
+        String evidence = Files.readString(firstLookEvidence);
         check.contains("the ledger records the switch", evidence, "\"cause\":\"vendor_unavailable\"");
         String rendered = dev.oseer.ledger.RunReport.render(
                 new dev.oseer.ledger.RunReport().of(routed, "geo1"));
@@ -2426,6 +2429,97 @@ public final class TaskLoopTest implements Suite {
         check.eq("in the order it was declared",
                 List.of("reviewer", "implementer", "gates"),
                 steps(reordered).stream().map(step -> step.get("step")).toList());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void repeatedStageEvidenceChecks(Check check, Path sandbox, Path home) throws Exception {
+        Path project = newProject(sandbox, "workflow-stage-evidence", "medium", 20, true);
+        writeProfiles(home, sandbox, "workflow-stage-evidence", 1, 1);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl-grows", sandbox.resolve("workflow-stage-evidence-impl.count"), 1);
+        writeEyesProfile(home, sandbox, "workflow-stage-evidence", 1);
+        policyWithEyes(home);
+        Files.writeString(home.resolve("policy.yaml"), """
+                workflow:
+                  stages:
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: "Verify Checks", run: machine_gates, on_fail: stop }
+                    - { stage: "verify checks", run: machine_gates, on_fail: stop }
+                    - { stage: browser, run: visual_harness, on_fail: stop }
+                    - { stage: browser-secondary, run: visual_harness, on_fail: fix }
+                    - { stage: eyes, run: role, role: visual_qa, sees: browser, on_fail: stop }
+                    - { stage: eyes-secondary, run: role, role: visual_qa, sees: browser-secondary, on_fail: stop }
+                    - { stage: "Read Diff", run: role, role: reviewer, on_fail: stop }
+                    - { stage: "read diff", run: role, role: reviewer, on_fail: stop }
+                """, java.nio.file.StandardOpenOption.APPEND);
+        Path screenshot = sandbox.resolve("stage-evidence.png");
+        Files.writeString(screenshot, "test attachment");
+        int[] views = {0};
+        TaskLoop.Outcome outcome = new TaskLoop(new ProcessRunner(), (loaded, runId) -> {
+            VisualQaRunner.Outcome harness = stubHarness(loaded, runId, screenshot);
+            Path captured = harness.report().getParent().resolve("screenshots").resolve(screenshot.getFileName());
+            boolean ok = ++views[0] != 2;
+            VisualQaRunner.Outcome observed = stubVisual(ok, captured);
+            Map<String, Object> body = new java.util.LinkedHashMap<>(observed.data());
+            body.put("url", "fixture-" + runId);
+            Files.writeString(harness.report(), Json.write(body));
+            return new VisualQaRunner.Outcome(ok, observed.code(), harness.report(), body);
+        }).run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "ev1", false);
+
+        check.that("two gates and two browser stages still finish after one browser fix", outcome.ok());
+        check.eq("the browser failure caused a single fix round", 1L, outcome.summaryReport().get("attempts_used"));
+        List<Map<String, Object>> recorded = steps(outcome).stream()
+                .filter(row -> "gates".equals(row.get("step")) || "visual_qa".equals(row.get("step")))
+                .toList();
+        check.eq("both gates and both harnesses ran twice; both visual roles ran once", 10, recorded.size());
+        check.eq("the evidence directories are distinct across stages and attempts, even for equal slugs",
+                10L, recorded.stream().map(row -> row.get("evidence_dir")).distinct().count());
+        check.that("every recorded evidence directory contains that stage's own receipt",
+                recorded.stream().allMatch(row -> row.get("evidence_dir") instanceof String directory
+                        && row.get("report") instanceof String report
+                        && Files.isRegularFile(Path.of(report))
+                        && directory.equals(Path.of(report).getParent().getFileName().toString())));
+        try (var contexts = Files.list(project.resolve(".oseer/runs/ev1/context"))) {
+            check.eq("each visual role retains the context of the harness it saw", 2L,
+                    contexts.filter(path -> path.getFileName().toString().endsWith("-harness.json")).count());
+        }
+
+        var report = new dev.oseer.ledger.RunReport();
+        List<Map<String, Object>> stageReport = (List<Map<String, Object>>) report.of(project, "ev1").get("stages");
+        List<String> expectedUrls = recorded.stream()
+                .filter(step -> "visual_qa".equals(step.get("step")) && step.get("profile") == null)
+                .map(step -> "fixture-" + step.get("evidence_dir")).toList();
+        check.eq("the assembled report reads the right harness receipt for each stage and attempt",
+                expectedUrls, stageReport.stream().filter(row -> "visual_harness".equals(row.get("kind")))
+                        .map(row -> row.get("url")).toList());
+        List<Map<String, Object>> readers = steps(outcome).stream()
+                .filter(row -> "reviewer".equals(row.get("step"))).toList();
+        check.eq("both stages under the same role dispatched", 2, readers.size());
+        check.eq("ordinary role stages with equal slugs also get distinct receipt paths",
+                2L, readers.stream().map(row -> row.get("evidence_dir")).distinct().count());
+        check.that("the assembled report reads both reader receipts",
+                stageReport.stream().filter(row -> "reviewer".equals(row.get("role")))
+                        .filter(row -> row.get("duration_millis") instanceof Number).count() == 2);
+
+        Map<String, Object> eye = recorded.stream().filter(row -> "eyes-secondary".equals(row.get("stage")))
+                .findFirst().orElseThrow();
+        Map<String, Object> carried = new java.util.LinkedHashMap<>(eye);
+        carried.put("attempt", 0L);
+        carried.put("reused_from", "ev-intermediate");
+        // The old absolute location may be gone. Its directory name and actual final
+        // attempt report remain under the current archive's runs root.
+        Path eyeReport = Path.of(String.valueOf(eye.get("report")));
+        String lastAttempt = "role-visual_qa.attempt-2.json";
+        Map<String, Object> receipt = readJson(eyeReport);
+        receipt.put("model_reported", "second-visual-attempt");
+        Files.writeString(eyeReport.resolveSibling(lastAttempt), Json.write(receipt));
+        carried.put("report", "C:/old-archive/" + eye.get("evidence_dir") + "/" + lastAttempt);
+        Path resumed = Files.createDirectories(project.resolve(".oseer/runs/ev-resumed"));
+        Files.writeString(resumed.resolve("task-run.json"), Json.write(Map.of("task_id", "hello", "steps", List.of(carried))));
+        List<Map<String, Object>> resumedReport = (List<Map<String, Object>>) report.of(project, "ev-resumed").get("stages");
+        check.eq("a carried visual verdict opens its recorded attempt in the current archive",
+                "second-visual-attempt", resumedReport.getFirst().get("model_reported"));
     }
 
     /**
@@ -3693,6 +3787,9 @@ public final class TaskLoopTest implements Suite {
         check.eq("before anything was dispatched", 0L, tooTight.summaryReport().get("role_runs"));
         check.contains("and says it was the strict reserve, not the reported spend",
                 String.valueOf(tooTight.summaryReport().get("budget_stop")), "strict cap");
+        check.contains("the stop advice explains the reservation before any calls are charged",
+                String.valueOf(tooTight.summaryReport().get("safe_next_step")),
+                "reserves the declared bounds for calls still owed");
 
         Path roomy = newProject(sandbox, "strict-roomy", "medium", 20, "0.10");
         writeBoundedProfiles(home, sandbox, "strict-roomy", 0.02, 0.02);
@@ -3799,6 +3896,11 @@ public final class TaskLoopTest implements Suite {
                 afterPreflight.reason());
         check.eq("no call dispatches after the failed preflight", 0L,
                 afterPreflight.summaryReport().get("role_runs"));
+        String costAdvice = String.valueOf(afterPreflight.summaryReport().get("safe_next_step"));
+        check.contains("the continuation advice names the carried unpriced charge", costAdvice,
+                "0.03 charged at declared bounds");
+        check.that("the continuation advice acknowledges the strict charge",
+                !costAdvice.contains("were not counted against it"));
 
         writeProfiles(home, sandbox, "strict-restore", 1, 1);
     }

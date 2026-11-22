@@ -1,6 +1,7 @@
 package dev.oseer.ledger;
 
 import dev.oseer.config.OverseerTree;
+import dev.oseer.config.Profile;
 import dev.oseer.config.Workflow;
 import dev.oseer.gate.CheckDiagnostics;
 import dev.oseer.git.GitRepository;
@@ -11,12 +12,14 @@ import dev.oseer.run.NextStep;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * One run, assembled: what was asked, which vendor answered, what it cost, what the machine
@@ -157,10 +160,15 @@ public final class RunReport {
             stage.put("code", step.get("code"));
             if (Boolean.TRUE.equals(step.get("dry_run"))) stage.put("dry_run", true);
 
-            Path detail = detailFile(runs, runId, label, text(step.get("stage")), attempt, visualRole);
-            if (detail == null && step.get("report") != null) {
-                Path referenced = Path.of(String.valueOf(step.get("report")));
-                if (Files.isRegularFile(referenced)) detail = referenced;
+            Path detail;
+            if (step.containsKey("evidence_dir")) {
+                detail = recordedStageReport(runs, runId, step, label, visualRole);
+            } else {
+                detail = detailFile(runs, runId, label, text(step.get("stage")), attempt, visualRole);
+                if (detail == null && step.get("report") != null) {
+                    Path referenced = Path.of(String.valueOf(step.get("report")));
+                    if (Files.isRegularFile(referenced)) detail = referenced;
+                }
             }
             Map<String, Object> body = detail == null ? Map.of() : readOptionalJson(detail);
             if (body == null) body = Map.of();
@@ -243,6 +251,38 @@ public final class RunReport {
             }
             stage.put("commands", annotated);
         }
+    }
+
+    /**
+     * Repeated stages name the exact evidence they wrote. Resolve the directory and report
+     * name against the current archive, even if a carried verdict retains an older path.
+     */
+    private static Path recordedStageReport(Path runs, String runId, Map<String, Object> step,
+                                            String label, boolean visualRole) {
+        if (!(step.get("evidence_dir") instanceof String directory)
+                || !directory.matches("[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}")
+                || (!(step.get("reused_from") instanceof String) && !directory.startsWith(runId + "--"))
+                || !(step.get("report") instanceof String report)) {
+            return null;
+        }
+        String normalized = report.replace('\\', '/');
+        String name = normalized.substring(normalized.lastIndexOf('/') + 1);
+        boolean expected = switch (label) {
+            case "gates" -> "machine-gate.json".equals(name);
+            case "visual_qa" -> visualRole ? roleReportName(label, name)
+                    : "visual-qa.json".equals(name);
+            default -> Profile.ROLES.contains(label) && roleReportName(label, name);
+        };
+        if (!expected) return null;
+        Path parent = runs.resolve(directory);
+        Path candidate = parent.resolve(name);
+        return Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)
+                && Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS) ? candidate : null;
+    }
+
+    private static boolean roleReportName(String role, String file) {
+        return file.matches("role-" + Pattern.quote(role)
+                + "(?:\\.attempt-[1-9][0-9]*|-dryrun|-context-refused)?\\.json");
     }
 
     /**

@@ -510,7 +510,7 @@ public final class WorkflowTest implements Suite {
         // Every stop a vendor endpoint caused. The first of these was the one the operator was
         // told to wait out and continue — and the continuation then threw every verdict away.
         for (String reason : List.of("quota_exhausted", "rate_limited",
-                "failover_requires_confirmation", "role_timed_out", "vendor_call_failed",
+                "failover_requires_confirmation", "role_timed_out", "role_stalled", "vendor_call_failed",
                 "vendor_unavailable", "vendor_protocol_failed", "prompt_undeliverable",
                 "orca_worker_not_started")) {
             check.eq(reason + " is not a verdict on the work",
@@ -561,6 +561,13 @@ public final class WorkflowTest implements Suite {
                                 "code", "role_orca_start_failed")));
         check.eq("a recorded reviewer_failed whose step never started is read as that",
                 "orca_worker_not_started", dev.oseer.run.TaskLoop.reasonForContinuation(recorded));
+        String stalled = dev.oseer.run.TaskLoop.reasonForContinuation(Map.of(
+                "reason", "reviewer_failed",
+                "steps", List.of(Map.of("step", "reviewer", "ok", false, "code", "role_stalled"))));
+        check.eq("a legacy reviewer failure with a stalled step is diagnosed as a stall",
+                "role_stalled", stalled);
+        check.eq("a continuation can reuse verdicts after a legacy stall",
+                false, dev.oseer.run.TaskLoop.isAboutTheWork(stalled));
         java.util.Map<String, Object> objected = java.util.Map.of(
                 "reason", "reviewer_failed",
                 "steps", List.of(java.util.Map.of("step", "reviewer", "ok", false,

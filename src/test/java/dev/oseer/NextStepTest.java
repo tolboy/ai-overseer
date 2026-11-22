@@ -21,6 +21,7 @@ public final class NextStepTest implements Suite {
 
     @Override public void run(Check check) throws Exception {
         everyKindFromHandBuiltSummary(check);
+        moneyCeilingExplainsUnpricedCalls(check);
         contractGapNamesTheAcceptance(check);
         contractGapReadsAcceptanceFromTheTaskFile(check);
         repairOrRetryForAProductDefect(check);
@@ -31,6 +32,21 @@ public final class NextStepTest implements Suite {
                 NextStep.of("worktree_busy", Map.of(), null).get("kind"));
         check.eq("crashed worktree has an actionable recovery command", List.of("oseer recover"),
                 NextStep.of("worktree_recovery_required", Map.of(), null).get("commands"));
+    }
+
+    private void moneyCeilingExplainsUnpricedCalls(Check check) {
+        Map<String, Object> money = summary("run-1", "hello");
+        money.put("budget_limit_hit", "max_cost_usd");
+        money.put("unpriced_calls", 2L);
+        check.contains("threshold advice keeps explaining that it excludes unpriced calls",
+                String.valueOf(NextStep.of("budget_exhausted", money, null).get("consequences")),
+                "2 of this run's calls reported none and were not counted against it.");
+
+        money.put("cost_cap", "strict");
+        String advice = String.valueOf(NextStep.of("budget_exhausted", money, null).get("consequences"));
+        check.contains("strict cost advice explains how it counts unpriced calls", advice,
+                "counts calls without a reported price at their declared bounds.");
+        check.that("strict cost advice omits the threshold wording", !advice.contains("were not counted"));
     }
 
     /** The stop named "a file under .oseer"; the operator then diffed the tree by hand. */

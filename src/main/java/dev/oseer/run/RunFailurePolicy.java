@@ -43,6 +43,7 @@ final class RunFailurePolicy {
             "escalation_unavailable",
             "independent_review_unavailable",
             "role_timed_out",
+            "role_stalled",
             "vendor_call_failed",
             "vendor_unavailable",
             "vendor_protocol_failed",
