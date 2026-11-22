@@ -79,11 +79,18 @@ final class PortablePackage {
     }
 
     private static void writeJar(Path jar, Path classes) throws IOException {
-        try (var output = new ZipOutputStream(Files.newOutputStream(jar)); var paths = Files.walk(classes)) {
+        try (var output = new ZipOutputStream(Files.newOutputStream(jar))) {
             String manifest = "Manifest-Version: 1.0\r\nMain-Class: " + MAIN_CLASS + "\r\n\r\n";
             write(output, "META-INF/MANIFEST.MF", manifest.getBytes(StandardCharsets.UTF_8));
+            writeTree(output, classes);
+            writeTree(output, Path.of("src/main/resources"));
+        }
+    }
+
+    private static void writeTree(ZipOutputStream output, Path directory) throws IOException {
+        try (var paths = Files.walk(directory)) {
             for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {
-                String name = classes.relativize(file).toString().replace('\\', '/');
+                String name = directory.relativize(file).toString().replace('\\', '/');
                 write(output, name, Files.readAllBytes(file));
             }
         }

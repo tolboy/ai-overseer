@@ -420,6 +420,15 @@ public final class CodingRelayTest implements Suite {
                 if (!handling) Thread.sleep(10);
             }
             check.that("the authorized partial body reaches the relay handler", handling);
+            var liveSnapshot = pool.submit(relay::evidence);
+            try {
+                check.eq("evidence stays readable while a request body is pending",
+                        false, liveSnapshot.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                                .get("identity_confirmed"));
+            } catch (java.util.concurrent.TimeoutException blocked) {
+                check.that("evidence stays readable while a request body is pending", false);
+                liveSnapshot.cancel(true);
+            }
             var stopped =
                     pool.submit(
                             () -> {

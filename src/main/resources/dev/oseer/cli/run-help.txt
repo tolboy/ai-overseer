@@ -1,0 +1,9 @@
+usage: oseer run <task-id|task.yaml> [options]
+  --dry-run                 print the cast, costs and stages; dispatch nothing
+  --run-id <id>             name the run (default: generated)
+  --continue <run-id>       continue a stopped run, reusing verdicts on the same tree
+  --use <stage>=<profile>   pin a profile to a stage for this run (repeatable)
+  --effort <stage>=<level>  override effort for a stage (repeatable)
+  --no-wait-for-gate        return at the human gate instead of waiting
+  --wait-for-gate <minutes> wait for a published gate decision
+A run never lands anything; see `oseer approve` for the human gate.

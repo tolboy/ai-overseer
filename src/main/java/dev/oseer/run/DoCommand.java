@@ -1018,7 +1018,7 @@ public final class DoCommand {
      * The same record a loop stop leaves: a summary a report can read, a pending decision,
      * and — when this command was asked to — an Orca gate and a card that says it stopped.
      */
-    /** Visible so {@code Main.startAdvance} can re-record a stop when {@code replan} itself stops. */
+    /** Records a stop when preparation ends before the writer runs, including a replan. */
     public void recordPreparationStop(Path root, UserConfig user, String taskId, String runId,
                                       Preparation.Outcome prepared, Map<String, Object> report)
             throws Exception {

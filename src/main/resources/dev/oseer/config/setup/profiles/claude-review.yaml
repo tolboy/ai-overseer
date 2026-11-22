@@ -1,0 +1,40 @@
+version: 1
+profile: claude-review
+role: reviewer
+vendor: claude
+command: claude
+runner: direct
+read_only: true
+
+# The prompt goes on stdin, not in argv. On Windows the JVM does not escape a
+# double quote inside an argument, and this prompt embeds the artifact schema:
+# a live run reached claude.exe as `error: unknown option` after being torn
+# apart at the first quote in the JSON.
+prompt_delivery: stdin
+args:
+  - "-p"
+  - "--output-format"
+  - "json"
+  - "--max-turns"
+  - "12"
+  - "--allowedTools"
+  - "Read,Grep,Glob"
+
+limits:
+  wall_clock_minutes: 25
+
+prompt_template: prompts/reviewer.md
+json_schema: schemas/reviewer.json
+artifact:
+  required_fields: [role, task_id, status, verdict, summary, findings]
+
+verification:
+  # The resolver refuses any profile without verified_on. Run
+  #   oseer profiles --verify claude-review
+  # read the transcript against what_to_check, then add --confirm.
+  probe: 'claude -p "Reply with exactly: ok" --output-format json --max-turns 1 --allowedTools Read'
+  what_to_check:
+    - "exits 0 without opening an interactive session"
+    - "stdout is a JSON envelope; note which key carries the answer"
+    - "--allowedTools is accepted and the run still completes"
+    - "whether a cost figure is reported, and under which key"

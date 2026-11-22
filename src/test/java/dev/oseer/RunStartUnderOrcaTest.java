@@ -1,5 +1,8 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.ContinuationCommand;
+import dev.oseer.cli.RunObservation;
 import dev.oseer.approval.ApprovalStore;
 import dev.oseer.approval.HumanDecision;
 import dev.oseer.execution.orca.OrcaDesktop;
@@ -136,22 +139,14 @@ public final class RunStartUnderOrcaTest implements Suite {
                 "orca-decision-page", "");
         FakeOrca orca = new FakeOrca(root);
         OrcaDesktopTest.Fake desktop = new OrcaDesktopTest.Fake(root.toRealPath());
-        var before = Main.boards;
-        var beforeDesktops = Main.desktops;
-        Main.boards = worktree -> OrcaWorkspace.attach(orca.client(), worktree);
-        // As on the operator's laptop: an interactive terminal, so the desktop projects.
-        Main.desktops = (worktree, policy, progress) -> OrcaDesktop.attach(desktop.client(), worktree,
-                new OrcaDesktop.Policy(true, false, false), progress);
-        Map<String, Object> started;
-        try {
-            Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
-                    (path, gate) -> { throw new IllegalStateException("no gate is read here"); }, home);
-            started = Main.startAdvance(root, retry,
-                    new String[] {"--watch", "--no-orca-gate", "--quiet"}, env);
-        } finally {
-            Main.boards = before;
-            Main.desktops = beforeDesktops;
-        }
+        RunObservation observation = new RunObservation(worktree -> OrcaWorkspace.attach(orca.client(), worktree),
+                (worktree, policy, progress) -> OrcaDesktop.attach(desktop.client(), worktree,
+                        new OrcaDesktop.Policy(true, false, false), progress));
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
+                (path, gate) -> { throw new IllegalStateException("no gate is read here"); }, home)
+                .withObservation(observation);
+        Map<String, Object> started = ContinuationCommand.startAdvance(root, retry,
+                new String[] {"--watch", "--no-orca-gate", "--quiet"}, env);
         check.eq("the answer starts the next run: " + started, true, started.get("started"));
         check.eq("which is not refused as a duplicate of itself", null, started.get("code"));
         check.eq("and runs to its first stop", STOP, started.get("reason"));
@@ -168,7 +163,7 @@ public final class RunStartUnderOrcaTest implements Suite {
         for (String[] off : List.of(new String[] {"--watch", "--dry-run"},
                 new String[] {"--watch", "--no-workspace-status"})) {
             check.that("--watch with " + off[1] + " still resolves to no workspace",
-                    Main.observationBoard(off) == dev.oseer.run.Workspace.Source.NONE);
+                    observation.forRun(off) == dev.oseer.run.Workspace.Source.NONE);
         }
     }
 
@@ -296,13 +291,14 @@ public final class RunStartUnderOrcaTest implements Suite {
     /**
      * `oseer` on a board that is a {@link FakeOrca}, so a run in a plain temp directory
      * takes the path an Orca worktree takes. The calls it made go to the file named first,
-     * on the way out, because {@link Main#main} leaves through {@code System.exit}.
+     * on the way out, including when the command returns an error.
      */
     public static final class UnderFakeOrca {
         public static void main(String[] args) {
             Path log = Path.of(args[0]);
             FakeOrca orca = new FakeOrca(Path.of("").toAbsolutePath());
-            Main.boards = worktree -> OrcaWorkspace.attach(orca.client(), worktree);
+            var observation = RunObservation.live().withBoards(
+                    worktree -> OrcaWorkspace.attach(orca.client(), worktree));
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
                     Files.writeString(log, Json.write(orca.calls()));
@@ -310,7 +306,7 @@ public final class RunStartUnderOrcaTest implements Suite {
                     // The suite reads an empty log as no calls, and says so in its checks.
                 }
             }));
-            Main.main(Arrays.copyOfRange(args, 1, args.length));
+            System.exit(new dev.oseer.cli.Cli(observation).run(Arrays.copyOfRange(args, 1, args.length)));
         }
     }
 

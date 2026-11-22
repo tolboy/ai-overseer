@@ -3,14 +3,17 @@ package dev.oseer.json;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Durable JSON files that two Overseer processes may reach for at the same time.
@@ -26,8 +29,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class JsonFile {
 
-    /** File locks protect processes; these monitors prevent overlapping-lock errors in one JVM. */
-    private static final Map<Path, Object> JVM_LOCKS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Path, LocalLock> JVM_LOCKS = new ConcurrentHashMap<>();
+
+    private static final class LocalLock {
+        final ReentrantLock lock = new ReentrantLock();
+        int references; // Updated only inside this path's map entry computation.
+    }
 
     private JsonFile() {}
 
@@ -79,14 +86,38 @@ public final class JsonFile {
     public static <T> T underExclusiveLock(Path target, String lockName, IoOperation<T> operation)
             throws IOException {
         Files.createDirectories(target.getParent());
-        Path lockPath = target.resolveSibling(lockName).toAbsolutePath().normalize();
-        Object monitor = JVM_LOCKS.computeIfAbsent(lockPath, ignored -> new Object());
-        synchronized (monitor) {
+        Path lockPath = canonicalLock(target.resolveSibling(lockName));
+        LocalLock local = JVM_LOCKS.compute(lockPath, (path, held) -> {
+            LocalLock entry = held == null ? new LocalLock() : held;
+            entry.references++;
+            return entry;
+        });
+        try {
+            if (local.lock.isHeldByCurrentThread()) throw new OverlappingFileLockException();
+            local.lock.lockInterruptibly();
             try (FileChannel channel = FileChannel.open(lockPath,
                     StandardOpenOption.CREATE, StandardOpenOption.WRITE);
                  var ignored = channel.lock()) {
                 return operation.run();
+            } finally {
+                local.lock.unlock();
             }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            var failure = new InterruptedIOException("interrupted waiting for JSON lock");
+            failure.initCause(interrupted);
+            throw failure;
+        } finally {
+            JVM_LOCKS.compute(lockPath, (path, entry) -> --entry.references == 0 ? null : entry);
+        }
+    }
+
+    private static Path canonicalLock(Path file) throws IOException {
+        Path absolute = file.toAbsolutePath().normalize();
+        try {
+            return absolute.toRealPath();
+        } catch (NoSuchFileException absent) {
+            return absolute.getParent().toRealPath().resolve(absolute.getFileName());
         }
     }
 }

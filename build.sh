@@ -13,4 +13,6 @@ find src/main/java -name '*.java' > out/sources.txt
 javac --release "$RELEASE" -d out/classes @out/sources.txt
 find src/test/java -name '*.java' > out/test-sources.txt
 javac --release "$RELEASE" -d out/test-classes @out/sources.txt @out/test-sources.txt
+cp -R src/main/resources/. out/classes/
+cp -R src/main/resources/. out/test-classes/
 echo "built (release $RELEASE)"

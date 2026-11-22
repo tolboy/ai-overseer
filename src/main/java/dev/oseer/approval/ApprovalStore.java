@@ -100,7 +100,7 @@ public final class ApprovalStore {
                 summaryPath, candidateFingerprint);
     }
 
-    public synchronized HumanDecision createPending(
+    public HumanDecision createPending(
             String runId,
             String taskId,
             HumanDecision.Kind kind,
@@ -110,7 +110,7 @@ public final class ApprovalStore {
         return createPending(runId, taskId, kind, reason, summaryPath, candidateFingerprint, null);
     }
 
-    public synchronized HumanDecision createPending(
+    public HumanDecision createPending(
             String runId,
             String taskId,
             HumanDecision.Kind kind,
@@ -162,7 +162,7 @@ public final class ApprovalStore {
     /**
      * Resolve a pending decision using {@code expectedUpdatedAt} as an optimistic-lock token.
      */
-    public synchronized HumanDecision resolve(
+    public HumanDecision resolve(
             String runId,
             String expectedUpdatedAt,
             String decision,
@@ -175,8 +175,8 @@ public final class ApprovalStore {
     public interface BeforeResolve { void run(HumanDecision current) throws IOException; }
 
     /** Validate and apply a digest-bound contract proposal under the decision lock. */
-    public synchronized HumanDecision resolve(String runId, String expectedUpdatedAt, String decision,
-                                               String actor, String note, BeforeResolve action) throws IOException {
+    public HumanDecision resolve(String runId, String expectedUpdatedAt, String decision,
+                                 String actor, String note, BeforeResolve action) throws IOException {
         validateRunId(runId);
         Path target = decisionPath(runId);
         return underExclusiveLock(target, () -> {

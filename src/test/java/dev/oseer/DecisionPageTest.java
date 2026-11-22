@@ -1,5 +1,16 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApprovalCommand;
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.ContinuationClaim;
+import dev.oseer.cli.ContinuationCommand;
+import dev.oseer.cli.ContinuationPolicy;
+import dev.oseer.cli.DashboardCommand;
+import dev.oseer.cli.DecisionSession;
+import dev.oseer.cli.DecisionSupervisor;
+import dev.oseer.cli.RunObservation;
+import dev.oseer.cli.RunPresentation;
+import dev.oseer.dashboard.DecisionPageOpener;
 import dev.oseer.approval.ApprovalStore;
 import dev.oseer.approval.HumanDecision;
 import dev.oseer.dashboard.DecisionPage;
@@ -9,6 +20,7 @@ import dev.oseer.run.NextStep;
 import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -67,27 +79,39 @@ public final class DecisionPageTest implements Suite {
                 root.resolve(".oseer/runs/run-1/task-run.json"))));
         summary.put("decision_kind", "failure");
         summary.put("reason", dev.oseer.run.TaskLoop.CONTRACT_AMENDMENT);
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
         String[] args = {"--no-workspace-status", "--quiet"};
 
+        String launcher = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java").toString();
+        ProcessBuilder supervisor = new ProcessBuilder(launcher, "-cp", System.getProperty("java.class.path"),
+                "dev.oseer.testing.HoldsSupervision", root.toString(), "run-1")
+                .redirectErrorStream(true);
         try (var here = DecisionPage.supervise(root, "run-1")) {
             check.that("a run can be supervised", here != null);
             check.that("but not twice in one process", DecisionPage.supervise(root, "run-1") == null);
+            Process contender = supervisor.start();
+            try {
+                contender.getOutputStream().close();
+                if (!contender.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new IOException("the external supervisor probe did not exit");
+                }
+                check.eq("a local refusal preserves the OS lock against another process", "busy",
+                        new String(contender.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip());
+            } finally {
+                if (contender.isAlive()) contender.destroyForcibly().waitFor();
+            }
         }
 
-        String launcher = Path.of(System.getProperty("java.home"), "bin",
-                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java").toString();
-        Process other = new ProcessBuilder(launcher, "-cp", System.getProperty("java.class.path"),
-                "dev.oseer.testing.HoldsSupervision", root.toString(), "run-1")
-                .redirectErrorStream(true).start();
+        Process other = supervisor.start();
         try {
             String first = new java.io.BufferedReader(new java.io.InputStreamReader(
                     other.getInputStream(), StandardCharsets.UTF_8)).readLine();
             check.eq("another process supervises the run", "held", first);
             check.that("so this one cannot", DecisionPage.supervise(root, "run-1") == null);
             int[] calls = {0};
-            Map<String, Object> result = Main.superviseGates(root, "run-1", summary, args, env,
+            Map<String, Object> result = DecisionSupervisor.superviseGates(root, "run-1", summary, args, env,
                     (path, decision, passed, environment) -> {
                         calls[0]++;
                         return Map.of("started", true);
@@ -115,10 +139,10 @@ public final class DecisionPageTest implements Suite {
      */
     private void anAnswerStartsOneContinuation(Check check) throws Exception {
         Path root = project("Toggle the greeting");
-        Path claim = root.resolve(".oseer/runs/run-1").resolve(Main.CONTINUATION_CLAIM);
+        Path claim = root.resolve(".oseer/runs/run-1").resolve(ContinuationClaim.CONTINUATION_CLAIM);
         check.eq("the first start of a continuation claims it", null,
-                Main.claimContinuation(root, "run-1", "run-5"));
-        Map<String, Object> second = Main.claimContinuation(root, "run-1", "run-6");
+                ContinuationClaim.claimContinuation(root, "run-1", "run-5"));
+        Map<String, Object> second = ContinuationClaim.claimContinuation(root, "run-1", "run-6");
         check.eq("a second, while the first is still starting, is refused", "run-5",
                 second == null ? null : second.get("run_id"));
 
@@ -129,7 +153,7 @@ public final class DecisionPageTest implements Suite {
         stranded.put("process_started_at", "1970-01-01T00:00:00Z");
         Files.writeString(claim, Json.write(stranded));
         check.eq("a claim whose process is gone and whose run never started is taken over", null,
-                Main.claimContinuation(root, "run-1", "run-7"));
+                ContinuationClaim.claimContinuation(root, "run-1", "run-7"));
         check.eq("and names the run that took it", "run-7", Json.parseObject(Files.readString(claim)).get("run_id"));
 
         // Once the run has reserved its evidence it may have paid for something, and its claim
@@ -139,10 +163,10 @@ public final class DecisionPageTest implements Suite {
         Map<String, Object> afterRun = new LinkedHashMap<>(Json.parseObject(Files.readString(claim)));
         afterRun.put("process_started_at", "1970-01-01T00:00:00Z");
         Files.writeString(claim, Json.write(afterRun));
-        Map<String, Object> protectedClaim = Main.claimContinuation(root, "run-1", "run-8");
+        Map<String, Object> protectedClaim = ContinuationClaim.claimContinuation(root, "run-1", "run-8");
         check.eq("a claim whose run exists stands after its process has gone", "run-7",
                 protectedClaim == null ? null : protectedClaim.get("run_id"));
-        Main.releaseContinuation(root, "run-1", "run-7");
+        ContinuationClaim.releaseContinuation(root, "run-1", "run-7");
         check.that("and is not given back by a failed start either", Files.exists(claim));
 
         // Measured in the review of 40024ac: a contract that failed to load after the claim
@@ -155,20 +179,20 @@ public final class DecisionPageTest implements Suite {
         HumanDecision retry = new ApprovalStore(broken).resolve("run-1", pending.updatedAt().toString(),
                 "retry", "tester", "");
         Files.writeString(broken.resolve(".oseer/tasks/hello.yaml"), "version: 1\nid: hello\n");
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (path, gate) -> { throw new IllegalStateException("no gate"); },
                 Files.createDirectories(broken.resolve("home")));
-        Map<String, Object> failed = Main.startAdvance(broken, retry,
+        Map<String, Object> failed = ContinuationCommand.startAdvance(broken, retry,
                 new String[] {"--no-workspace-status", "--quiet"}, env);
         check.eq("a continuation whose contract does not load does not start", "advance_start_failed",
                 failed.get("code"));
         check.that("and does not use up the answer", !Files.exists(
-                broken.resolve(".oseer/runs/run-1").resolve(Main.CONTINUATION_CLAIM)));
+                broken.resolve(".oseer/runs/run-1").resolve(ContinuationClaim.CONTINUATION_CLAIM)));
         check.eq("which can be acted on again once the contract is fixed", null,
-                Main.claimContinuation(broken, "run-1", "run-3"));
-        Main.releaseContinuation(broken, "run-1", "run-3");
+                ContinuationClaim.claimContinuation(broken, "run-1", "run-3"));
+        ContinuationClaim.releaseContinuation(broken, "run-1", "run-3");
         check.that("and a live process gives back a claim whose run never came to exist",
-                !Files.exists(broken.resolve(".oseer/runs/run-1").resolve(Main.CONTINUATION_CLAIM)));
+                !Files.exists(broken.resolve(".oseer/runs/run-1").resolve(ContinuationClaim.CONTINUATION_CLAIM)));
     }
 
     /**
@@ -187,13 +211,13 @@ public final class DecisionPageTest implements Suite {
         new ApprovalStore(root).createSuccess("run-1", "hello", "every stage that ran passed",
                 summaryFile, "fingerprint-shown");
         long[] now = {1_800_000_000_000L};
-        Main.ApproveEnv hurried = new Main.ApproveEnv(() -> now[0], millis -> now[0] += millis,
+        ApproveEnv hurried = new ApproveEnv(() -> now[0], millis -> now[0] += millis,
                 (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
         String[] args = {"--no-workspace-status", "--quiet"};
 
         // The wait that asked the question ends unanswered, as it does after --wait-minutes.
         String[] leased = {null};
-        Map<String, Object> waited = Main.awaitDecision(root, "run-1", args, 1, hurried, url -> {
+        Map<String, Object> waited = DecisionSession.awaitDecision(root, "run-1", args, 1, hurried, url -> {
             var lease = DecisionPage.liveLease(root, "run-1");
             leased[0] = lease == null ? null : lease.url();
             check.eq("while the page is up its lease names it", url, leased[0]);
@@ -203,12 +227,13 @@ public final class DecisionPageTest implements Suite {
                 ((Map<?, ?>) waited.get("decision_page")).get("timed_out"));
         check.that("and took its page and its lease with it", DecisionPage.liveLease(root, "run-1") == null);
 
-        Main.ApproveEnv patient = new Main.ApproveEnv(System::currentTimeMillis,
+        ApproveEnv patient = new ApproveEnv(System::currentTimeMillis,
                 millis -> Thread.sleep(Math.min(millis, 20)),
                 (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
         List<String> previews = new java.util.ArrayList<>();
+        DecisionPageOpener pages = new DecisionPageOpener();
         try (var dashboard = new dev.oseer.dashboard.Dashboard(root, 0,
-                runId -> Main.openDecision(root, runId, args, patient, url -> previews.add(url)))) {
+                runId -> DashboardCommand.openDecision(pages, root, runId, args, patient, url -> previews.add(url)))) {
             dashboard.start();
             Map<String, Object> state = Json.parseObject(get(dashboard.url() + "api/state").body());
             List<?> pending = (List<?>) state.get("pending_decisions");
@@ -271,42 +296,37 @@ public final class DecisionPageTest implements Suite {
             @Override public void adopt(String runId) { told.add("adopt " + runId); }
             @Override public void answered(String decision) { told.add("answered " + decision); }
         };
-        var before = Main.boards;
-        Main.boards = worktree -> recording;
-        try {
-            for (String[] answer : List.of(new String[] {"reject", "the second press misses"},
-                    new String[] {"reject", ""})) {
-                told.clear();
-                Path root = project("Toggle the greeting");
-                Path home = Files.createDirectories(root.resolve("home"));
-                HumanDecision pending = new ApprovalStore(root).createSuccess("run-1", "hello",
-                        "every stage that ran passed", root.resolve(".oseer/runs/run-1/task-run.json"),
-                        "fingerprint-shown");
-                Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
-                        (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
-                var recorded = Main.approveDecision(root, new String[] {"approve", "run-1",
-                        "--decision", answer[0], "--note", answer[1], "--expected-updated-at",
-                        pending.updatedAt().toString(), "--no-start", "--quiet"}, env);
-                String which = answer[0] + (answer[1].isEmpty() ? " without a note" : " with a note");
-                check.that("the answer is recorded: " + which, recorded.ok());
-                check.that("the board takes over the run's tab first: " + which,
-                        !told.isEmpty() && told.get(0).equals("adopt run-1"));
-                if (answer[1].isEmpty()) {
-                    check.that("an answer that closes the run settles the card",
-                            told.contains("state " + dev.oseer.run.Workspace.State.SETTLED));
-                } else {
-                    check.that("an answer that expects another run renames the tab",
-                            told.contains("answered reject"));
-                    check.that("and does not say running before that run starts",
-                            told.stream().noneMatch(line -> line.startsWith("state ")));
-                }
-                String narration = Files.exists(root.resolve(".oseer/runs/run-1/narration.log"))
-                        ? Files.readString(root.resolve(".oseer/runs/run-1/narration.log")) : "";
-                check.that("no narration is invented for a run that never had one: " + which,
-                        narration.isEmpty());
+        RunObservation observation = RunObservation.live().withBoards(worktree -> recording);
+        for (String[] answer : List.of(new String[] {"reject", "the second press misses"},
+                new String[] {"reject", ""})) {
+            told.clear();
+            Path root = project("Toggle the greeting");
+            Path home = Files.createDirectories(root.resolve("home"));
+            HumanDecision pending = new ApprovalStore(root).createSuccess("run-1", "hello",
+                    "every stage that ran passed", root.resolve(".oseer/runs/run-1/task-run.json"),
+                    "fingerprint-shown");
+            ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
+                    (path, gate) -> { throw new IllegalStateException("no gate"); }, home).withObservation(observation);
+            var recorded = ApprovalCommand.approveDecision(root, new String[] {"approve", "run-1",
+                    "--decision", answer[0], "--note", answer[1], "--expected-updated-at",
+                    pending.updatedAt().toString(), "--no-start", "--quiet"}, env);
+            String which = answer[0] + (answer[1].isEmpty() ? " without a note" : " with a note");
+            check.that("the answer is recorded: " + which, recorded.ok());
+            check.that("the board takes over the run's tab first: " + which,
+                    !told.isEmpty() && told.get(0).equals("adopt run-1"));
+            if (answer[1].isEmpty()) {
+                check.that("an answer that closes the run settles the card",
+                        told.contains("state " + dev.oseer.run.Workspace.State.SETTLED));
+            } else {
+                check.that("an answer that expects another run renames the tab",
+                        told.contains("answered reject"));
+                check.that("and does not say running before that run starts",
+                        told.stream().noneMatch(line -> line.startsWith("state ")));
             }
-        } finally {
-            Main.boards = before;
+            String narration = Files.exists(root.resolve(".oseer/runs/run-1/narration.log"))
+                    ? Files.readString(root.resolve(".oseer/runs/run-1/narration.log")) : "";
+            check.that("no narration is invented for a run that never had one: " + which,
+                    narration.isEmpty());
         }
     }
 
@@ -335,18 +355,18 @@ public final class DecisionPageTest implements Suite {
             Files.writeString(summaryFile, Json.write(summary));
             HumanDecision pending = new ApprovalStore(root).createSuccess("run-1", "hello",
                     "every stage that ran passed", summaryFile, "fingerprint-shown");
-            Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis,
+            ApproveEnv env = new ApproveEnv(System::currentTimeMillis,
                     millis -> Thread.sleep(Math.min(millis, 20)),
                     (path, gate) -> { throw new IllegalStateException("the page answered first"); }, home);
             String[] args = {"--no-workspace-status", "--quiet"};
             List<String> carried = new java.util.ArrayList<>();
-            Main.superviseGates(root, "run-1", summary, args, env,
+            DecisionSupervisor.superviseGates(root, "run-1", summary, args, env,
                     (path, decision, passed, environment) -> {
                         carried.add(decision.decision() + ": " + decision.note());
                         return Map.of("started", true, "run_id", "run-2", "ok", true,
                                 "summary_report", Map.of("run_id", "run-2"));
                     },
-                    (path, runId, shown) -> Main.awaitDecision(path, runId, args, 1, env, url -> {
+                    (path, runId, shown) -> DecisionSession.awaitDecision(path, runId, args, 1, env, url -> {
                         HttpResponse<String> pressed = post(url, "reject", note, pending.updatedAt().toString());
                         check.contains("the page records the rejection", pressed.body(), "Записано");
                         if (!note.isEmpty()) {
@@ -370,26 +390,33 @@ public final class DecisionPageTest implements Suite {
      * first attempt could push the final ones off the page.
      */
     private void onlyTheLastAttemptIsShown(Check check) throws Exception {
+        lastBrowserAttempts(check, List.of("visual-qa"));
+        lastBrowserAttempts(check, List.of("-4-browser", "-5-browser-secondary"));
+    }
+
+    private void lastBrowserAttempts(Check check, List<String> stages) throws Exception {
         Path root = project("Toggle the greeting");
         new ApprovalStore(root).createSuccess("run-1", "hello", "every stage that ran passed",
                 root.resolve(".oseer/runs/run-1/task-run.json"), "fingerprint-shown");
-        for (int attempt : List.of(0, 1)) {
-            Path shots = root.resolve(".oseer/runs/run-1--visual-qa-" + attempt + "/screenshots");
-            Files.createDirectories(shots);
-            String picture = attempt == 0 ? "1280x720-failed.png" : "1280x720.png";
-            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(4, 4,
-                    java.awt.image.BufferedImage.TYPE_INT_RGB), "png", shots.resolve(picture).toFile());
-            Map<String, Object> scenario = new LinkedHashMap<>();
-            scenario.put("raw", "1280x720: testid=toggle click -> testid=greeting hidden");
-            scenario.put("ok", attempt == 1);
-            scenario.put("viewport", Map.of("width", 1280, "height", 720, "mobile", false));
-            scenario.put("screenshot", shots.resolve(picture).toString());
-            if (attempt == 0) scenario.put("why", "the greeting stayed on the page");
-            scenario.put("steps", List.of(
-                    Map.of("matcher", "testid=toggle", "assertion", "click", "ok", true),
-                    Map.of("matcher", "testid=greeting", "assertion", "hidden", "ok", attempt == 1)));
-            Files.writeString(shots.resolve("visual-qa.json"),
-                    Json.write(Map.of("ok", attempt == 1, "scenarios", List.of(scenario))));
+        for (String stage : stages) {
+            for (int attempt : List.of(0, 1)) {
+                Path shots = root.resolve(".oseer/runs/run-1--" + stage + "-" + attempt + "/screenshots");
+                Files.createDirectories(shots);
+                String picture = attempt == 0 ? "1280x720-failed.png" : "1280x720.png";
+                javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(4, 4,
+                        java.awt.image.BufferedImage.TYPE_INT_RGB), "png", shots.resolve(picture).toFile());
+                Map<String, Object> scenario = new LinkedHashMap<>();
+                scenario.put("raw", "1280x720: testid=toggle click -> testid=greeting hidden");
+                scenario.put("ok", attempt == 1);
+                scenario.put("viewport", Map.of("width", 1280, "height", 720, "mobile", false));
+                scenario.put("screenshot", shots.resolve(picture).toString());
+                if (attempt == 0) scenario.put("why", "the greeting stayed on the page");
+                scenario.put("steps", List.of(
+                        Map.of("matcher", "testid=toggle", "assertion", "click", "ok", true),
+                        Map.of("matcher", "testid=greeting", "assertion", "hidden", "ok", attempt == 1)));
+                Files.writeString(shots.resolve("visual-qa.json"),
+                        Json.write(Map.of("ok", attempt == 1, "scenarios", List.of(scenario))));
+            }
         }
         try (DecisionPage page = new DecisionPage(root, "run-1", (choice, note, expected, finding) -> Map.of("ok", false))) {
             page.start();
@@ -397,7 +424,7 @@ public final class DecisionPageTest implements Suite {
             check.contains("the repaired pass is shown", body, "✓ 1280×720");
             check.that("the failed attempt it replaced is not", !body.contains("the greeting stayed on the page"));
             check.that("nor its verdict", !body.contains("✗ 1280×720"));
-            check.eq("and only the final attempt's frame is on the page", 1,
+            check.eq("one frame from the final attempt of each browser stage is shown", stages.size(),
                     body.split("src='shot/", -1).length - 1);
         }
     }
@@ -664,13 +691,13 @@ public final class DecisionPageTest implements Suite {
         HumanDecision pending = new ApprovalStore(root).createFailure("run-2", "hello",
                 "orca_worker_not_started", summaryFile, null);
 
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis,
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis,
                 millis -> Thread.sleep(Math.min(millis, 20)),
                 (path, gate) -> { throw new IllegalStateException("the page answered first"); }, home);
         String[] args = {"--no-workspace-status", "--quiet"};
         List<String> opened = new java.util.ArrayList<>();
         int[] starts = {0};
-        Map<String, Object> result = Main.superviseGates(root, "run-2", summary, args, env,
+        Map<String, Object> result = DecisionSupervisor.superviseGates(root, "run-2", summary, args, env,
                 (path, decision, passed, environment) -> {
                     starts[0]++;
                     check.eq("the continuation is for the answer given on the page", "retry",
@@ -678,7 +705,7 @@ public final class DecisionPageTest implements Suite {
                     return Map.of("started", true, "run_id", "run-3", "ok", true,
                             "summary_report", Map.of("run_id", "run-3"));
                 },
-                (path, runId, shown) -> Main.awaitDecision(path, runId, args, 1, env, url -> {
+                (path, runId, shown) -> DecisionSession.awaitDecision(path, runId, args, 1, env, url -> {
                     opened.add(url);
                     HttpResponse<String> pressed = post(url, "retry", "", pending.updatedAt().toString());
                     check.contains("the page records the retry", pressed.body(), "Записано");
@@ -744,21 +771,31 @@ public final class DecisionPageTest implements Suite {
         Path summary = root.resolve(".oseer/runs/run-1/task-run.json");
         new ApprovalStore(root).createFailure("run-1", "hello", "vendor_protocol_failed", summary, null);
         HumanDecision pending = new ApprovalStore(root).read("run-1");
-        Map<String, Object> alone = Main.startAdvance(root, pending, new String[] {"--no-start"}, null);
+        Map<String, Object> alone = ContinuationCommand.startAdvance(root, pending, new String[] {"--no-start"}, null);
         check.eq("without a waiter this command does not start the run", false, alone.get("started"));
         check.that("and it does print the command", String.valueOf(alone.get("command")).contains("oseer run"));
         check.that("and does not claim a waiter", !Boolean.TRUE.equals(alone.get("waiter")));
         try (var held = DecisionPage.supervise(root, "run-1")) {
             check.that("the test holds the waiter", held != null);
-            Map<String, Object> watched = Main.startAdvance(root, pending,
+            Map<String, Object> watched = ContinuationCommand.startAdvance(root, pending,
                     new String[] {"--no-start"}, null);
             check.eq("with a waiter this command still does not start it", false, watched.get("started"));
             check.eq("and says the waiter will", true, watched.get("waiter"));
             check.that("and does not print a command that would start a second run",
                     !watched.containsKey("command"));
-            Map<String, Object> launcher = Main.startAdvance(root, pending,
+            Map<String, Object> launcher = ContinuationCommand.startAdvance(root, pending,
                     new String[] {"--start-unless-waiting"}, null);
             check.eq("the browser also leaves a live supervisor to start the next run", true, launcher.get("waiter"));
+
+            var env = new ApproveEnv(System::currentTimeMillis, millis -> {}, (path, gate) -> null, null);
+            var answer = ApprovalCommand.approveDecision(root, new String[] {
+                    "approve", "run-1", "--decision", "retry", "--start-unless-waiting",
+                    "--use", "reviewer=another-profile", "--no-workspace-status"
+            }, env);
+            check.eq("the launcher refuses overrides the existing supervisor would not use",
+                    "continuation_supervised", answer.report().get("code"));
+            check.eq("the operator can answer the same gate again", HumanDecision.State.PENDING,
+                    new ApprovalStore(root).read("run-1").state());
         }
     }
 
@@ -781,27 +818,27 @@ public final class DecisionPageTest implements Suite {
                 "the code is fine, go on to the browser");
         HumanDecision pending = new ApprovalStore(root).read("run-1");
 
-        String refused = Main.advanceWouldRepeat(root, pending);
+        String refused = ContinuationPolicy.advanceWouldRepeat(root, pending);
         check.that("advance on an untouched contract gap is refused", refused != null);
         check.contains("and it names the file to edit", String.valueOf(refused), ".oseer/tasks/hello.yaml");
-        Map<String, Object> started = Main.startAdvance(root, pending, new String[] {}, null);
+        Map<String, Object> started = ContinuationCommand.startAdvance(root, pending, new String[] {}, null);
         check.eq("the approve path does not start the run", "advance_would_repeat", started.get("code"));
         check.eq("and says it did not", false, started.get("started"));
 
         Path task = root.resolve(".oseer/tasks/hello.yaml");
         Files.writeString(task, Files.readString(task) + "browser_scenarios: []\n");
-        check.that("once the contract is edited, advance may start", Main.advanceWouldRepeat(root, pending) == null);
+        check.that("once the contract is edited, advance may start", ContinuationPolicy.advanceWouldRepeat(root, pending) == null);
 
         Files.writeString(task, Files.readString(task).replace("browser_scenarios: []\n", ""));
         summary.put("reason", "reproduction_inconclusive");
         Files.writeString(summaryFile, Json.write(summary));
         check.that("an inconclusive reproduction is rerun on the same contract, so advance is not refused",
-                Main.advanceWouldRepeat(root, pending) == null);
+                ContinuationPolicy.advanceWouldRepeat(root, pending) == null);
         summary.put("reason", "blocking_findings_remain");
         summary.put("next_step", Map.of("kind", "repair_or_retry"));
         Files.writeString(summaryFile, Json.write(summary));
         check.that("a product defect is the writers' to fix, so advance is not refused there",
-                Main.advanceWouldRepeat(root, pending) == null);
+                ContinuationPolicy.advanceWouldRepeat(root, pending) == null);
     }
 
     /**
@@ -815,7 +852,7 @@ public final class DecisionPageTest implements Suite {
         HumanDecision pending = failureWith(root, "run-1", List.of(
                 gap("keyboard-chord", "no scenario presses Ctrl+K"),
                 gap("hover", "hover is untested")));
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
         List<Map<String, Object>> answered = new java.util.ArrayList<>();
         try (DecisionPage page = new DecisionPage(root, "run-1", (choice, note, expected, finding) -> {
@@ -826,7 +863,7 @@ public final class DecisionPageTest implements Suite {
                 approve.add("--finding");
                 approve.add(finding);
             }
-            Map<String, Object> report = Main.approveDecision(root, approve.toArray(String[]::new), env).report();
+            Map<String, Object> report = ApprovalCommand.approveDecision(root, approve.toArray(String[]::new), env).report();
             answered.add(report);
             return report;
         })) {
@@ -1222,7 +1259,7 @@ public final class DecisionPageTest implements Suite {
     private Map<String, Object> waive(Path root, String runId, String expected, String finding, String note)
             throws Exception {
         Path home = Files.createDirectories(root.resolve("home"));
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (path, gate) -> { throw new IllegalStateException("no gate"); }, home);
         List<String> args = new java.util.ArrayList<>(List.of("approve", runId,
                 "--decision", "waive", "--note", note, "--expected-updated-at", expected,
@@ -1231,7 +1268,7 @@ public final class DecisionPageTest implements Suite {
             args.add("--finding");
             args.add(finding);
         }
-        return Main.approveDecision(root, args.toArray(String[]::new), env).report();
+        return ApprovalCommand.approveDecision(root, args.toArray(String[]::new), env).report();
     }
 
     /** The waiter's stdout is the run the chain finished on, and ok matches that run. */
@@ -1251,7 +1288,7 @@ public final class DecisionPageTest implements Suite {
         record.put("decision", "accept");
         record.put("run_id", "plan-5");
         result.put("final_decision_record", record);
-        Main.surfaceChain(result);
+        RunPresentation.surfaceChain(result);
         check.eq("ok is the final run's", true, result.get("ok"));
         check.eq("the run id is the final run's", "plan-5", result.get("run_id"));
         check.eq("the reason is the final run's", "ready_for_human", result.get("reason"));

@@ -120,6 +120,7 @@ public final class TestMain {
                 new dev.oseer.RunOverrideTest(),
                 new dev.oseer.OperatorContinuationTest(),
                 new dev.oseer.DecisionPageTest(),
+                new dev.oseer.dashboard.DecisionPageOpenerTest(),
                 new dev.oseer.RunStartUnderOrcaTest()
         );
 

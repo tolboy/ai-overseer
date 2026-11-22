@@ -164,8 +164,8 @@ public final class LedgerReader {
             }
         }
         if (ledgerDir != null) {
-            foldIncompleteImports(ledgerDir.resolve(CorpusImport.IMPORTS), projectId,
-                    unknownIdentity, skipped);
+            skipped.addAll(CorpusImportReceipts.unresolvedSkips(
+                    ledgerDir.resolve(CorpusImport.IMPORTS), projectId));
         }
         Metrics metrics = new Metrics();
         metrics.acceptCorpus(events);
@@ -808,117 +808,6 @@ public final class LedgerReader {
                     firstText(roleRun, "operator_run_id", "run_id"));
             return nestedOperator != null && call.operator != null
                     && !nestedOperator.equals(call.operator);
-        }
-    }
-
-    /**
-     * Incomplete imports live in {@code imports.jsonl}, not in the segment rows that
-     * survived. Fold their skips into this report when the import touched the identity
-     * being summarised — including when a skipped row's project identity could not be
-     * recovered, because that does not establish that the loss cannot affect this
-     * identity — so a later global read still withholds exact spend.
-     */
-    private static void foldIncompleteImports(Path importsFile, String projectId,
-                                              boolean unknownIdentity,
-                                              List<JsonlDiagnostics.Skip> skipped)
-            throws IOException {
-        JsonlDiagnostics.Read read = JsonlDiagnostics.read(importsFile, CorpusImport.IMPORTS);
-        skipped.addAll(read.skipped());
-        // An explicit successful re-import of exactly the same bytes reconciles a failed
-        // delivery. Different source content (or an unknown fingerprint) cannot erase loss.
-        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
-        long anonymous = 0;
-        for (Map<String, Object> receipt : read.rows()) {
-            String fingerprint = nonBlank(text(receipt.get("source_fingerprint")));
-            String transform = nonBlank(text(receipt.get("transform_version")));
-            String key = fingerprint == null || transform == null
-                    ? "unknown:" + anonymous++ : transform + ":" + fingerprint;
-            latest.put(key, receipt);
-        }
-        for (Map<String, Object> receipt : latest.values()) {
-            if (!incompleteReceipt(receipt)) continue;
-            if (!importAppliesTo(receipt, projectId, unknownIdentity)) continue;
-            int before = skipped.size();
-            addReceiptSkips(skipped, receipt);
-            if (skipped.size() == before) {
-                String name = text(receipt.get("source_name"));
-                skipped.add(new JsonlDiagnostics.Skip(
-                        name == null || name.isBlank() ? CorpusImport.IMPORTS : name,
-                        0L, "incomplete_import"));
-            }
-        }
-    }
-
-    private static boolean incompleteReceipt(Map<String, Object> receipt) {
-        if (Boolean.FALSE.equals(receipt.get("complete"))) return true;
-        // Older importers wrote complete:true even when delivery lost rows.
-        for (String field : List.of("failed", "conflicts")) {
-            if (receipt.get(field) instanceof Number count && count.longValue() > 0) return true;
-        }
-        Object skipped = receipt.get("skipped");
-        if (skipped instanceof Map<?, ?> map && map.get("count") instanceof Number count) {
-            return count.longValue() > 0;
-        }
-        return false;
-    }
-
-    private static boolean importAppliesTo(Map<String, Object> receipt, String projectId,
-                                           boolean unknownIdentity) {
-        Set<String> ids = projectIdsOf(receipt);
-        long unknownRows = unknownProjectRows(receipt);
-        if (unattributedSkipped(receipt, ids, unknownRows) > 0) return true;
-        if (unknownIdentity) return unknownRows > 0;
-        return projectId != null && ids.contains(projectId);
-    }
-
-    private static Set<String> projectIdsOf(Map<String, Object> receipt) {
-        Set<String> ids = new LinkedHashSet<>();
-        Object listed = receipt.get("project_ids");
-        if (listed instanceof List<?> list) {
-            for (Object item : list) {
-                String id = text(item);
-                if (id != null && !id.isBlank()) ids.add(id);
-            }
-        }
-        return ids;
-    }
-
-    private static long unknownProjectRows(Map<String, Object> receipt) {
-        if (receipt.get("unknown_project_id") instanceof Number number) {
-            return number.longValue();
-        }
-        return 0L;
-    }
-
-    /**
-     * Skips whose project identity was not recovered cannot be shown not to belong
-     * to the selected project. Receipts written before this field existed look the
-     * same: incomplete, no surviving {@code project_ids}, no unknown-identity rows.
-     */
-    private static long unattributedSkipped(Map<String, Object> receipt, Set<String> ids,
-                                            long unknownRows) {
-        if (receipt.get("unattributed_skipped") instanceof Number number) {
-            return number.longValue();
-        }
-        if (incompleteReceipt(receipt) && ids.isEmpty() && unknownRows == 0) return 1L;
-        return 0L;
-    }
-
-    private static void addReceiptSkips(List<JsonlDiagnostics.Skip> skipped,
-                                        Map<String, Object> receipt) {
-        Object body = receipt.get("skipped");
-        if (!(body instanceof Map<?, ?> map)) return;
-        Object records = map.get("records");
-        if (!(records instanceof List<?> list)) return;
-        for (Object item : list) {
-            if (!(item instanceof Map<?, ?> row)) continue;
-            Object file = row.get("file");
-            Object offset = row.get("offset");
-            Object reason = row.get("reason");
-            skipped.add(new JsonlDiagnostics.Skip(
-                    file == null ? "" : String.valueOf(file),
-                    offset instanceof Number number ? number.longValue() : 0L,
-                    reason == null ? "corrupt" : String.valueOf(reason)));
         }
     }
 

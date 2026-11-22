@@ -1,5 +1,8 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.ContinuationCommand;
+import dev.oseer.cli.ContractAmendment;
 import dev.oseer.approval.HumanDecision;
 
 import dev.oseer.approval.ApprovalStore;
@@ -1382,10 +1385,10 @@ public final class PlannerTest implements Suite {
         Files.writeString(summaryFile, Json.write(summary));
         new dev.oseer.approval.ApprovalStore(project).createFailure("gap-1", "hello",
                 TaskLoop.CONTRACT_AMENDMENT, summaryFile, null);
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (path, gate) -> { throw new IllegalStateException("no gate here"); }, home);
 
-        Map<String, Object> report = Main.amendContract(project, "gap-1", summary,
+        Map<String, Object> report = ContractAmendment.amendContract(project, "gap-1", summary,
                 new String[] {"--no-workspace-status", "--quiet"}, env);
         Map<String, Object> amendment = (Map<String, Object>) report.get("contract_amendment");
         check.eq("the planner's amendment went through", true, amendment == null ? null : amendment.get("ok"));
@@ -1434,7 +1437,7 @@ public final class PlannerTest implements Suite {
         Files.writeString(unreadSummary, Json.write(summary));
         new dev.oseer.approval.ApprovalStore(unread).createFailure("gap-1", "hello",
                 TaskLoop.CONTRACT_AMENDMENT, unreadSummary, null);
-        Map<String, Object> refused = (Map<String, Object>) Main.amendContract(unread, "gap-1", summary,
+        Map<String, Object> refused = (Map<String, Object>) ContractAmendment.amendContract(unread, "gap-1", summary,
                 new String[] {"--no-workspace-status", "--quiet"}, env).get("contract_amendment");
         check.eq("an amendment nobody reviewed does not go through", false,
                 refused == null ? null : refused.get("ok"));
@@ -1451,7 +1454,7 @@ public final class PlannerTest implements Suite {
                 + "budgets:\n  max_role_runs: 40\n  max_cost_usd: 0.5\n", summary,
                 Map.of("runs", List.of("gap-1"), "role_runs", 3L, "cost_usd", 0.495,
                         "elapsed_seconds", 100L, "elapsed_known", true));
-        Map<String, Object> overBudget = (Map<String, Object>) Main.amendContract(spent, "gap-1", summary,
+        Map<String, Object> overBudget = (Map<String, Object>) ContractAmendment.amendContract(spent, "gap-1", summary,
                 new String[] {"--no-workspace-status", "--quiet"}, env).get("contract_amendment");
         check.eq("a plan reviewer is not dispatched once the planner spent the chain's money",
                 "budget_exhausted", overBudget == null ? null : overBudget.get("code"));
@@ -1467,7 +1470,7 @@ public final class PlannerTest implements Suite {
                 + "budgets:\n  max_role_runs: 40\n  max_cost_usd: 5.0\n  max_elapsed_minutes: 10\n", summary,
                 Map.of("runs", List.of("gap-1"), "role_runs", 3L, "cost_usd", 0.1,
                         "elapsed_seconds", 510L, "elapsed_known", true));
-        Main.amendContract(late, "gap-1", summary, new String[] {"--no-workspace-status", "--quiet"}, env);
+        ContractAmendment.amendContract(late, "gap-1", summary, new String[] {"--no-workspace-status", "--quiet"}, env);
         boolean capped;
         try (var files = Files.walk(late.resolve(".oseer/runs/gap-1-amend"))) {
             capped = files.filter(Files::isRegularFile).anyMatch(file -> {
@@ -1529,9 +1532,9 @@ public final class PlannerTest implements Suite {
         // Switch the reviewer to pass so the replan can finish preparation.
         writeReviewerProfile(home, "stub-plan-review", "plan-review-pass",
                 sandbox.resolve("prep-stop-replan-pass.count"), 1);
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (root, gate) -> null, home);
-        Map<String, Object> started = Main.startAdvance(project, replanned,
+        Map<String, Object> started = ContinuationCommand.startAdvance(project, replanned,
                 new String[] {"--no-orca-gate", "--no-decision-page"}, env);
         check.eq("replan names prepare always", "always", started.get("prepare"));
         check.contains("and the printed command asks for prepare always",
@@ -1546,7 +1549,7 @@ public final class PlannerTest implements Suite {
                 project.resolve(".oseer/runs/prep-stop-1/task-run.json"), null);
         check.eq("proceed is among the options", true,
                 proceedProbe.options().contains("proceed"));
-        Map<String, Object> proceedCmd = Main.startAdvance(project,
+        Map<String, Object> proceedCmd = ContinuationCommand.startAdvance(project,
                 new HumanDecision(proceedProbe.schemaVersion(), proceedProbe.runId(),
                         proceedProbe.taskId(), HumanDecision.State.RESOLVED, proceedProbe.kind(),
                         proceedProbe.reason(), proceedProbe.options(), proceedProbe.createdAt(),
@@ -1652,9 +1655,10 @@ public final class PlannerTest implements Suite {
         ApprovalStore decisions = new ApprovalStore(project);
         HumanDecision pending = decisions.read("two-call-plan");
         HumanDecision replan = decisions.resolve(pending.runId(), pending.updatedAt().toString(), "replan", "test", "review again");
-        Main.ApproveEnv env = new Main.ApproveEnv(System::currentTimeMillis, millis -> { },
+        ApproveEnv env = new ApproveEnv(System::currentTimeMillis, millis -> { },
                 (root, gate) -> null, home);
-        Map<String, Object> continued = Main.startAdvance(project, replan, new String[] {"--no-orca-gate"}, env);
+        Map<String, Object> continued = ContinuationCommand.startAdvance(
+                project, replan, new String[] {"--no-orca-gate"}, env);
         check.eq("replanning cannot bypass the chain's call cap", "budget_exhausted", continued.get("reason"));
         Map<String, Object> summary = Json.parseObject(Files.readString(project.resolve(".oseer/runs")
                 .resolve(String.valueOf(continued.get("run_id"))).resolve("task-run.json")));

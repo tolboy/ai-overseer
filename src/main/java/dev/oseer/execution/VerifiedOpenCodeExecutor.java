@@ -247,7 +247,7 @@ public final class VerifiedOpenCodeExecutor implements RoleExecutor {
                         evidence,
                         "");
             }
-            // Stop any incomplete local body before taking the relay's synchronized snapshot.
+            // Stop any incomplete local body before taking the relay's evidence snapshot.
             relay.close();
             String safe = persist(request, "run", run, secret, relay.bearer());
             Map<String, Object> observed = relay.evidence();

@@ -1,5 +1,6 @@
 package dev.oseer;
 
+import dev.oseer.cli.ProjectCommands;
 import dev.oseer.config.ConfigLoader;
 import dev.oseer.gate.VisualQaRunner;
 import dev.oseer.json.Json;
@@ -217,7 +218,7 @@ public final class VisualQaTest implements Suite {
         int validateExit;
         System.setOut(new java.io.PrintStream(buffer, true, java.nio.charset.StandardCharsets.UTF_8));
         try {
-            validateExit = Main.validate(project, "blurry");
+            validateExit = ProjectCommands.validate(project, "blurry");
         } finally {
             System.setOut(previousOut);
         }
@@ -228,7 +229,7 @@ public final class VisualQaTest implements Suite {
         buffer.reset();
         System.setOut(new java.io.PrintStream(buffer, true, java.nio.charset.StandardCharsets.UTF_8));
         try {
-            validateExit = Main.validate(project, "keyed");
+            validateExit = ProjectCommands.validate(project, "keyed");
         } finally {
             System.setOut(previousOut);
         }

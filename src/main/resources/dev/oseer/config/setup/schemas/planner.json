@@ -1,0 +1,86 @@
+{
+  "title": "Planner artifact",
+  "type": "object",
+  "required": ["role", "task_id", "status", "operator_goal", "task_kind",
+               "deliverable", "non_goals", "subtasks", "acceptance", "target",
+               "required_access", "risk", "estimate", "stop_conditions", "scope"],
+  "properties": {
+    "role": { "const": "planner" },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "enum": ["completed", "blocked"] },
+    "operator_goal": { "type": "string" },
+    "goal_addition": { "type": "string" },
+    "task_kind": {
+      "enum": ["feature", "fix", "investigation", "chore", "docs", "unknown"]
+    },
+    "deliverable": { "type": "string" },
+    "non_goals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "subtasks": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["id", "goal"],
+        "properties": {
+          "id": { "type": "string" },
+          "goal": { "type": "string" },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["check"],
+        "properties": {
+          "check": { "type": "string" },
+          "covers": { "type": "string" }
+        }
+      }
+    },
+    "target": { "enum": ["local", "live"] },
+    "visual_qa": {
+      "type": "object",
+      "properties": {
+        "required": { "type": "boolean" },
+        "scenarios": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "required_access": {
+      "type": "object",
+      "required": ["workspace_write", "network", "land"],
+      "properties": {
+        "workspace_write": { "type": "boolean" },
+        "network": { "type": "boolean" },
+        "land": { "type": "boolean" }
+      }
+    },
+    "risk": { "enum": ["low", "medium", "high"] },
+    "scope": { "type": "string" },
+    "estimate": {
+      "type": "object",
+      "required": ["rationale"],
+      "properties": {
+        "role_runs": { "type": "integer", "minimum": 1 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "rationale": { "type": "string" }
+      }
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "summary": { "type": "string" }
+  }
+}

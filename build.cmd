@@ -20,4 +20,6 @@ REM Compile tests and production sources together. On JDK 25 for Windows, javac 
 REM rediscover freshly emitted classes from a relative classpath during the same batch run.
 REM This keeps the production output clean while making the offline test build deterministic.
 javac --release %OSEER_JAVA_RELEASE% -d out\test-classes @out\sources.txt @out\test-sources.txt || exit /b 1
+xcopy src\main\resources out\classes /E /I /Y /Q >nul || exit /b 1
+xcopy src\main\resources out\test-classes /E /I /Y /Q >nul || exit /b 1
 echo built (release %OSEER_JAVA_RELEASE%)

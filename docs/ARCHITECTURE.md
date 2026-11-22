@@ -2,6 +2,33 @@
 
 The source of truth is AI Overseer, not a target-project branch.
 
+## CLI, workflow and dependencies
+
+The Java entry point configures UTF-8 console output and delegates to the command registry in
+`dev.oseer.cli`. Commands translate arguments and report outcomes. Decision import, decision-page
+sessions, continuation claims and operator supervision have separate owners. The task loop's
+failure policy, budget accounting and continuation evidence live in `dev.oseer.run`.
+Workflow admission and previews share profile, tooling and budget checks. Role failover
+policy and attempt evidence are independent of role dispatch. Orca worker observation and
+settlement use the worker monitor, while dashboard and timeline read a shared run projection.
+JSON report keys and persisted records remain compatibility boundaries. New internal models can
+use records and enums, with explicit mapping where they cross one of those boundaries.
+
+Build, test and runtime dependencies stay at zero. The project needs an offline build with a bare
+JDK, and every third-party artifact would add code to review in a tool that gives models write
+access to repositories. Java 21 supplies records, virtual threads, HTTP and file locking for these
+boundaries. The build scripts copy shipped help, dashboard markup and setup templates from
+`src/main/resources`. Operator policy and project settings continue to use the existing YAML
+configuration. A dependency proposal needs to identify a concrete correctness or maintenance
+problem, account for the full transitive footprint, and explain how offline builds would work.
+See [Contributing](../CONTRIBUTING.md).
+
+The dashboard shares each in-flight decision-page startup on a virtual thread. The supervisor
+holds a per-run file lease from before an amendment through the start of a continuation, so
+separate JVMs coordinate as well. A long-lived supervisor follows up to 100 runs. If a decision
+is pending after that, the report includes `supervision_limit_reached` and identifies the run
+whose page the operator can reopen.
+
 | Architecture block | Owner | Current state |
 |---|---|---|
 | Task spec and linter | Overseer config | Implemented: intent, non-goals, risk, scope, authority, acceptance, visual scenarios, budgets and limits |

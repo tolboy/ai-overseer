@@ -1,5 +1,9 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.Continuation;
+import dev.oseer.cli.ContractAmendment;
+import dev.oseer.cli.DecisionSupervisor;
 import dev.oseer.approval.*;
 import dev.oseer.execution.orca.*;
 import dev.oseer.json.Json;
@@ -15,6 +19,7 @@ public final class OperatorContinuationTest implements Suite {
         proposals(check);
         aliasedProject(check);
         supervisor(check);
+        supervisionLimitIsVisible(check);
         amendmentReadiness(check);
         Path fake = Files.createTempFile("oseer-fake-image", ".png");
         Files.write(fake, new byte[] {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13});
@@ -23,6 +28,33 @@ public final class OperatorContinuationTest implements Suite {
                 java.awt.image.BufferedImage.TYPE_INT_RGB), "png", fake.toFile());
         check.that("a decodable frame is image evidence", dev.oseer.run.AgentImageEvidence.isImage(fake));
         Files.delete(fake);
+    }
+
+    private void supervisionLimitIsVisible(Check check) throws Exception {
+        Path root = project();
+        ApprovalStore decisions = new ApprovalStore(root);
+        Map<String, Object> summary = Map.of("decision_kind", "failure");
+        for (int i = 1; i <= 101; i++) {
+            String id = "bounded-" + i;
+            HumanDecision pending = decisions.createFailure(id, "task", "baseline_failed",
+                    root.resolve(".oseer/runs/" + id + "/task-run.json"), null);
+            if (i <= 100) decisions.resolve(id, pending.updatedAt().toString(), "retry", "test", "");
+        }
+        var env = new ApproveEnv(() -> 0L, ignored -> {}, (path, gate) -> null, null);
+        Map<String, Object> report = DecisionSupervisor.superviseGates(root, "bounded-1", summary,
+                new String[] {"--no-workspace-status"}, env,
+                (path, resolved, args, context) -> {
+                    int index = Integer.parseInt(resolved.runId().substring("bounded-".length()));
+                    return Map.of("started", true, "run_id", "bounded-" + (index + 1),
+                            "summary_report", summary);
+                },
+                (path, id, shown) -> Map.of());
+        List<?> chain = (List<?>) report.get("gate_chain");
+        Map<?, ?> stop = (Map<?, ?>) chain.getLast();
+        check.eq("the supervisor reports why it stopped", "supervision_limit_reached", stop.get("reason"));
+        check.eq("the operator can identify the pending run", "bounded-101", stop.get("run_id"));
+        check.eq("the next decision is still pending", HumanDecision.State.PENDING,
+                decisions.read("bounded-101").state());
     }
 
     private Path project() throws Exception {
@@ -52,11 +84,11 @@ public final class OperatorContinuationTest implements Suite {
         Files.writeString(file, Json.write(summary));
         new ApprovalStore(root).createFailure(runId, "task", "contract_gap", file, null);
         int[] calls = {0};
-        var env = new Main.ApproveEnv(() -> 0L, ignored -> {}, (path, gate) -> null, home,
+        var env = new ApproveEnv(() -> 0L, ignored -> {}, (path, gate) -> null, home,
                 (user, project, profiles, strict, progress) -> {
                     calls[0]++; return Map.of("ok", false, "code", "model_check_failed");
                 });
-        Map<String, Object> result = Main.amendContract(root, runId, summary, new String[]{"--quiet"}, env);
+        Map<String, Object> result = ContractAmendment.amendContract(root, runId, summary, new String[]{"--quiet"}, env);
         check.eq("automatic contract amendment checks access before planner dispatch", 1, calls[0]);
         check.eq("failed model check is visible in amendment result", "model_check_failed",
                 ((Map<?, ?>) result.get("contract_amendment")).get("code"));
@@ -134,7 +166,7 @@ public final class OperatorContinuationTest implements Suite {
         store.resolve("run-1", pending.updatedAt().toString(), "apply", "tester", "",
                 current -> ContractProposal.apply(root, current));
         check.eq("approved edit is exact", proposal.get("after"), Files.readString(task));
-        check.eq("apply starts a fresh review chain", false, Main.continuation(root, "run-1").continuation().reuseJudgements());
+        check.eq("apply starts a fresh review chain", false, Continuation.continuation(root, "run-1").continuation().reuseJudgements());
         check.eq("duplicate cannot apply again", HumanDecision.State.RESOLVED, store.read("run-1").state());
         ContractProposal.apply(root, pending);
         check.eq("crash recovery is idempotent", proposal.get("after"), Files.readString(task));
@@ -153,14 +185,14 @@ public final class OperatorContinuationTest implements Suite {
         var gate = new OrcaLifecycle.Gate("gate1", "task_gate", "orca_run", "term1", "failover",
                 pending.options(), pending.updatedAt().toString(), null, pending.createdAt());
         new OrcaLifecycle(root, "quota-1").mutate(OrcaLifecycle.of(snapshot -> snapshot.withOrcaRunId("orca_run").withGate(gate)));
-        Main.ApproveEnv env = new Main.ApproveEnv(() -> 0L, millis -> {},
+        ApproveEnv env = new ApproveEnv(() -> 0L, millis -> {},
                 (path, shown) -> new OrcaDecisionGate.Answer("gate1", "resolved", "switch", "switch?"), home);
         int[] starts = {0};
-        Map<String, Object> result = Main.superviseGates(root, "quota-1", first,
+        Map<String, Object> result = DecisionSupervisor.superviseGates(root, "quota-1", first,
                 new String[]{"--no-workspace-status"}, 1, env, (path, decision, args, environment) -> {
                     starts[0]++;
                     try {
-                        var carried = Main.continuation(path, decision.runId());
+                        var carried = Continuation.continuation(path, decision.runId());
                         check.eq("switch stays scoped to second reader", "gpt-oss", carried.failover().get("review-second"));
                         check.eq("previous approved substitution survives", "earlier", carried.failover().get("review-first"));
                         check.that("switch reuses paid judgements", carried.continuation().reuseJudgements());
@@ -180,7 +212,7 @@ public final class OperatorContinuationTest implements Suite {
                 "contract_gap", later, null);
         new ApprovalStore(root).resolve("quota-2", advanced.updatedAt().toString(), "advance",
                 "tester", "fixed checks");
-        var carriedOn = Main.continuation(root, "quota-2");
+        var carriedOn = Continuation.continuation(root, "quota-2");
         check.eq("advance keeps the confirmed second reader", "gpt-oss",
                 carriedOn.failover().get("review-second"));
         check.eq("and the earlier confirmed substitution", "earlier",

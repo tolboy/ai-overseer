@@ -166,7 +166,7 @@ public final class CodingProbe {
                                 CodingRelay.MAX_BUDGET,
                                 256 * 1024,
                                 null);
-                // Close sockets before taking the synchronized evidence snapshot. A partial
+                // Close sockets before taking the evidence snapshot. A partial
                 // local request must not keep the completed process waiting past its deadline.
                 relay.close();
                 Files.writeString(
@@ -179,7 +179,8 @@ public final class CodingProbe {
                         StandardCharsets.UTF_8);
                 report.put("process_exit", result.exitCode());
                 report.put("timed_out", result.timedOut());
-                report.put("relay", relay.evidence());
+                Map<String, Object> observed = relay.evidence();
+                report.put("relay", observed);
                 if (!result.ok() || result.stdoutTruncated() || result.stderrTruncated())
                     return finish(
                             fixture,
@@ -188,7 +189,7 @@ public final class CodingProbe {
                             "opencode_process_failed",
                             secret,
                             relay.bearer());
-                if (!Boolean.TRUE.equals(relay.evidence().get("identity_confirmed")))
+                if (!Boolean.TRUE.equals(observed.get("identity_confirmed")))
                     return finish(
                             fixture,
                             report,
@@ -196,7 +197,7 @@ public final class CodingProbe {
                             "served_model_unproven",
                             secret,
                             relay.bearer());
-                var tools = (List<?>) relay.evidence().get("observed_tool_results");
+                var tools = (List<?>) observed.get("observed_tool_results");
                 if (!tools.contains("read")
                         || !tools.contains("bash")
                         || Collections.disjoint(tools, List.of("edit", "write", "apply_patch")))

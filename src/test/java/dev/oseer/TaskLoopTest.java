@@ -1,5 +1,9 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApprovalCommand;
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.Continuation;
+import dev.oseer.cli.RunPreflight;
 import dev.oseer.gate.GateRunner;
 import dev.oseer.config.ConfigLoader;
 import dev.oseer.config.RunOverride;
@@ -326,6 +330,7 @@ public final class TaskLoopTest implements Suite {
             localVendorFailureFailoverChecks(check, sandbox, home);
             launchErrorStaysOnTheAttempt(check, sandbox, home);
             declaredWorkflowChecks(check, sandbox, home);
+            repeatedStageEvidenceChecks(check, sandbox, home);
             pairedReviewChecks(check, sandbox, home);
             visualLoopChecks(check, sandbox, home);
             a11yReportChecks(check, sandbox);
@@ -1048,7 +1053,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("and the profile that produced nothing", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("pin1", store.read("pin1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "pin1");
+        Continuation.Carried carried = Continuation.continuation(project, "pin1");
         check.eq("continue carries the stage the person approved",
                 "loop-review-b", carried.failover().get("review"));
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
@@ -1116,7 +1121,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("the successor is the other reviewer", "loop-review-2", pending.get("to_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("ex1", store.read("ex1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "ex1");
+        Continuation.Carried carried = Continuation.continuation(project, "ex1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "ex2",
                         false, carried.failover(), carried.continuation());
@@ -1471,7 +1476,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("after A dropped the connection", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cq1", store.read("cq1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "cq1");
+        Continuation.Carried carried = Continuation.continuation(project, "cq1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cq2",
                         false, carried.failover(), carried.continuation());
@@ -1561,7 +1566,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("after A produced nothing", "loop-review-a", pending.get("from_profile"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("bc1", store.read("bc1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "bc1");
+        Continuation.Carried carried = Continuation.continuation(project, "bc1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "bc2",
                         false, carried.failover(), carried.continuation());
@@ -1621,7 +1626,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("and remembers A", List.of("loop-review-a"), toB.get("exhausted_profiles"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cy1", store.read("cy1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried toSecond = Main.continuation(project, "cy1");
+        Continuation.Carried toSecond = Continuation.continuation(project, "cy1");
         TaskLoop.Outcome second = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cy2",
                         false, toSecond.failover(), toSecond.continuation());
@@ -1634,7 +1639,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("loop-review-a", "loop-review-b"), toC.get("exhausted_profiles"));
         check.eq("the confirmed A→B switch is already spent", 1L, toC.get("vendor_failovers"));
         store.resolve("cy2", store.read("cy2").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried toThird = Main.continuation(project, "cy2");
+        Continuation.Carried toThird = Continuation.continuation(project, "cy2");
         TaskLoop.Outcome third = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cy3",
                         false, toThird.failover(), toThird.continuation());
@@ -1714,7 +1719,7 @@ public final class TaskLoopTest implements Suite {
                 switches.stream().noneMatch(event -> "loop-review-a".equals(event.get("to"))));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("qv1", store.read("qv1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "qv1");
+        Continuation.Carried carried = Continuation.continuation(project, "qv1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "qv2",
                         false, carried.failover(), carried.continuation());
@@ -1799,7 +1804,7 @@ public final class TaskLoopTest implements Suite {
                 1L, pending.get("vendor_failovers"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("rf1", store.read("rf1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "rf1");
+        Continuation.Carried carried = Continuation.continuation(project, "rf1");
         int[] visualCalls = {0};
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner(),
                 (loaded, runId) -> stubVisual(++visualCalls[0] > 1))
@@ -1914,7 +1919,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("loop-review-a"), pending.get("vendor_failed_profiles"));
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("mix1", store.read("mix1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "mix1");
+        Continuation.Carried carried = Continuation.continuation(project, "mix1");
         check.eq("continue carries the profile the person approved",
                 "loop-review-c", carried.failover().get("review"));
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
@@ -1960,7 +1965,7 @@ public final class TaskLoopTest implements Suite {
         check.eq("confirm stops for a person", "failover_requires_confirmation", asked.reason());
         dev.oseer.approval.ApprovalStore store = new dev.oseer.approval.ApprovalStore(project);
         store.resolve("cr1", store.read("cr1").updatedAt().toString(), "switch", "operator", "");
-        Main.Carried carried = Main.continuation(project, "cr1");
+        Continuation.Carried carried = Continuation.continuation(project, "cr1");
         TaskLoop.Outcome after = new TaskLoop(new ProcessRunner())
                 .run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "cr2",
                         false, carried.failover(), carried.continuation());
@@ -2148,7 +2153,9 @@ public final class TaskLoopTest implements Suite {
                 ((Map<String, String>) secondLook.get("rejected_profiles")).get("loop-eyes-geo"));
         check.eq("independence still refuses the same vendor", "same_vendor_as_writer",
                 ((Map<String, String>) secondLook.get("rejected_profiles")).get("loop-eyes-self"));
-        String evidence = Files.readString(routed.resolve(".oseer/runs/geo1--visual-role-0/evidence.jsonl"));
+        Path firstLookEvidence = routed.resolve(".oseer/runs")
+                .resolve((String) firstLook.get("evidence_dir")).resolve("evidence.jsonl");
+        String evidence = Files.readString(firstLookEvidence);
         check.contains("the ledger records the switch", evidence, "\"cause\":\"vendor_unavailable\"");
         String rendered = dev.oseer.ledger.RunReport.render(
                 new dev.oseer.ledger.RunReport().of(routed, "geo1"));
@@ -2422,6 +2429,97 @@ public final class TaskLoopTest implements Suite {
         check.eq("in the order it was declared",
                 List.of("reviewer", "implementer", "gates"),
                 steps(reordered).stream().map(step -> step.get("step")).toList());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void repeatedStageEvidenceChecks(Check check, Path sandbox, Path home) throws Exception {
+        Path project = newProject(sandbox, "workflow-stage-evidence", "medium", 20, true);
+        writeProfiles(home, sandbox, "workflow-stage-evidence", 1, 1);
+        writeProfile(home, "loop-impl", "implementer", "implvendor", false,
+                "implementer", "role, task_id, status, summary, files_changed",
+                "impl-grows", sandbox.resolve("workflow-stage-evidence-impl.count"), 1);
+        writeEyesProfile(home, sandbox, "workflow-stage-evidence", 1);
+        policyWithEyes(home);
+        Files.writeString(home.resolve("policy.yaml"), """
+                workflow:
+                  stages:
+                    - { stage: implement, run: role, role: implementer, on_fail: stop }
+                    - { stage: "Verify Checks", run: machine_gates, on_fail: stop }
+                    - { stage: "verify checks", run: machine_gates, on_fail: stop }
+                    - { stage: browser, run: visual_harness, on_fail: stop }
+                    - { stage: browser-secondary, run: visual_harness, on_fail: fix }
+                    - { stage: eyes, run: role, role: visual_qa, sees: browser, on_fail: stop }
+                    - { stage: eyes-secondary, run: role, role: visual_qa, sees: browser-secondary, on_fail: stop }
+                    - { stage: "Read Diff", run: role, role: reviewer, on_fail: stop }
+                    - { stage: "read diff", run: role, role: reviewer, on_fail: stop }
+                """, java.nio.file.StandardOpenOption.APPEND);
+        Path screenshot = sandbox.resolve("stage-evidence.png");
+        Files.writeString(screenshot, "test attachment");
+        int[] views = {0};
+        TaskLoop.Outcome outcome = new TaskLoop(new ProcessRunner(), (loaded, runId) -> {
+            VisualQaRunner.Outcome harness = stubHarness(loaded, runId, screenshot);
+            Path captured = harness.report().getParent().resolve("screenshots").resolve(screenshot.getFileName());
+            boolean ok = ++views[0] != 2;
+            VisualQaRunner.Outcome observed = stubVisual(ok, captured);
+            Map<String, Object> body = new java.util.LinkedHashMap<>(observed.data());
+            body.put("url", "fixture-" + runId);
+            Files.writeString(harness.report(), Json.write(body));
+            return new VisualQaRunner.Outcome(ok, observed.code(), harness.report(), body);
+        }).run(new ConfigLoader().load(project, "hello"), UserConfig.load(home), "ev1", false);
+
+        check.that("two gates and two browser stages still finish after one browser fix", outcome.ok());
+        check.eq("the browser failure caused a single fix round", 1L, outcome.summaryReport().get("attempts_used"));
+        List<Map<String, Object>> recorded = steps(outcome).stream()
+                .filter(row -> "gates".equals(row.get("step")) || "visual_qa".equals(row.get("step")))
+                .toList();
+        check.eq("both gates and both harnesses ran twice; both visual roles ran once", 10, recorded.size());
+        check.eq("the evidence directories are distinct across stages and attempts, even for equal slugs",
+                10L, recorded.stream().map(row -> row.get("evidence_dir")).distinct().count());
+        check.that("every recorded evidence directory contains that stage's own receipt",
+                recorded.stream().allMatch(row -> row.get("evidence_dir") instanceof String directory
+                        && row.get("report") instanceof String report
+                        && Files.isRegularFile(Path.of(report))
+                        && directory.equals(Path.of(report).getParent().getFileName().toString())));
+        try (var contexts = Files.list(project.resolve(".oseer/runs/ev1/context"))) {
+            check.eq("each visual role retains the context of the harness it saw", 2L,
+                    contexts.filter(path -> path.getFileName().toString().endsWith("-harness.json")).count());
+        }
+
+        var report = new dev.oseer.ledger.RunReport();
+        List<Map<String, Object>> stageReport = (List<Map<String, Object>>) report.of(project, "ev1").get("stages");
+        List<String> expectedUrls = recorded.stream()
+                .filter(step -> "visual_qa".equals(step.get("step")) && step.get("profile") == null)
+                .map(step -> "fixture-" + step.get("evidence_dir")).toList();
+        check.eq("the assembled report reads the right harness receipt for each stage and attempt",
+                expectedUrls, stageReport.stream().filter(row -> "visual_harness".equals(row.get("kind")))
+                        .map(row -> row.get("url")).toList());
+        List<Map<String, Object>> readers = steps(outcome).stream()
+                .filter(row -> "reviewer".equals(row.get("step"))).toList();
+        check.eq("both stages under the same role dispatched", 2, readers.size());
+        check.eq("ordinary role stages with equal slugs also get distinct receipt paths",
+                2L, readers.stream().map(row -> row.get("evidence_dir")).distinct().count());
+        check.that("the assembled report reads both reader receipts",
+                stageReport.stream().filter(row -> "reviewer".equals(row.get("role")))
+                        .filter(row -> row.get("duration_millis") instanceof Number).count() == 2);
+
+        Map<String, Object> eye = recorded.stream().filter(row -> "eyes-secondary".equals(row.get("stage")))
+                .findFirst().orElseThrow();
+        Map<String, Object> carried = new java.util.LinkedHashMap<>(eye);
+        carried.put("attempt", 0L);
+        carried.put("reused_from", "ev-intermediate");
+        // The old absolute location may be gone. Its directory name and actual final
+        // attempt report remain under the current archive's runs root.
+        Path eyeReport = Path.of(String.valueOf(eye.get("report")));
+        String lastAttempt = "role-visual_qa.attempt-2.json";
+        Map<String, Object> receipt = readJson(eyeReport);
+        receipt.put("model_reported", "second-visual-attempt");
+        Files.writeString(eyeReport.resolveSibling(lastAttempt), Json.write(receipt));
+        carried.put("report", "C:/old-archive/" + eye.get("evidence_dir") + "/" + lastAttempt);
+        Path resumed = Files.createDirectories(project.resolve(".oseer/runs/ev-resumed"));
+        Files.writeString(resumed.resolve("task-run.json"), Json.write(Map.of("task_id", "hello", "steps", List.of(carried))));
+        List<Map<String, Object>> resumedReport = (List<Map<String, Object>>) report.of(project, "ev-resumed").get("stages");
+        check.eq("a carried visual verdict opens its recorded attempt in the current archive",
+                "second-visual-attempt", resumedReport.getFirst().get("model_reported"));
     }
 
     /**
@@ -3302,7 +3400,7 @@ public final class TaskLoopTest implements Suite {
         dev.oseer.approval.ApprovalStore switchStore = new dev.oseer.approval.ApprovalStore(switched);
         switchStore.resolve("is1", switchStore.read("is1").updatedAt().toString(), "switch",
                 "operator", "");
-        Main.Carried carried = Main.continuation(switched, "is1");
+        Continuation.Carried carried = Continuation.continuation(switched, "is1");
         check.eq("the switch authorises the named successor",
                 Map.of("review-second", "loop-review"), carried.failover());
         check.that("and asks the loop to keep what was already judged",
@@ -3370,7 +3468,7 @@ public final class TaskLoopTest implements Suite {
                 List.of("abort", "switch", "retry"), waitStore.read("fr1").options());
         waitStore.resolve("fr1", waitStore.read("fr1").updatedAt().toString(), "retry", "operator",
                 "the window rolled over");
-        Main.Carried carriedRetry = Main.continuation(waited, "fr1");
+        Continuation.Carried carriedRetry = Continuation.continuation(waited, "fr1");
         check.that("retry authorises no substitution", carriedRetry.failover().isEmpty());
         check.that("and keeps the verdicts", carriedRetry.continuation().reuseJudgements());
         TaskLoop.Outcome afterWait = new TaskLoop(new ProcessRunner())
@@ -3638,15 +3736,15 @@ public final class TaskLoopTest implements Suite {
                 .equals(pending.createdAt().plus(java.time.Duration.ofHours(1))));
         check.that("and the summary says when", ttl.summaryReport().get("gate_expires_at") != null);
         long later = pending.expiresAt().toEpochMilli() + 60_000L;
-        Main.ApproveEnv expired = new Main.ApproveEnv(() -> later, millis -> { },
+        ApproveEnv expired = new ApproveEnv(() -> later, millis -> { },
                 (root, gate) -> null, home);
-        Main.ApproveOutcome refused = Main.approveDecision(timed,
+        ApprovalCommand.ApproveOutcome refused = ApprovalCommand.approveDecision(timed,
                 new String[] {"approve", "gt1", "--decision", "accept"}, expired);
         check.that("an acceptance after the gate expired is refused", !refused.ok());
         check.eq("under its own code", "gate_expired", refused.report().get("code"));
         check.eq("and the decision is still pending", "pending",
                 new dev.oseer.approval.ApprovalStore(timed).read("gt1").state().jsonValue());
-        Main.ApproveOutcome acknowledged = Main.approveDecision(timed,
+        ApprovalCommand.ApproveOutcome acknowledged = ApprovalCommand.approveDecision(timed,
                 new String[] {"approve", "gt1", "--decision", "accept", "--acknowledge-expired"},
                 expired);
         check.that("an acknowledged acceptance after expiry is recorded", acknowledged.ok());
@@ -3657,9 +3755,9 @@ public final class TaskLoopTest implements Suite {
         loop(timedReject, home, "gt2");
         long past = new dev.oseer.approval.ApprovalStore(timedReject).read("gt2").expiresAt()
                 .toEpochMilli() + 60_000L;
-        Main.ApproveOutcome rejected = Main.approveDecision(timedReject,
+        ApprovalCommand.ApproveOutcome rejected = ApprovalCommand.approveDecision(timedReject,
                 new String[] {"approve", "gt2", "--decision", "reject", "--note", "stale"},
-                new Main.ApproveEnv(() -> past, millis -> { }, (root, gate) -> null, home));
+                new ApproveEnv(() -> past, millis -> { }, (root, gate) -> null, home));
         check.that("a rejection after expiry needs no acknowledgement", rejected.ok());
 
         Path untimed = newProject(sandbox, "gate-no-ttl");
@@ -3689,6 +3787,9 @@ public final class TaskLoopTest implements Suite {
         check.eq("before anything was dispatched", 0L, tooTight.summaryReport().get("role_runs"));
         check.contains("and says it was the strict reserve, not the reported spend",
                 String.valueOf(tooTight.summaryReport().get("budget_stop")), "strict cap");
+        check.contains("the stop advice explains the reservation before any calls are charged",
+                String.valueOf(tooTight.summaryReport().get("safe_next_step")),
+                "reserves the declared bounds for calls still owed");
 
         Path roomy = newProject(sandbox, "strict-roomy", "medium", 20, "0.10");
         writeBoundedProfiles(home, sandbox, "strict-roomy", 0.02, 0.02);
@@ -3779,6 +3880,27 @@ public final class TaskLoopTest implements Suite {
         check.eq("the chain carries the charge to a continuation", 0.03,
                 ((Map<?, ?>) unpricedStopped.summaryReport().get("chain"))
                         .get("cost_cap_unpriced_charge_usd"));
+
+        retry(unpricedRetry, "sc7");
+        RunPreflight.recordPreflightFailure(unpricedRetry, UserConfig.load(home),
+                "hello", "sc8", "sc7", new IllegalArgumentException("unknown key 'budget'"));
+        Map<String, Object> preflight = readJson(unpricedRetry.resolve(".oseer/runs/sc8/task-run.json"));
+        check.eq("a failed preflight carries the strict-cap charge from the prior run", 0.03,
+                ((Map<?, ?>) preflight.get("chain")).get("cost_cap_unpriced_charge_usd"));
+
+        // At $0.07 the spent $0.012 and reserved $0.05 fit only if the $0.03 charge is lost.
+        editTask(unpricedRetry, "max_cost_usd: 0.06", "max_cost_usd: 0.07");
+        retry(unpricedRetry, "sc8");
+        TaskLoop.Outcome afterPreflight = continued(unpricedRetry, home, "sc9", "sc8");
+        check.eq("the inherited strict-cap charge blocks the next run", "budget_exhausted",
+                afterPreflight.reason());
+        check.eq("no call dispatches after the failed preflight", 0L,
+                afterPreflight.summaryReport().get("role_runs"));
+        String costAdvice = String.valueOf(afterPreflight.summaryReport().get("safe_next_step"));
+        check.contains("the continuation advice names the carried unpriced charge", costAdvice,
+                "0.03 charged at declared bounds");
+        check.that("the continuation advice acknowledges the strict charge",
+                !costAdvice.contains("were not counted against it"));
 
         writeProfiles(home, sandbox, "strict-restore", 1, 1);
     }
@@ -4043,7 +4165,7 @@ public final class TaskLoopTest implements Suite {
         TaskLoop.Outcome onlyCall = loop(broken, home, "cpa");
         check.eq("the first run spends its only call", 1L, onlyCall.summaryReport().get("role_runs"));
         retry(broken, "cpa");
-        Map<String, Object> refused = Main.recordPreflightFailure(broken, UserConfig.load(home),
+        Map<String, Object> refused = RunPreflight.recordPreflightFailure(broken, UserConfig.load(home),
                 "hello", "cpb", "cpa", new IllegalArgumentException("unknown key 'budget'"));
         check.eq("a continuation that fails validation is recorded", "run_preflight_failed",
                 refused.get("reason"));

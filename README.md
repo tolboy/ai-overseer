@@ -3,9 +3,16 @@
 **Runs AI agents by role inside someone else's repository, checks the result mechanically,
 and stops in front of a human. It never merges anything.**
 
-Java, **zero dependencies**, built by a single `javac` invocation. A tool that hands a
-language model write access to your repository should not drag a hundred-artifact supply
-chain in behind it — and it should build with no network.
+**Offline build.** The Overseer CLI and dashboard use the JDK standard libraries, with
+zero third-party Java dependencies. Build with `javac` without a package registry or
+network access. The portable ZIP includes the JAR and launchers. Install Java 21 or newer
+and Git to run it.
+
+**Local models, without a hosted subscription.** Use a compatible local
+OpenAI-style endpoint for read-only text roles. A fully local workflow also needs
+local runners for any writing roles and locally available tools for its checks.
+Set up [API connections](docs/API-CONNECTIONS.md#configure-and-verify-a-text-profile)
+and configure each task to use the local profiles.
 
 [![CI](https://github.com/tolboy/ai-overseer/actions/workflows/ci.yml/badge.svg)](https://github.com/tolboy/ai-overseer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)

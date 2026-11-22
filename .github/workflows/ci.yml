@@ -77,6 +77,7 @@ jobs:
           jar xf "$archive"
           sh ai-overseer/bin/oseer --version
           sh ai-overseer/bin/oseer --help
+          sh ai-overseer/bin/oseer run --help
 
       - name: Try the portable package (Windows)
         if: runner.os == 'Windows'
@@ -90,6 +91,8 @@ jobs:
           & .\ai-overseer\bin\oseer.cmd --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\ai-overseer\bin\oseer.cmd --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\ai-overseer\bin\oseer.cmd run --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   demo:

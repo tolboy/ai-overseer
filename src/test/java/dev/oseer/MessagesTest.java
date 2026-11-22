@@ -50,11 +50,13 @@ public final class MessagesTest implements Suite {
         List<String> leftovers = new ArrayList<>();
         List<Path> sources;
         try (Stream<Path> walk = Files.walk(Path.of("src/main/java/dev/oseer"))) {
-            sources = walk.filter(p -> p.toString().endsWith(".java")).toList();
+            sources = new ArrayList<>(walk.filter(p -> p.toString().endsWith(".java")).toList());
         }
+        sources.add(Path.of("src/main/resources/dev/oseer/dashboard/dashboard.html"));
         Set<String> pageSources = Set.of("ConnectionSettingsUi.java", "Dashboard.java", "DashboardControls.java",
                 "DashboardShell.java", "DecisionPage.java", "ModelSettingsUi.java", "YamlSettingsEdit.java",
-                "VendorSettingsService.java", "CandidatePreview.java", "RunLauncherUi.java", "RunLauncher.java");
+                "VendorSettingsService.java", "CandidatePreview.java", "RunLauncherUi.java", "RunLauncher.java",
+                "BrowserEvidence.java", "dashboard.html");
         for (Path source : sources) {
             if (source.getFileName().toString().equals("Messages.java")) continue;
             String text = Files.readString(source);

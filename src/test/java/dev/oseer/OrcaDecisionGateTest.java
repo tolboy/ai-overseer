@@ -1,5 +1,9 @@
 package dev.oseer;
 
+import dev.oseer.cli.ApprovalCommand;
+import dev.oseer.cli.ApproveEnv;
+import dev.oseer.cli.DecisionSession;
+import dev.oseer.cli.GateWait;
 import dev.oseer.approval.ApprovalStore;
 import dev.oseer.approval.HumanDecision;
 import dev.oseer.execution.orca.OrcaClient;
@@ -145,9 +149,9 @@ public final class OrcaDecisionGateTest implements Suite {
                     pendingAnswer(pending.gateId), resolvedAnswer(pending.gateId, "abort"));
             FakeTime time = new FakeTime();
             time.now = 1_758_000_000_000L;
-            Main.ApproveEnv env = new Main.ApproveEnv(time, time, script, home);
+            ApproveEnv env = new ApproveEnv(time, time, script, home);
             List<String> shown = new ArrayList<>();
-            Map<String, Object> result = Main.awaitDecision(root, "page-gate",
+            Map<String, Object> result = DecisionSession.awaitDecision(root, "page-gate",
                     new String[] {"--no-workspace-status", "--quiet"}, 1, env, url -> shown.add(url));
             check.eq("the page was shown", 1, shown.size());
             check.eq("the answer given in Orca is recorded", "abort",
@@ -174,8 +178,8 @@ public final class OrcaDecisionGateTest implements Suite {
                     pendingAnswer(pending.gateId),
                     resolvedAnswer(pending.gateId, "abort"));
             FakeTime time = new FakeTime();
-            Main.ApproveEnv waitEnv = new Main.ApproveEnv(time, time, script, home);
-            Main.ApproveOutcome waited = Main.approveDecision(root, new String[] {
+            ApproveEnv waitEnv = new ApproveEnv(time, time, script, home);
+            ApprovalCommand.ApproveOutcome waited = ApprovalCommand.approveDecision(root, new String[] {
                     "approve", "wait-third", "--from-orca", "--wait-minutes", "1",
                     "--no-workspace-status"
             }, waitEnv);
@@ -194,9 +198,9 @@ public final class OrcaDecisionGateTest implements Suite {
                 Fixture already = fixture(other, "wait-plain");
                 ScriptedGate immediate = new ScriptedGate(resolvedAnswer(already.gateId, "abort"));
                 FakeTime plainTime = new FakeTime();
-                Main.ApproveOutcome plain = Main.approveDecision(other, new String[] {
+                ApprovalCommand.ApproveOutcome plain = ApprovalCommand.approveDecision(other, new String[] {
                         "approve", "wait-plain", "--from-orca", "--no-workspace-status"
-                }, new Main.ApproveEnv(plainTime, plainTime, immediate, otherHome));
+                }, new ApproveEnv(plainTime, plainTime, immediate, otherHome));
                 check.eq("plain --from-orca also records the decision", true, plain.ok());
                 check.eq("with the same code", waited.report().get("code"), plain.report().get("code"));
                 check.eq("and the same choice",
@@ -223,10 +227,10 @@ public final class OrcaDecisionGateTest implements Suite {
             ScriptedGate alwaysPending = new ScriptedGate(pendingAnswer(pending.gateId));
             FakeTime time = new FakeTime();
             time.jumpOnSleepTo = 60_000L;
-            Main.ApproveOutcome timedOut = Main.approveDecision(root, new String[] {
+            ApprovalCommand.ApproveOutcome timedOut = ApprovalCommand.approveDecision(root, new String[] {
                     "approve", "wait-deadline", "--from-orca", "--wait-minutes", "1",
                     "--no-workspace-status"
-            }, new Main.ApproveEnv(time, time, alwaysPending, home));
+            }, new ApproveEnv(time, time, alwaysPending, home));
             check.eq("a deadline is not ok", false, timedOut.ok());
             check.eq("and names gate_pending", "gate_pending", timedOut.report().get("code"));
             check.that("records how long it waited", timedOut.report().get("waited_seconds") instanceof Number);
@@ -256,10 +260,10 @@ public final class OrcaDecisionGateTest implements Suite {
             new OrcaLifecycle(root, "wait-stale").mutate(OrcaLifecycle.of(snapshot -> snapshot.withGate(stale)));
             ScriptedGate reader = new ScriptedGate(resolvedAnswer(pending.gateId, "abort"));
             FakeTime time = new FakeTime();
-            Main.ApproveOutcome outcome = Main.approveDecision(root, new String[] {
+            ApprovalCommand.ApproveOutcome outcome = ApprovalCommand.approveDecision(root, new String[] {
                     "approve", "wait-stale", "--from-orca", "--wait-minutes", "1",
                     "--no-workspace-status"
-            }, new Main.ApproveEnv(time, time, reader, home));
+            }, new ApproveEnv(time, time, reader, home));
             check.eq("stale_decision is not ok", false, outcome.ok());
             check.eq("and fails on the first poll", "stale_decision", outcome.report().get("code"));
             check.eq("without sleeping", List.of(), time.sleeps);
@@ -277,8 +281,8 @@ public final class OrcaDecisionGateTest implements Suite {
             Fixture pending = fixture(root, "wait-backoff");
             ScriptedGate alwaysPending = new ScriptedGate(pendingAnswer(pending.gateId));
             FakeTime time = new FakeTime();
-            Main.pollGate(root, "wait-backoff", new ApprovalStore(root),
-                    new Main.ApproveEnv(time, time, alwaysPending, home), 1);
+            GateWait.pollGate(root, "wait-backoff", new ApprovalStore(root),
+                    new ApproveEnv(time, time, alwaysPending, home), 1);
             check.eq("backoff is 5, 7.5, 10, 10 … seconds",
                     List.of(5_000L, 7_500L, 10_000L, 10_000L),
                     time.sleeps.subList(0, 4));
@@ -288,16 +292,16 @@ public final class OrcaDecisionGateTest implements Suite {
     }
 
     private void waitForGateSkipsWhenNoneWasPublished(Check check) throws Exception {
-        Map<String, Object> none = Main.waitForPublishedGate(Path.of("."), "run-x",
-                Map.of("reason", "ready_for_human"), 5, Main.ApproveEnv.realtime());
+        Map<String, Object> none = ApprovalCommand.waitForPublishedGate(Path.of("."), "run-x",
+                Map.of("reason", "ready_for_human"), 5, ApproveEnv.realtime());
         @SuppressWarnings("unchecked")
         Map<String, Object> skip = (Map<String, Object>) none.get("gate_wait");
         check.eq("a missing gate skips the wait", true, skip.get("skipped"));
         check.eq("naming why", "no_orca_gate", skip.get("reason"));
 
-        Map<String, Object> disabled = Main.waitForPublishedGate(Path.of("."), "run-x",
+        Map<String, Object> disabled = ApprovalCommand.waitForPublishedGate(Path.of("."), "run-x",
                 Map.of("orca_gate", Map.of("published", false, "reason", "disabled")),
-                5, Main.ApproveEnv.realtime());
+                5, ApproveEnv.realtime());
         @SuppressWarnings("unchecked")
         Map<String, Object> skippedDisabled = (Map<String, Object>) disabled.get("gate_wait");
         check.eq("an unpublished gate skips too", true, skippedDisabled.get("skipped"));
@@ -339,7 +343,7 @@ public final class OrcaDecisionGateTest implements Suite {
         return new OrcaDecisionGate.Answer(gateId, "resolved", resolution, "Accept?");
     }
 
-    private static final class ScriptedGate implements Main.ApproveEnv.Gates {
+    private static final class ScriptedGate implements ApproveEnv.Gates {
         private final List<OrcaDecisionGate.Answer> script;
         int reads;
 
@@ -355,7 +359,7 @@ public final class OrcaDecisionGateTest implements Suite {
         }
     }
 
-    private static final class FakeTime implements Main.ApproveEnv.Clock, Main.ApproveEnv.Sleeper {
+    private static final class FakeTime implements ApproveEnv.Clock, ApproveEnv.Sleeper {
         long now;
         Long jumpOnSleepTo;
         final List<Long> sleeps = new ArrayList<>();

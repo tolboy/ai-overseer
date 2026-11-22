@@ -6,6 +6,7 @@ import dev.oseer.testing.Check;
 import dev.oseer.testing.Suite;
 import java.io.InterruptedIOException;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -20,6 +21,7 @@ public final class JsonFileTest implements Suite {
         try {
             JsonFile.writeAtomically(target, Map.of("state", "old"));
             check.eq("atomic receipt is readable", "old", Json.parseObject(Files.readString(target)).get("state"));
+            interruptedLocalWaitDoesNotRun(check, target);
             if (!System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")) return;
             try (var pool = Executors.newSingleThreadExecutor()) {
                 Future<?> writer;
@@ -72,6 +74,55 @@ public final class JsonFileTest implements Suite {
                 for (Path path : paths.toList()) Files.deleteIfExists(path);
             }
             Files.deleteIfExists(directory);
+        }
+    }
+
+    private static void interruptedLocalWaitDoesNotRun(Check check, Path target) throws Exception {
+        String lockName = "receipt.lock";
+        var acquired = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> owner = workers.submit(() -> JsonFile.underExclusiveLock(target, lockName, () -> {
+                acquired.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new InterruptedIOException("test owner interrupted");
+                }
+                return null;
+            }));
+            try {
+                if (!acquired.await(5, TimeUnit.SECONDS)) throw new AssertionError("owner did not get the lock");
+                var entered = new CountDownLatch(1);
+                var failure = new AtomicReference<Throwable>();
+                var interrupted = new AtomicReference<Boolean>();
+                Thread contender = Thread.ofVirtual().start(() -> {
+                    entered.countDown();
+                    try {
+                        JsonFile.underExclusiveLock(target, lockName, () -> {
+                            throw new AssertionError("interrupted contender entered the critical section");
+                        });
+                    } catch (Throwable thrown) {
+                        failure.set(thrown);
+                    }
+                    interrupted.set(Thread.currentThread().isInterrupted());
+                });
+                if (!entered.await(5, TimeUnit.SECONDS)) throw new AssertionError("contender did not start");
+                contender.interrupt();
+                check.that("local lock wait can be interrupted before the owner releases",
+                        contender.join(Duration.ofSeconds(5)));
+                check.that("cancelled lock wait has a typed I/O error",
+                        failure.get() instanceof InterruptedIOException);
+                check.eq("cancelled lock wait preserves interrupt status", true, interrupted.get());
+            } finally {
+                release.countDown();
+            }
+            owner.get(5, TimeUnit.SECONDS);
+            check.that("the next writer can acquire the same lock",
+                    JsonFile.underExclusiveLock(target, lockName, () -> true));
+        } finally {
+            Files.deleteIfExists(target.resolveSibling(lockName));
         }
     }
 

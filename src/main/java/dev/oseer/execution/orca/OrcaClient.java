@@ -19,6 +19,7 @@ import java.util.Map;
  * receipts with {@link OrcaSettlement}.
  */
 public final class OrcaClient {
+    private static final Duration TAB_OPEN_TIMEOUT = Duration.ofSeconds(20);
 
     public record Rpc(boolean ok, int exitCode, boolean timedOut, long durationMillis,
                       Map<String, Object> envelope, Map<String, Object> result,
@@ -32,6 +33,11 @@ public final class OrcaClient {
 
     public OrcaClient(ProcessRunner processes) { this.processes = processes; this.transport = null; }
     public OrcaClient(Transport transport) { this.processes = null; this.transport = transport; }
+
+    public Rpc openTab(Path worktree, String url) throws Exception {
+        return invoke(worktree, TAB_OPEN_TIMEOUT,
+                List.of("tab", "create", "--worktree", "path:" + worktree, "--url", url));
+    }
 
     public Map<String, Object> status(Path workingDirectory) {
         try {
@@ -89,6 +95,18 @@ public final class OrcaClient {
         boolean ok = process.ok() && (envelope.isEmpty() || OrcaSettlement.envelopeOk(envelope));
         return new Rpc(ok, process.exitCode(), process.timedOut(), process.durationMillis(),
                 envelope, result, process.stdout(), process.stderr());
+    }
+
+    static String nestedString(Map<String, Object> result, String container, String key) {
+        Object nested = result == null ? null : result.get(container);
+        if (nested instanceof Map<?, ?> map && map.get(key) != null) return String.valueOf(map.get(key));
+        Object direct = result == null ? null : result.get(key);
+        return direct == null ? null : String.valueOf(direct);
+    }
+
+    static String tail(String text, int limit) {
+        if (text == null) return "";
+        return text.length() <= limit ? text : text.substring(text.length() - limit);
     }
 
     @SuppressWarnings("unchecked")
